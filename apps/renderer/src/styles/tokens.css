@@ -1,0 +1,129 @@
+:root {
+  /* 主色：天蓝色（用户 m01646 指定），白底 + 蓝点缀。
+     纪律：白 85% / 蓝 10% / 灰 5%，不做大面积蓝——大面积蓝交给「液态玻璃」的
+     半透明面板去透，而不是把底色刷成蓝的。 */
+  --pi-primary: #1f9bff;
+  --pi-primary-hover: #0b86e8;
+  --pi-primary-weak: #e8f4ff;
+  /* 需要在白底上当小字号文字用的深一档天蓝（#1f9bff 直接当正文色对比度不够）。 */
+  --pi-primary-deep: #0d7bd0;
+
+  --pi-bg: #ffffff;
+  --pi-bg-subtle: #f5faff;
+  --pi-surface: #ffffff;
+
+  --pi-text: #1a1d24;
+  --pi-text-sub: #6b7280;
+  --pi-text-tertiary: #9aa3b2;
+  --pi-divider: #edf0f5;
+
+  --pi-radius-card: 12px;
+  --pi-radius-btn: 20px;
+  --pi-radius-cover: 8px;
+  --pi-shadow-card: 0 2px 12px rgba(31, 155, 255, 0.08);
+  --pi-shadow-float: 0 8px 28px rgba(26, 29, 36, 0.14);
+
+  /* iOS 液态玻璃：半透明底 + 背景模糊 + 一道内高光（少了内高光就只是「毛玻璃」）。
+     m06982 第 6 条照 folia 的材质调了四处：
+     ① 模糊不再叠 saturate()——folia 全仓只用 blur，白底上加了饱和度会发灰；
+     ② 落影改成「等长 4 槽」列表（--pi-shadow-slots*）：槽位一一对应时
+        `transition: box-shadow` 会逐槽插值，不会像两段式那样跳一下；第一槽顺带
+        当描边用（folia 的面板是 1px 冷灰细边，白玻璃没有边会糊成一片）；
+     ③ 大面板圆角统一 24px、落影更深更远（0 24px 64px）；
+     ④ 新增一层极淡的颗粒 --pi-noise（内联 SVG feTurbulence，见 global.css 的
+        `.pi-app::after`）——这是 folia 材质里最像「纸/胶片」的那一手。 */
+  --pi-glass-bg: rgba(255, 255, 255, 0.62);
+  --pi-glass-bg-strong: rgba(255, 255, 255, 0.78);
+  /* 第十轮第 2 条（用户 m02362）：「透光的玻璃」——播放页三件常驻控件
+     （左下名片 / 底部进度条 / 悬浮球）专用的更透明一档。区别有三点：
+     ① 底几乎透明（0.34 而不是 0.62），下面那层沉浸式背景的颜色直接透上来；
+     ② 模糊里加 `saturate(1.7) brightness(1.06)`——白玻璃压不住彩度，靠饱和度把
+        底下的封面色「拉」出来，这才是用户说的「透背景颜色的光」；
+     ③ 描边更亮一点，不然半透明面板在白底上会没有轮廓。
+     大面板（设置框、搜索浮层、卡片浮层）继续用上面那两档，不要跟着变透明——
+     它们是「纸」，要能盖住后面的字。 */
+  --pi-glass-bg-light: rgba(255, 255, 255, 0.34);
+  --pi-glass-blur-light: blur(18px) saturate(1.7) brightness(1.06);
+  --pi-glass-border-light: rgba(255, 255, 255, 0.58);
+  --pi-glass-border: rgba(255, 255, 255, 0.72);
+  --pi-glass-blur: blur(24px);
+  --pi-glass-blur-strong: blur(40px);
+  --pi-glass-radius: 24px;
+  --pi-glass-shadow: 0 24px 64px rgba(42, 35, 27, 0.18);
+  --pi-glass-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.85);
+  --pi-shadow-slots:
+    0 0 0 1px rgba(20, 30, 45, 0.05), 0 2px 8px rgba(31, 84, 148, 0.08),
+    0 12px 32px rgba(31, 84, 148, 0.1), 0 24px 64px rgba(42, 35, 27, 0.14);
+  --pi-shadow-slots-hover:
+    0 0 0 1px rgba(20, 30, 45, 0.06), 0 4px 14px rgba(31, 84, 148, 0.13),
+    0 18px 44px rgba(31, 84, 148, 0.16), 0 34px 80px rgba(42, 35, 27, 0.18);
+  --pi-noise: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.92' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)'/%3E%3C/svg%3E");
+  --pi-grain-opacity: 0.07;
+  /* m06304 第 2 条「按键、边框、背景都要 iOS 毛玻璃」补的两件东西：
+     ① 一层斜向白色渐变——纯色半透明在白底上看不出材质，有渐变才有体积感；
+     ② 一圈极淡的冷色描边——白底 + 白边等于没有边，玻璃的轮廓会糊成一片。 */
+  --pi-glass-sheen: linear-gradient(
+    150deg,
+    rgba(255, 255, 255, 0.94) 0%,
+    rgba(255, 255, 255, 0.66) 45%,
+    rgba(226, 241, 255, 0.62) 100%
+  );
+  --pi-glass-edge: 0 0 0 1px rgba(31, 84, 148, 0.08);
+
+  /* 第十一轮第 5 条（用户 m03279）删掉了 `--pi-titlebar-height`：标题栏整条取消、
+     `.pi-app` 网格只剩主区一行，全仓已无使用者（grep 只命中这里与 `global.css` 的那行网格定义）。 */
+  --pi-playerbar-height: 72px;
+  --pi-sidebar-width: 216px;
+
+  /* 听歌详情页从封面提取的主色，M3 由主进程取图后写入 */
+  --pi-np-accent: var(--pi-primary);
+
+  /* 系统字体栈：不硬编码 PingFang / 苹方，Linux 上也要有得用（§2.6 规则 4） */
+  --pi-font: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans CJK SC',
+    'Microsoft YaHei', 'Source Han Sans SC', 'Helvetica Neue', Arial, sans-serif;
+}
+
+[data-theme='dark'] {
+  --pi-primary: #5ab6ff;
+  --pi-primary-hover: #7cc6ff;
+  --pi-primary-weak: #10263a;
+  --pi-primary-deep: #8ccbff;
+
+  --pi-bg: #0f1218;
+  --pi-bg-subtle: #141a24;
+  --pi-surface: #161b24;
+
+  --pi-text: #e8ecf3;
+  --pi-text-sub: #a1a9b8;
+  --pi-text-tertiary: #6f7787;
+  --pi-divider: #232a36;
+
+  --pi-shadow-card: 0 2px 12px rgba(0, 0, 0, 0.4);
+  --pi-shadow-float: 0 8px 28px rgba(0, 0, 0, 0.5);
+
+  --pi-glass-bg: rgba(24, 30, 40, 0.6);
+  --pi-glass-bg-strong: rgba(24, 30, 40, 0.8);
+  --pi-glass-border: rgba(255, 255, 255, 0.12);
+  /* 第十轮第 2 条（用户 m02362）：暗档的「透光玻璃」，同亮档只给播放页三件
+     常驻控件（左下名片 / 底部进度条 / 悬浮球）用。底色几乎透明，靠 `saturate`
+     把底下的封面色拉出来；暗底上描边要更亮一点才有轮廓。 */
+  --pi-glass-bg-light: rgba(20, 26, 36, 0.34);
+  --pi-glass-blur-light: blur(18px) saturate(1.6) brightness(0.98);
+  --pi-glass-border-light: rgba(255, 255, 255, 0.18);
+  --pi-glass-shadow: 0 24px 64px rgba(0, 0, 0, 0.42);
+  --pi-glass-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  --pi-shadow-slots:
+    0 0 0 1px rgba(255, 255, 255, 0.06), 0 2px 8px rgba(0, 0, 0, 0.35),
+    0 12px 32px rgba(0, 0, 0, 0.4), 0 24px 64px rgba(0, 0, 0, 0.42);
+  --pi-shadow-slots-hover:
+    0 0 0 1px rgba(255, 255, 255, 0.08), 0 4px 14px rgba(0, 0, 0, 0.4),
+    0 18px 44px rgba(0, 0, 0, 0.46), 0 34px 80px rgba(0, 0, 0, 0.5);
+  --pi-grain-opacity: 0.13;
+  --pi-glass-sheen: linear-gradient(
+    150deg,
+    rgba(58, 68, 84, 0.86) 0%,
+    rgba(28, 34, 45, 0.74) 48%,
+    rgba(18, 24, 33, 0.7) 100%
+  );
+  --pi-glass-edge: 0 0 0 1px rgba(255, 255, 255, 0.07);
+}

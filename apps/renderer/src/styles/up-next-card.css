@@ -1,0 +1,290 @@
+/*
+ * 「接下来播放」小名片（用户第十七轮第 8 条，参考图 5）。
+ *
+ * 位置：第十八轮第 11 条（用户 m01482）「在**左下**显示而不是右下」⇒ 从右下挪到左下，
+ * 和左下角那张歌曲名片同一个角。两者不会打架：小名片只在**一首歌的最后 5s** 出，
+ * 而歌曲名片在**换歌那一刻**才出（停留 5s）——换歌时小名片正好消失。
+ * 用户 m00001 第 6 条：「左下角切换歌曲前的小名片要贴着底部边框的位置显示，并且其与歌曲
+ * 名片的切换要有自然的过渡动画，比如小名片放大变成歌曲名片」——所以底边从 78px 落回
+ * **和歌曲名片同一条基准线**（22px）：两张卡共用同一个左下角，小名片一卸载，歌曲名片就以
+ * 这个角为轴放大出来（`global.css` 的 `pi-home-card-morph`，宿主给 `data-handoff='true'`），
+ * 读起来就是「小名片放大成了歌曲名片」。
+ * 宽度也跟着收了一档（`min(300px, 50vw - 160px)`）：底边落到 22px 之后它就进了底部药丸
+ * 那一行，窄窗里 300px 会顶到药丸左沿，所以按视口宽度让一点。
+ * 用 fixed 而不是 absolute：它是「浮在播放页上的一条预告」，不该跟着任何一层布局走。
+ * 不接指针事件：预告而已，点在它上面应该照样穿透到播放页（按空白处 —— 冒 PI 键）。
+ */
+
+.pi-upnext {
+  position: fixed;
+  left: 22px;
+  /* 用户 m00001 第 6 条：贴着底部，和歌曲名片（`.pi-home__card` 的 bottom: 22px）同一条线。 */
+  bottom: 22px;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(300px, calc(50vw - 160px));
+  padding: 8px 14px 8px 8px;
+  border: 1px solid var(--pi-glass-border-light);
+  border-radius: 14px;
+  background: var(--pi-glass-bg-light);
+  backdrop-filter: var(--pi-glass-blur-light);
+  -webkit-backdrop-filter: var(--pi-glass-blur-light);
+  box-shadow: var(--pi-glass-highlight), var(--pi-glass-edge), var(--pi-shadow-float);
+  pointer-events: none;
+  /* 从下往上冒：和左下角的歌曲名片同一个方向语言，切换的交接才读得顺。
+     用户 m00001 第 6 条：缩放轴钉在**左下角**，和歌曲名片那条 `pi-home-card-morph` 用同一个
+     原点——两张卡先后从同一个角长出来，交接就看不出「换了一张」。 */
+  transform-origin: left bottom;
+  /* 用户 m00736 第 4 条（原话：「切换歌曲时小名片变幻到歌曲名片的动画更流畅生动一些」）：
+     这一半也换成同一种「先过冲再落定」的语汇（0.42s，中途 -3px / scale 1.02），
+     和接过它的 `global.css` 里 `pi-home-card-morph`（同样以左下角为轴、同样两次过冲）
+     说同一种话——两半连起来才是「小名片放大变成歌曲名片」，不再是一张卡消失、另一张另起。 */
+  animation: pi-upnext-in 0.42s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes pi-upnext-in {
+  0% {
+    opacity: 0;
+    transform: translateY(18px) scale(0.9);
+  }
+  64% {
+    opacity: 1;
+    transform: translateY(-3px) scale(1.02);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.pi-upnext__cover {
+  flex: 0 0 auto;
+  width: 42px;
+  height: 42px;
+  border-radius: 9px;
+  object-fit: cover;
+  box-shadow: var(--pi-shadow-slots);
+}
+
+.pi-upnext__cover--empty {
+  display: block;
+  background: color-mix(in srgb, var(--pi-text) 12%, transparent);
+}
+
+.pi-upnext__body {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.pi-upnext__kicker {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  color: var(--pi-text-soft, var(--pi-primary-deep));
+}
+
+.pi-upnext__name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--pi-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pi-upnext__artists {
+  font-size: 11px;
+  color: var(--pi-text-soft, var(--pi-text));
+  opacity: 0.72;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 窄窗：和歌曲名片同一条规矩（`global.css` 的 `@media (max-width: 900px)` 把名片挪到 16px）
+   ——两张卡必须一起挪，不然交接时那个「同一个左下角」就错开了。 */
+@media (max-width: 900px) {
+  .pi-upnext {
+    left: 16px;
+    bottom: 16px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pi-upnext {
+    animation: none;
+  }
+}
+
+/* ==== 歌曲名片（`.pi-home__card`）的封面四角键 + 右下角收藏心 ======================
+   第十九轮第 8 条（用户 m02213）。
+   这张名片本体的布局在 `styles/global.css` 的 `.pi-home__card` 里；本轮的文件归属把
+   「名片改造」分配到了这张表，所以新增规则落在这里。所有选择器都带 `.pi-home__card`
+   前缀（特异度 ≥ 0-2-0），不依赖两张表谁先并入，也不会误伤别处的同名类。
+   对应 JSX 在 `pages/HomePage.tsx` 的 `HomeCard`：
+   - `.pi-home__coverwrap` 里是封面 + 四颗 `data-card-action` 键（mode / share / comments / like；
+     左上角那颗用户 m03805 第 4 条从 `info` 改成了 `mode`）；
+   - `.pi-home__footer` 是最后一行（左音质、右 `data-card-like` 小爱心）。
+   ----------------------------------------------------------------------------- */
+
+/* 封面 + 四角键的定位盒子。`line-height: 0` 干掉 `<img>` 的行内基线缝——
+   名片是 flex 列，不处理的话封面下面会莫名多出几像素。 */
+.pi-home__card .pi-home__coverwrap {
+  position: relative;
+  display: block;
+  width: 100%;
+  line-height: 0;
+}
+
+/* 四角键：常态**完全藏起来**（连指针事件一起收掉，免得在封面上挖出四个点不到的死区），
+   只有鼠标悬停在封面上、或键盘 tab 进这个盒子时才浮现。 */
+.pi-home__card .pi-home__coverbtn {
+  position: absolute;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 50%;
+  background: rgba(12, 16, 26, 0.42);
+  color: rgba(255, 255, 255, 0.94);
+  cursor: pointer;
+  opacity: 0;
+  transform: scale(0.84);
+  pointer-events: none;
+  -webkit-backdrop-filter: blur(7px);
+  backdrop-filter: blur(7px);
+  transition:
+    opacity 0.18s ease,
+    transform 0.18s cubic-bezier(0.22, 0.61, 0.36, 1),
+    background 0.16s ease,
+    color 0.16s ease;
+}
+
+.pi-home__card .pi-home__coverbtn--tl {
+  top: 7px;
+  left: 7px;
+}
+
+.pi-home__card .pi-home__coverbtn--tr {
+  top: 7px;
+  right: 7px;
+}
+
+.pi-home__card .pi-home__coverbtn--bl {
+  bottom: 7px;
+  left: 7px;
+}
+
+.pi-home__card .pi-home__coverbtn--br {
+  bottom: 7px;
+  right: 7px;
+}
+
+.pi-home__card .pi-home__coverwrap:hover .pi-home__coverbtn,
+.pi-home__card .pi-home__coverwrap:focus-within .pi-home__coverbtn {
+  opacity: 1;
+  transform: scale(1);
+  pointer-events: auto;
+}
+
+.pi-home__card .pi-home__coverbtn:hover {
+  background: rgba(12, 16, 26, 0.66);
+}
+
+.pi-home__card .pi-home__coverbtn:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.9);
+  outline-offset: 2px;
+}
+
+/* 右下角那颗 = 收藏（`data-card-action='like'`）：已收藏时和名片里的小爱心一起点亮。 */
+.pi-home__card .pi-home__coverbtn[data-card-action='like'][data-on='true'] {
+  color: #ff6b81;
+  background: rgba(12, 16, 26, 0.6);
+}
+
+/* 左下角那颗 = 评论（`data-card-action='comments'`）：评论页开着的时候点亮，用的是和收藏键
+   同一套 `data-on` 约定（用户 m03805 第 4 条要求这颗键能开也能关，点亮才看得出「现在是开着的」）。 */
+.pi-home__card .pi-home__coverbtn[data-card-action='comments'][data-on='true'] {
+  background: rgba(12, 16, 26, 0.72);
+  border-color: rgba(255, 255, 255, 0.34);
+}
+
+.pi-home__card .pi-home__coverbtn[disabled] {
+  cursor: default;
+}
+
+/* 名片最后一行：左音质、右爱心——爱心就在名片的右下角。 */
+.pi-home__card .pi-home__footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+  min-width: 0;
+}
+
+/* `.pi-home__quality` 自带 `margin-top: 2px`（那是它独占一行时的间距），
+   交给 `.pi-home__footer` 之后它只负责占满左边、把爱心顶到右侧。 */
+.pi-home__card .pi-home__footer .pi-home__quality {
+  flex: 1 1 auto;
+  margin-top: 0;
+}
+
+.pi-home__card .pi-home__like {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  /* 24px 的圆形命中区比 16px 的图标大，靠负外边距让它不把名片撑高、也不偏出卡片右沿太多。 */
+  margin: -3px -2px -3px 0;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--pi-text-tertiary);
+  cursor: pointer;
+  transition:
+    color 0.16s ease,
+    background 0.16s ease,
+    transform 0.16s ease;
+}
+
+.pi-home__card .pi-home__like:hover {
+  color: var(--pi-text);
+  background: color-mix(in srgb, var(--pi-text) 12%, transparent);
+}
+
+/* 点亮态：`data-card-like='true'` = 这首歌已经在「我的喜爱」里。
+   心形路径本身是描边图形，这里把它填实 + 染成主色，读起来才是「点亮」。 */
+.pi-home__card .pi-home__like[data-card-like='true'] {
+  color: var(--pi-primary);
+}
+
+.pi-home__card .pi-home__like[data-card-like='true'] svg {
+  fill: currentColor;
+}
+
+.pi-home__card .pi-home__like:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+/* 提示行（收藏成功 / 要登录 / 链接已复制）：`.pi-home__toast` 本体在 global.css 里，
+   这里只把它的位置从名片内部挪到**正上方**，免得盖住封面四角键与歌名。 */
+.pi-home__card .pi-home__toast {
+  bottom: calc(100% + 8px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pi-home__card .pi-home__coverbtn,
+  .pi-home__card .pi-home__like {
+    transition: none;
+  }
+}

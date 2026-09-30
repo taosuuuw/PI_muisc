@@ -1,0 +1,15 @@
+/**
+ * 心象（cadenza）歌词动效的补充样式（folia-major cadenza 复刻专用）。
+ *
+ * `lyric-moods.css` 把 `.pi-lyriccadenza__word` 的 `transform-origin` 定在左上角（`0 0`）。
+ * folia 的 cadenza 则把旋转 / 缩放的锚点放在**词心偏上**：它的 `outer` 层把 translate 落在
+ * `(词心 x, 42% 词高处)`，`inner` 再反向抵消回左上角。两者在静止帧（scale 1 / rotate 0）
+ * 完全一致，但动起来差很多——左上角锚点会让长词在缩放 / 旋转时整块往右下甩
+ * （靠视口边缘的词会被裁，宽词尤其明显），词心锚点才是参考实现里那种「原地放大、原地摆动」。
+ *
+ * 这里用更高特异性（`.pi-lyricmood--cadenza` 前缀）把它覆盖成 folia 的锚点。不写进
+ * `lyric-moods.css` 是因为那个文件同时服务别的主题、且并行有人在改。
+ */
+.pi-lyricmood--cadenza .pi-lyriccadenza__word {
+  transform-origin: 50% 42%;
+}

@@ -1,0 +1,375 @@
+/*
+ * 快捷拍立得卡片（第十六轮第 6 条）。
+ *
+ * 皮肤来自设置页那张「拍立得」：`styles/settings-frame.css` 里的
+ * `.pi-settings-frame .pi-card { padding: 14px 16px 24px; border: 1px solid var(--pi-divider);
+ *   border-radius: 18px; background: var(--pi-surface);
+ *   box-shadow: var(--pi-glass-edge), var(--pi-shadow-float); }`
+ * ——左右 16 / 上 14 / 下 24，底边更厚所以像一张照片。
+ * 那条规则挂在 `.pi-settings-frame` 作用域下，而这两张卡是浮在播放页上的独立浮层，
+ * 所以数值在这里重写了一遍，另外补了一件设置页不需要的东西：底部说明条（照片下沿的白边）。
+ * 曾有的「轻微旋转」（摊在桌上的照片）已按用户 m01402 第 5 条删掉：卡片静止，不随指针倾斜。
+ *
+ * 颜色一律走 tokens.css 的 `--pi-*`，不写死色值，暗档自动跟着变。
+ */
+
+.pi-quick-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 46;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  /* 卡片自己吃指针事件；这一层只是定位容器。 */
+  pointer-events: none;
+}
+
+.pi-quick-layer__backdrop {
+  position: absolute;
+  inset: 0;
+  pointer-events: auto;
+  background: color-mix(in srgb, var(--pi-text) 22%, transparent);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+  animation: pi-quick-fade-in 0.18s ease;
+}
+
+@keyframes pi-quick-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.pi-quick-card {
+  position: relative;
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  width: min(380px, 90vw);
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+  /* 拍立得：左右 16 / 上 16 / 下 26（下沿更厚）。 */
+  padding: 16px 16px 26px;
+  border: 1px solid var(--pi-divider);
+  border-radius: 18px;
+  background: var(--pi-surface);
+  box-shadow: var(--pi-glass-edge), var(--pi-shadow-float);
+  animation: pi-quick-card-in 0.26s cubic-bezier(0.34, 1.4, 0.64, 1);
+}
+
+/*
+ * 变体类名（`.pi-quick-card--playlists` / `--settings`）仍由组件挂在卡片上做区分，
+ * 但两张卡都**不再旋转**：原先 `.pi-quick-card--playlists { rotate(-1.5deg) }` /
+ * `--settings { rotate(1.2deg) }` 配一条 `:hover, :focus-within { rotate(0deg) }`，
+ * 于是指针一进一出卡片，边框就在「斜」和「正」之间跳（用户 m01402 第 5 条报的
+ * 「鼠标移动会让边框倾斜」）。三条一起删掉，卡片静止；只有设置卡另给宽度。
+ */
+.pi-quick-card--settings {
+  width: min(400px, 92vw);
+}
+
+@keyframes pi-quick-card-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.94);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.pi-quick-card__head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.pi-quick-card__kicker {
+  color: var(--pi-text-tertiary);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.pi-quick-card__title {
+  flex: 1;
+  margin: 0;
+  color: var(--pi-text);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.pi-quick-card__close {
+  align-self: center;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--pi-divider);
+  border-radius: 50%;
+  background: var(--pi-bg-subtle);
+  color: var(--pi-text-sub);
+  cursor: pointer;
+  transition:
+    color 0.16s ease,
+    background 0.16s ease;
+}
+
+.pi-quick-card__close:hover {
+  color: var(--pi-text);
+  background: var(--pi-primary-weak);
+}
+
+.pi-quick-card__body {
+  display: grid;
+  gap: 10px;
+}
+
+/* 拍立得下沿的白边：一句使用说明。 */
+.pi-quick-card__caption {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--pi-divider);
+  color: var(--pi-text-tertiary);
+  font-size: 11px;
+  text-align: center;
+}
+
+/* ------------------------------------------------------------------ *
+ * 六宫格
+ * ------------------------------------------------------------------ */
+
+.pi-quick-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.pi-quick-item {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  padding: 12px 6px 10px;
+  border: 1px solid transparent;
+  border-radius: 14px;
+  background: var(--pi-bg-subtle);
+  color: var(--pi-text);
+  cursor: pointer;
+  transition:
+    transform 0.16s ease,
+    background 0.16s ease,
+    box-shadow 0.16s ease;
+}
+
+.pi-quick-item:hover {
+  transform: translateY(-1px);
+  background: var(--pi-primary-weak);
+  box-shadow: var(--pi-shadow-card);
+}
+
+.pi-quick-item__icon {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: var(--pi-surface);
+  box-shadow: var(--pi-glass-edge);
+  color: var(--pi-primary-deep);
+}
+
+/*
+ * 六块图标视觉尺寸归一化（用户 m02898 第 1 条：六个图标看起来大小不统一）。
+ *
+ * 根因不是 `size` prop——六个 `<Icon>` 都是 `size={20}`，`components/Icons.tsx:106` 也都是
+ * 同一个 `viewBox="0 0 24 24"`。不统一的是**每个 path 自己画多大**（描边 1.7 也算进去，
+ * 所以下面把每个方向的 +0.85 余量算进包围盒）：
+ *
+ *   star      4.2–19.8 × 4–18.9   → 17.3 × 16.6（最大边 17.3）
+ *   list      4–20 × 6–18         → 17.7 × 13.7（最大边 17.7）
+ *   compass   3–21 × 3–21（圆）    → 19.7 × 19.7（最大边 19.7）
+ *   clock     3–21 × 3–21（圆）    → 19.7 × 19.7（最大边 19.7）
+ *   download  5–19 × 4–20         → 15.7 × 17.7（最大边 17.7）
+ *   waveform  4–20 × 4.5–19.5     → 17.7 × 16.7（最大边 17.7）
+ *
+ * 也就是说 compass / clock 这两颗「整圆」比其余四颗大出约 11%，star 又略小；同一排看过去就是
+ * 「大小不统一」。这里以**描边后最大边**为准把六颗归到 17.7（四颗本来就 17.7，所以只需要动
+ * compass / clock 与 star），归完之后最大边全部落在 17.65–17.73（差 <0.5%）：
+ * `star × 1.02`、`compass/clock × 0.90`、`list/download/waveform × 1.00`（不写规则）。
+ *
+ * 为什么用 CSS `transform: scale()` 而不是改 `Icons.tsx` 里那些 path / 单独给它们换 `viewBox`：
+ * 那六个图标在别的页面也在用（`Icon` 只有一个固定 `viewBox`，改 path 或给 `Icon` 加 per-icon
+ * `viewBox` 都会同时挪动**所有**调用方的视觉），而这一条只挂在 `.pi-quick-item[data-quick-item=…]`
+ * 下——恰好是「去哪儿听」六块自己的抓手（冒烟探针也认它），作用域不外溢。
+ */
+.pi-quick-item__icon > svg {
+  display: block;
+  width: 20px;
+  height: 20px;
+}
+
+.pi-quick-item[data-quick-item='star'] .pi-quick-item__icon > svg {
+  transform: scale(1.02);
+}
+
+.pi-quick-item[data-quick-item='compass'] .pi-quick-item__icon > svg,
+.pi-quick-item[data-quick-item='clock'] .pi-quick-item__icon > svg {
+  transform: scale(0.9);
+}
+
+.pi-quick-item__label {
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.pi-quick-item__note {
+  color: var(--pi-text-tertiary);
+  font-size: 10px;
+  line-height: 1.3;
+  text-align: center;
+}
+
+/* 有通道但今天是空的：虚线框提示「点进去也是空的」。 */
+.pi-quick-item[data-quick-item-state='empty'] {
+  border-color: var(--pi-divider);
+  border-style: dashed;
+  background: transparent;
+}
+
+/* 还没有数据来源的那条链：压暗、虚线，但仍然可点（由使用方决定点它做什么）。 */
+.pi-quick-item[data-quick-item-state='unavailable'] {
+  border-color: var(--pi-divider);
+  border-style: dashed;
+  background: transparent;
+  color: var(--pi-text-sub);
+  opacity: 0.62;
+}
+
+.pi-quick-item[data-quick-item-state='unavailable'] .pi-quick-item__icon {
+  color: var(--pi-text-tertiary);
+}
+
+/* ------------------------------------------------------------------ *
+ * 迷你设置
+ * ------------------------------------------------------------------ */
+
+.pi-quick-switches {
+  display: grid;
+  gap: 8px;
+}
+
+.pi-quick-switch {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 4px 10px;
+  padding: 9px 12px;
+  border-radius: 14px;
+  background: var(--pi-bg-subtle);
+}
+
+.pi-quick-switch__label {
+  color: var(--pi-text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.pi-quick-switch__value {
+  justify-self: end;
+  color: var(--pi-text-sub);
+  font-size: 11.5px;
+}
+
+.pi-quick-switch__choices {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.pi-quick-switch__hint {
+  grid-column: 1 / -1;
+  color: var(--pi-text-tertiary);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.pi-quick-chip {
+  padding: 4px 10px;
+  border: 1px solid var(--pi-divider);
+  border-radius: 999px;
+  background: var(--pi-surface);
+  color: var(--pi-text-sub);
+  font-size: 11.5px;
+  cursor: pointer;
+  transition:
+    color 0.16s ease,
+    background 0.16s ease,
+    border-color 0.16s ease;
+}
+
+.pi-quick-chip:hover {
+  color: var(--pi-text);
+  border-color: var(--pi-primary);
+}
+
+.pi-quick-chip[data-active='true'] {
+  border-color: var(--pi-primary);
+  background: var(--pi-primary-weak);
+  color: var(--pi-primary-deep);
+  font-weight: 600;
+}
+
+/*
+ * 账号行（`.pi-quick-account*` / 旧的 `.pi-quick-link`）已经搬到 `styles/quick-account.css`：
+ * 用户 m02213 第 7 条把那一栏从「标题 + 用户名 + 蓝色文字链接」改成
+ * 「头像 + 昵称块 + 独立按钮」，规则数量和层级都变了，单独一张表更好读。
+ * 那一行仍然带 `.pi-quick-switch` 基类，所以底色 / 圆角 / 内边距继续吃上面的规则。
+ */
+
+.pi-quick-loading {
+  margin: 0;
+  padding: 14px 0;
+  color: var(--pi-text-sub);
+  font-size: 12.5px;
+  text-align: center;
+}
+
+.pi-quick-more {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  width: 100%;
+  margin-top: 12px;
+  padding: 10px 14px;
+  border: 0;
+  border-radius: var(--pi-radius-btn);
+  background: var(--pi-primary);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.16s ease;
+}
+
+.pi-quick-more:hover {
+  background: var(--pi-primary-hover);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pi-quick-card,
+  .pi-quick-layer__backdrop {
+    animation: none;
+  }
+  .pi-quick-item:hover {
+    transform: none;
+  }
+}

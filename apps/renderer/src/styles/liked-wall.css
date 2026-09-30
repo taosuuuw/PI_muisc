@@ -1,0 +1,144 @@
+/* ------------------------------------------------------------------ *
+ * 「我的喜欢」封面墙（用户 m06982 第 4 条）
+ *
+ * 独立文件而不是塞进 global.css：这一屏的格子尺寸/入场波/hover 数值是一整套
+ * 参数，放在一起改的时候不用在 2600 行里来回找。
+ * ------------------------------------------------------------------ */
+
+.pi-wall {
+  /* 格子尺寸随窗口收放，但**列数固定 12**：列数一变，铺法算出来的位置就全变了。
+     6.6vw 是照「12 列 + 11 个 8px 缝」在 960px 宽的最小窗里也放得下反推的。 */
+  --pi-wall-cell: clamp(48px, 6.6vw, 104px);
+  --pi-wall-gap: 8px;
+  --pi-wall-radius: 2px;
+  display: grid;
+  grid-template-columns: repeat(12, var(--pi-wall-cell));
+  grid-auto-rows: var(--pi-wall-cell);
+  /* 位置全部由 TS 端算好、显式写在 grid-column/grid-row 上（那边解释了为什么不用自动排布）。
+     这里的 dense 只是兜底：万一以后改成自动排布，也不会在右边留洞。 */
+  grid-auto-flow: dense;
+  gap: var(--pi-wall-gap);
+  justify-content: center;
+  margin: 4px 0 12px;
+}
+
+.pi-wall__tile {
+  position: relative;
+  overflow: hidden;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  /* 海报墙刻意接近方片：圆角一大就从「拼贴」变成「卡片列表」了 */
+  border-radius: var(--pi-wall-radius);
+  background: var(--pi-bg-subtle);
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+  /* 入场波：从视口左上角那格按曼哈顿距离铺开，18ms 一格、最多等 340ms。
+     fill-mode 必须是 backwards —— 用 both/forwards 的话动画结束后 `to { transform: none }`
+     会一直压着下面的 hover 缩放（transform 动画的优先级高于普通声明）。 */
+  animation: pi-wall-drop 0.42s cubic-bezier(0.2, 0.9, 0.25, 1) backwards;
+  animation-delay: min(calc(var(--pi-wave, 0) * 18ms), 340ms);
+  transition:
+    transform 0.18s ease,
+    box-shadow 0.18s ease;
+  /* 刻意不给卡片加 will-change：folia 的记录里说它在分数缩放下会出现 1px 接缝，
+     我们这里同样宁可让合成器自己决定何时提升。 */
+}
+
+@keyframes pi-wall-drop {
+  from {
+    transform: translateY(-90px) scale(0.88);
+    opacity: 0;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+
+.pi-wall__cover {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.pi-wall__cover--empty {
+  display: grid;
+  place-items: center;
+  color: var(--pi-text-tertiary);
+  background: linear-gradient(150deg, var(--pi-bg-subtle), color-mix(in srgb, var(--pi-primary) 22%, transparent));
+}
+
+/* 歌名/歌手只在悬停时出现：一整面墙都是文字就没人看封面了 */
+.pi-wall__meta {
+  position: absolute;
+  inset: auto 0 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 20px 8px 6px;
+  text-align: left;
+  color: #fff;
+  background: linear-gradient(180deg, transparent, rgba(8, 12, 20, 0.78));
+  opacity: 0;
+  transform: translateY(6px);
+  transition:
+    opacity 0.18s ease,
+    transform 0.18s ease;
+}
+
+.pi-wall__name {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.25;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+}
+
+.pi-wall__artists {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 11px;
+  opacity: 0.86;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+}
+
+/* hover / 键盘聚焦：只抬这一张（不给相邻方块加任何联动），阴影给浮起来的感觉 */
+.pi-wall__tile:hover,
+.pi-wall__tile:focus-visible {
+  outline: none;
+  transform: scale(1.045);
+  z-index: 2;
+  box-shadow: 0 14px 30px rgba(15, 40, 90, 0.34);
+}
+
+.pi-wall__tile:hover .pi-wall__meta,
+.pi-wall__tile:focus-visible .pi-wall__meta {
+  opacity: 1;
+  transform: none;
+}
+
+/* 正在听的那首：一圈内描边，不抢封面 */
+.pi-wall__tile[data-active='true'] {
+  box-shadow: inset 0 0 0 2px var(--pi-primary);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pi-wall__tile {
+    animation: none;
+  }
+  /* 位移/缩放型的交互一律关掉，但「悬停显示歌名」这个信息性变化保留 */
+  .pi-wall__tile:hover,
+  .pi-wall__tile:focus-visible {
+    transform: none;
+  }
+  .pi-wall__meta {
+    transform: none;
+  }
+}

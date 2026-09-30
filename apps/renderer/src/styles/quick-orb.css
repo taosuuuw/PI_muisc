@@ -1,0 +1,419 @@
+/*
+ * 快捷球（第十六轮第 6 条）：播放页空白处按下去，就地冒出的圆形 PI 键。
+ * 第十七轮第 1 条改了三处：半径 60%、拖动时跟手、有拖动趋势就摊开一条暗槽（图 1）。
+ * 第十八轮第 2 条（用户 m01482）又改了两处：
+ *   ① 球不再落在「按住的那一点」，而是宿主给的**固定家位**（视口右侧、垂直居中，
+ *      见 `PiQuickOrb.tsx` 的 `quickOrbHomePoint`）；
+ *   ② 指针离开球的互动范围时，整颗球向内**塌陷**收掉（下面的 `pi-quick-orb-out`）；
+ *   ③ 暗槽按参考图 2 收拾：槽身从「深色内凹槽」换成图 2 那种**浅色描边药丸**，
+ *      槽头的描边胶囊换成图 2 那颗**白色圆钮**（图标装钮里，文案留在钮外）。
+ * 用户 m00001 第 1 条又改了两处（推翻第十八轮第 2 条的 ①）：
+ *   ① 球重新落在「按住的那一点」（宿主给 `clientX/clientY`）；第十八轮那个固定家位现在只给
+ *      键盘快捷键兜底；
+ *   ② 拖动**不再搬基准点**：根节点钉死，被拖的是球在暗槽里的位置——位移加在
+ *      `.pi-quick-orb__sled` 这层壳上（球自己那份 hover / 拖动的 scale 仍由 CSS 说了算）。
+ *
+ * 用户 m00736 第 2 条（参考图 1 现状 → 参考图 2 目标）：
+ *   ① **暗槽缩短**：`--pi-orb-slot-len` 118 → **78px**，不再是从球心出去一条长条，
+ *      而是参考图 2 那种「小胶囊」；球在槽里的行程也随宿主那边收到 32px。
+ *   ② **槽里的方向图案扁平化**：参考图 2 左端那颗图案是**直接嵌在槽身材质上的**
+ *      （无圆环、无边框、无底色 ⇒ `.pi-quick-orb__groove-icon`），不再是装着图标的白钮。
+ *   ③ **抬起的白钮只留槽头一颗**（`.pi-quick-orb__slot-knob`，参考图 2 右端），
+ *      给它更实的白与更清楚的投影。
+ *   ④ 球「只在按住期间存在」是 `PiQuickOrb.tsx` 的 `onRelease` 交给宿主的，CSS 这边
+ *      沿用原来那条 `pi-quick-orb-out` 收起动画，不用改。
+ *
+ * 用户 m00002 第 1/2 条（参考图 2、图 3）又改了四处：
+ *   ① **槽宽与球对齐**：槽的横截面一直是写死的 36px，而球在拖动中被 `scale(1.08)` 撑到
+ *      38.88px —— 量图 3 得到「球 48 图像 px / 槽 43 图像 px」，正好差这 8%，这就是
+ *      「暗槽宽度并没有与圆球对齐」。现在槽宽 = `calc(球的直径 × 拖动放大倍数)`，两边同源。
+ *   ② **槽上不留文字**：整块 `.pi-quick-orb__slot`（竖排文案 + 白钮 + 方向箭头）删掉。
+ *   ③ **不要白色边框**：球体那条 `border: 1px solid var(--pi-glass-border-light)`
+ *      （`rgba(255,255,255,0.58)`）去掉 —— 量图 3 过球心的横线，球左右边缘各是一根单像素
+ *      亮线（亮度 226，背景 163~166），那就是这条白描边。槽身那圈是**深色**描边（`--pi-text` 13%），
+ *      不是白的，保留。
+ *   ④ **末端放图标**：`--pi-orb-flat-inset` 从写死的 36px 改成
+ *      `calc(var(--pi-orb-slot-len) - var(--pi-orb-groove-w) / 2)` = 58.56px，
+ *      也就是把图标正对到槽末端那个圆头的圆心上。
+ *      方向锁（用户 m00002 第 3 条）在 `PiQuickOrb.tsx` / `quick-swipe.ts`，CSS 不参与。
+ *
+ * 视觉直接沿用老悬浮球的球体（`global.css` 的 `.pi-orb__ball` / `.pi-orb__logo`）：
+ * 「透光」那一档玻璃（--pi-glass-bg-light / --pi-glass-blur-light /
+ * --pi-glass-border-light），让底下的沉浸式封面颜色透上来。
+ * 这里刻意**不** import global.css，只用 :root 上的 --pi-* token，所以暗档自动跟着变。
+ */
+
+.pi-quick-orb {
+  position: fixed;
+  z-index: 45;
+  /* 球的直径（px）。第十七轮第 1 条「半径减到 60%」：60 → 36。球的坐标由组件钳在视口内。 */
+  --pi-orb-ball-size: 36px;
+  /* 拖动时球的放大倍数。用户 m00002 第 1 条起它**同时**决定暗槽的横截面宽度，
+     所以提成变量；下面 `[data-quick-orb-drag='true'] .pi-quick-orb__ball` 的 transform 也用它。 */
+  --pi-orb-ball-scale: 1.08;
+  /* 暗槽的横截面宽度（用户 m00002 第 1 条）。拖动中的球被 scale 撑到 36 × 1.08 = 38.88px，
+     而槽原来是写死的 36px —— 差的就是这 8%，量图 3 得「球 48 图像 px / 槽 43 图像 px」。
+     现在跟着球一起算：球多大，槽就多宽。 */
+  --pi-orb-groove-w: calc(var(--pi-orb-ball-size) * var(--pi-orb-ball-scale));
+  width: var(--pi-orb-ball-size);
+  height: var(--pi-orb-ball-size);
+  /* 暗槽往某个方向摊开后的总长（球心到槽末端）——用户 m00736 第 2 条从 118px 收到一颗
+     「小胶囊」（参考图 2）；用户 m00002 第 2 条把槽头那颗白钮删了，长度不变。 */
+  --pi-orb-slot-len: 78px;
+  /* 球心到「槽末端那枚扁平图标」中心的距离（用户 m00002 第 2 条：图标要落在**末端**）。
+     槽末端是个半径 `--pi-orb-groove-w / 2` 的圆头，圆心离球心 `slot-len − groove-w / 2`
+     = 78 − 19.44 = 58.56px；图标中心放在这儿，它就正好嵌在那个圆头正中。
+     （用户 m00736 第 2 条时这里是写死的 36px，图标贴在槽身中段、离末端还差一大截。） */
+  --pi-orb-flat-inset: calc(var(--pi-orb-slot-len) - var(--pi-orb-groove-w) / 2);
+  /* 球心对准调用方给的坐标；data-quick-orb-x/y 报的仍是原始点。 */
+  transform: translate(-50%, -50%);
+  /* 根节点不吃指针事件：点在留白上应当穿透到播放页（否则 HomePage 的
+     「按空白处」判定会把这一下吞掉）。只有球体自己 pointer-events: auto。 */
+  pointer-events: none;
+  touch-action: none;
+  -webkit-app-region: no-drag;
+  animation: pi-quick-orb-in 0.22s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@keyframes pi-quick-orb-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.6);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+
+/*
+ * 第十八轮第 2 条：指针离开互动范围之后，球「向内塌陷」收掉（用户原话
+ * 「消失有流畅的向内塌陷动画」）。宿主判定到离开时先置 `data-quick-orb-leaving`，
+ * 播完这一下（0.2s，与 `QUICK_ORB_LEAVE_MS` 对齐）才真正卸载球。
+ */
+@keyframes pi-quick-orb-out {
+  from {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.32);
+  }
+}
+
+.pi-quick-orb[data-quick-orb-leaving='true'] {
+  animation: pi-quick-orb-out 0.2s cubic-bezier(0.4, 0, 0.72, 1) forwards;
+  /* 正在塌陷的球不该再吃到指针（它马上就要没了）。 */
+  pointer-events: none;
+}
+
+/*
+ * 球在暗槽里滑动的那层壳（用户 m00001 第 1 条）。
+ *
+ * 原话：「长按拖动不会移动基准点，只会将圆球在暗槽里移动」。所以位移加在这层 36×36 的壳上，
+ * 根节点（基准点）与暗槽都不动 —— 观感就是球顺着槽滑出去、松手再滑回槽底。
+ * 拖的时候 `transition: none` 直跟指针；松手（`data-quick-orb-drag` 落回 false）才走
+ * 上面那条回位动画，所以「回槽底」是滑回去的、不是跳回去的。
+ */
+.pi-quick-orb__sled {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  transform: translate(var(--pi-orb-sled-x, 0px), var(--pi-orb-sled-y, 0px));
+  transition: transform 0.24s cubic-bezier(0.33, 1, 0.68, 1);
+}
+
+.pi-quick-orb[data-quick-orb-drag='true'] .pi-quick-orb__sled {
+  transition: none;
+}
+
+/*
+ * 暗槽：一条凹进去的槽 + 槽头上的图标胶囊。
+ *
+ * 为什么用两层（.pi-quick-orb__groove 定位 / .pi-quick-orb__groove-track 动画）：
+ * 槽的**位置**随方向变（左槽贴右缘、上槽贴下缘……），而**长出动画**要从贴着球的
+ * 那一端开始缩放。合成一个元素的话，缩放原点会和定位 transform 打架。分开之后
+ * 定位交给外层、`transform-origin` 交给内层，各自干净。
+ */
+.pi-quick-orb__groove {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.14s ease;
+}
+
+.pi-quick-orb__groove-track {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 999px;
+  /*
+   * 用户 m04183 第 3 条：「暗槽的颜色应该是与周围亮度有区别，给人是一个槽的感觉」。
+   * 第十八轮第 2 条那颗「浮在底板上的浅色描边药丸」（半透明白 + 内高光 + 外投影）
+   * 在浅色/彩色底上等于没有——半透明白压在白底上就是白，用户抱怨的就是这个。
+   * 现在换回**凹槽**读法：
+   *   ① 填充「比页面底色暗一档的浅灰」= `--pi-text` 8% 混进 `--pi-bg-subtle`，
+   *      白底上约等于 #e3e8ed（比 #ffffff 暗约 1.23:1 的相对亮度，就是一档灰）；
+   *   ② 光从上面来 —— 槽的**上内壁**落在阴影里（inset 深影）、**下内壁**接住光
+   *      （inset 白色反光）。这一对内外壁才是「凹进去」的读法；
+   *   ③ 原来那层 `0 6px 18px` 的**外**投影是「浮起来」的读法，和凹槽相反，删掉。
+   * 填充是不透明的（`--pi-text` 与 `--pi-bg-subtle` 都不透明），所以压在彩色封面上
+   * 也不会「透掉」；`backdrop-filter` 因此没有任何可见作用（模糊只影响元素背后的内容，
+   * 不透明填充后面什么也看不到），留着只白开一层合成层，故一并删掉。
+   */
+  background: color-mix(in srgb, var(--pi-text) 8%, var(--pi-bg-subtle));
+  border: 1px solid color-mix(in srgb, var(--pi-text) 10%, transparent);
+  box-shadow:
+    inset 0 2px 4px color-mix(in srgb, var(--pi-text) 16%, transparent),
+    inset 0 -1px 1px color-mix(in srgb, #ffffff 70%, transparent);
+}
+
+/*
+ * 用户 m04183 第 3 条：暗档同理——槽要比四周**亮一点点**才有边界。
+ * 在 `--pi-bg` #0f1218 的页面上，`#ffffff` 9% 混进 `--pi-bg-subtle` #141a24 ≈ #292f38
+ * （相对亮度约 1.39:1，比底色亮一档，与用户图 5「有亮度差的槽」一致）。
+ * 这里同样用**不透明**填充，压在任何封面上都不会透掉。
+ * 描边不再覆写：基线的 `color-mix(in srgb, var(--pi-text) 10%, transparent)` 在暗档会
+ * 自动翻成近白的 `rgba(232,236,243,0.10)`（`--pi-text` = #e8ecf3），正好当暗底上的细亮边。
+ * 只有内投影必须覆写：基线那套用 `--pi-text` 当墨色，暗档会翻成白色 = 亮影，凹槽就读反了；
+ * 所以这里换成纯黑更重的内影（暗底上浅影看不出来），下内壁仍留一道更亮的 1px 反光。
+ */
+[data-theme='dark'] .pi-quick-orb__groove-track {
+  background: color-mix(in srgb, #ffffff 9%, var(--pi-bg-subtle));
+  box-shadow:
+    inset 0 2px 5px rgba(0, 0, 0, 0.55),
+    inset 0 -1px 1px color-mix(in srgb, #ffffff 14%, transparent);
+}
+
+.pi-quick-orb[data-quick-orb-hint='left'] .pi-quick-orb__groove,
+.pi-quick-orb[data-quick-orb-hint='right'] .pi-quick-orb__groove {
+  top: 50%;
+  /* 槽的横截面（用户 m00002 第 1 条）跟着球走，不再是写死的 36px。 */
+  height: var(--pi-orb-groove-w);
+  width: var(--pi-orb-slot-len);
+  margin-top: calc(var(--pi-orb-groove-w) / -2);
+  opacity: 1;
+}
+
+.pi-quick-orb[data-quick-orb-hint='left'] .pi-quick-orb__groove {
+  right: 50%;
+}
+
+.pi-quick-orb[data-quick-orb-hint='right'] .pi-quick-orb__groove {
+  left: 50%;
+}
+
+.pi-quick-orb[data-quick-orb-hint='left'] .pi-quick-orb__groove-track {
+  transform-origin: right center;
+  animation: pi-quick-orb-groove-x 0.22s cubic-bezier(0.33, 1, 0.68, 1);
+}
+
+.pi-quick-orb[data-quick-orb-hint='right'] .pi-quick-orb__groove-track {
+  transform-origin: left center;
+  animation: pi-quick-orb-groove-x 0.22s cubic-bezier(0.33, 1, 0.68, 1);
+}
+
+.pi-quick-orb[data-quick-orb-hint='up'] .pi-quick-orb__groove,
+.pi-quick-orb[data-quick-orb-hint='down'] .pi-quick-orb__groove {
+  left: 50%;
+  /* 槽的横截面（用户 m00002 第 1 条）跟着球走，不再是写死的 36px。 */
+  width: var(--pi-orb-groove-w);
+  height: var(--pi-orb-slot-len);
+  margin-left: calc(var(--pi-orb-groove-w) / -2);
+  opacity: 1;
+}
+
+.pi-quick-orb[data-quick-orb-hint='up'] .pi-quick-orb__groove {
+  bottom: 50%;
+}
+
+.pi-quick-orb[data-quick-orb-hint='down'] .pi-quick-orb__groove {
+  top: 50%;
+}
+
+.pi-quick-orb[data-quick-orb-hint='up'] .pi-quick-orb__groove-track {
+  transform-origin: center bottom;
+  animation: pi-quick-orb-groove-y 0.22s cubic-bezier(0.33, 1, 0.68, 1);
+}
+
+.pi-quick-orb[data-quick-orb-hint='down'] .pi-quick-orb__groove-track {
+  transform-origin: center top;
+  animation: pi-quick-orb-groove-y 0.22s cubic-bezier(0.33, 1, 0.68, 1);
+}
+
+/* 从贴着球的那一端往拖动方向长出去。 */
+@keyframes pi-quick-orb-groove-x {
+  from {
+    transform: scaleX(0.24);
+    opacity: 0.4;
+  }
+  to {
+    transform: scaleX(1);
+    opacity: 1;
+  }
+}
+
+@keyframes pi-quick-orb-groove-y {
+  from {
+    transform: scaleY(0.24);
+    opacity: 0.4;
+  }
+  to {
+    transform: scaleY(1);
+    opacity: 1;
+  }
+}
+
+/*
+ * 用户 m00736 第 2 条（参考图 2 左端）：暗槽里的方向图案是**嵌在槽身材质上的扁平图案**——
+ * 没有圆环、没有边框、也没有自己的底色，只剩一层墨色（`PiQuickOrb.tsx` 里由
+ * `.pi-quick-orb__groove-icon` 承担）。
+ *
+ * 用户 m00002 第 2 条之后它是**槽上唯一的图形**：原来的白钮、方向箭头、竖排文案
+ * （`.pi-quick-orb__slot` 那一整块）全删了，就剩这枚图标；同时它从槽身中段挪到了
+ * **槽末端**（`--pi-orb-flat-inset` 现在按槽末端的圆头算，见上面变量那一段）。
+ * 图标本身「无圆环、无边框、无底色」的要求不变 —— 用户 m00002 说的「不要有白色边框」
+ * 指的是球体那条白描边（见 `.pi-quick-orb__ball`），这里一个边框都没有。
+ *
+ * 落位规则：`--pi-orb-flat-inset` 报的是「离贴着球那一端有多远」（球心到图案中心），
+ * 而 `.pi-quick-orb__groove` 的盒子正好是从球心那一端长出来的，所以四方向各挑一条边
+ * 按这个值偏一次；`margin: -11px` 让 left/right/top/bottom 报的是图案**中心**。
+ * 这样图案永远待在槽身里，四个方向的观感对称。
+ */
+.pi-quick-orb__groove-icon {
+  position: absolute;
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  margin: -11px;
+  color: color-mix(in srgb, var(--pi-text) 62%, transparent);
+  background: none;
+  border: 0;
+  box-shadow: none;
+  pointer-events: none;
+  /* 用户 m02213 第 1 条：球现在能滑到槽末端，球逼近时这枚图标渐渐让位
+     （组件在根节点上写 `--pi-orb-icon-fade`，见 `PiQuickOrb.tsx` 的 `grooveIconFade`）。 */
+  opacity: var(--pi-orb-icon-fade, 1);
+}
+
+.pi-quick-orb[data-quick-orb-hint='right'] .pi-quick-orb__groove-icon {
+  top: 50%;
+  left: var(--pi-orb-flat-inset);
+}
+
+.pi-quick-orb[data-quick-orb-hint='left'] .pi-quick-orb__groove-icon {
+  top: 50%;
+  right: var(--pi-orb-flat-inset);
+}
+
+.pi-quick-orb[data-quick-orb-hint='up'] .pi-quick-orb__groove-icon {
+  left: 50%;
+  bottom: var(--pi-orb-flat-inset);
+}
+
+.pi-quick-orb[data-quick-orb-hint='down'] .pi-quick-orb__groove-icon {
+  left: 50%;
+  top: var(--pi-orb-flat-inset);
+}
+
+/*
+ * 用户 m00002 第 2 条：「不要有文字提示，直接在暗槽末端加个图标就行并且不要有白色边框。」
+ *
+ * 这里原来有一整块 `.pi-quick-orb__slot`（槽头那颗**抬起的白钮** + 钮外的竖排文案
+ * 「歌单」/「搜索」/「设置」，以及白钮里的方向箭头 `—` / `↑`、左槽那两枚排版图标）、
+ * 四条按方向摆位的 `[data-quick-orb-hint=…] .pi-quick-orb__slot` 规则、以及
+ * `@keyframes pi-quick-orb-slot-in` 入场动画。**全部删了**，CSS 里不再有：
+ *   `.pi-quick-orb__slot` / `__slot-knob` / `__slot-arrow` / `__slot-switch` /
+ *   `__slot-icon` / `__slot-icon--next` / `pi-quick-orb-slot-in`。
+ * 槽上现在只剩上面那枚扁平的 `.pi-quick-orb__groove-icon`（无边框、无底色）。
+ * 文案没有丢：方向名搬到了球体的 `aria-label` 里（`PiQuickOrb.tsx`）。
+ * 对应的 DOM 抓手 `data-quick-orb-slot` / `data-quick-orb-hint-badge` 也一并没了。
+ */
+
+.pi-quick-orb__ball {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  /* 用户 m00002 第 2 条「不要有白色边框」：这一条原来是
+     `1px solid var(--pi-glass-border-light)`（= `rgba(255,255,255,0.58)`）。
+     量图 3 过球心的横线，球左右边缘各是一根单像素亮线（亮度 226，背景 163~166），
+     就是它。去掉之后球仍然有 `--pi-glass-edge`（深色 8% 的 1px 环）与
+     `--pi-glass-highlight`（顶部内高光）撑着边缘，不会糊在封面上。 */
+  border: 0;
+  border-radius: 50%;
+  background: var(--pi-glass-bg-light);
+  backdrop-filter: var(--pi-glass-blur-light);
+  -webkit-backdrop-filter: var(--pi-glass-blur-light);
+  box-shadow: var(--pi-glass-highlight), var(--pi-glass-edge), var(--pi-glass-shadow);
+  cursor: grab;
+  pointer-events: auto;
+  touch-action: none;
+  transition:
+    transform 0.18s ease,
+    box-shadow 0.18s ease;
+}
+
+.pi-quick-orb__ball:hover {
+  transform: scale(1.06);
+}
+
+.pi-quick-orb[data-quick-orb-drag='true'] .pi-quick-orb__ball {
+  cursor: grabbing;
+  /* 用户 m00002 第 1 条：这个倍数和暗槽横截面 `--pi-orb-groove-w` 是同一个变量，
+     改一处两边一起变，槽再也不会比球窄。 */
+  transform: scale(var(--pi-orb-ball-scale));
+  box-shadow:
+    var(--pi-glass-highlight),
+    var(--pi-glass-edge),
+    0 12px 28px color-mix(in srgb, var(--pi-primary) 22%, transparent);
+}
+
+.pi-quick-orb__ball:active {
+  cursor: grabbing;
+  transform: scale(0.94);
+}
+
+.pi-quick-orb__ball-glow {
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  pointer-events: none;
+  background: radial-gradient(
+    circle,
+    color-mix(in srgb, var(--pi-primary) 26%, transparent) 0%,
+    transparent 68%
+  );
+}
+
+/* 球心的「PI」：老悬浮球同款天蓝渐变字，字号跟着半径一起缩。 */
+.pi-quick-orb__logo {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  background: linear-gradient(160deg, #8fd8ff 0%, #35a7f5 45%, #0b6fd0 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pi-quick-orb,
+  .pi-quick-orb[data-quick-orb-leaving='true'] {
+    animation: none;
+  }
+
+  .pi-quick-orb__groove-track {
+    animation: none;
+  }
+
+  /* 用户 m00001 第 1 条那层滑动的壳：过渡也关掉 = 松手直接归位，不再「滑回去」。 */
+  .pi-quick-orb__sled {
+    transition: none;
+  }
+}

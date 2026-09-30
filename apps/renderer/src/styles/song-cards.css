@@ -1,0 +1,278 @@
+/* ------------------------------------------------------------------ *
+ * 歌曲卡片 · 一行中心聚焦卡片流（用户 m08768 第 2 条）
+ *
+ * 把「封面网格」换成「一行封面」：中心一张大而亮，两侧灰暗缩小让开，
+ * 拖动 / 滚轮 / ←→ 换中心。几何与明暗数值取自 folia 的 Carousel3D
+ * （数值与做法见 SongCards.tsx 顶部注释）。
+ * 独立文件而不是塞进 global.css：几何量 + 过渡曲线 + 模糊明暗是一整套配套参数，
+ * 放在一起改的时候不用在 2800 行里来回找（同 liked-wall.css / lyric-stage.css 的做法）。
+ * 引入点在 main.tsx，与其余样式表一致。
+ * ------------------------------------------------------------------ */
+
+.pi-songcards {
+  /* 封面边长由组件按窗口档位写进 inline style（≥1440 → 312px，≥768 → 256px，更窄 → 224px）；
+     这里给一份兜底值：万一这个类被单独拿去用，也不会量出 0 高。
+     横向的「相邻卡片隔多远」（sideOffset 288/240/210）不在这儿：它只参与每张卡片
+     自己的 inline transform 计算，CSS 端不需要知道。 */
+  --pi-sc-cover: 224px;
+  --pi-sc-gap: 8px;
+  /* 标签区固定高度：卡片高度一致，缩放时整条流才不会参差 */
+  --pi-sc-label: 58px;
+  --pi-sc-card-h: calc(var(--pi-sc-cover) + var(--pi-sc-gap) + var(--pi-sc-label));
+  /* 舞台高度 = 最高的那张（中心卡放大到 1.1 倍）再上下各留一点 */
+  --pi-sc-pad: 10px;
+  --pi-sc-stage-h: calc(var(--pi-sc-card-h) * 1.1 + var(--pi-sc-pad) * 2);
+  margin: 4px 0 12px;
+}
+
+.pi-songcards__stage {
+  position: relative;
+  height: var(--pi-sc-stage-h);
+  /* 就这一屏：两侧卡片伸出去的部分直接裁掉，横向也不该出现滚动条 */
+  overflow: hidden;
+  /* 中心 1000px 的透视：两侧卡片绕 Y 轴转出来才有纵深（folia 同值）。
+     透视原点默认落在舞台中心，正好是中心卡的位置。 */
+  perspective: 1000px;
+  /* 横向手势归卡片流，纵向留给页面滚动 */
+  touch-action: pan-y;
+  /* 拖动时不要顺手把歌名选成蓝底 */
+  user-select: none;
+  cursor: grab;
+}
+
+.pi-songcards[data-dragging='true'] .pi-songcards__stage {
+  cursor: grabbing;
+}
+
+.pi-songcard {
+  position: absolute;
+  top: var(--pi-sc-pad);
+  left: 50%;
+  width: var(--pi-sc-cover);
+  height: var(--pi-sc-card-h);
+  display: flex;
+  flex-direction: column;
+  gap: var(--pi-sc-gap);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+  /* 顶边对齐：中心卡放大 1.1 倍时朝左右和下方长，封面顶边不会顶出舞台 */
+  transform-origin: center top;
+  /* 位置/缩放/明暗由 inline style 给（拖动时要按帧改），这里只声明怎么动：
+     420ms 的 cubic-bezier(.22,1,.36,1)（起步快、收尾慢）就是需求要的那口弹簧感。 */
+  transition:
+    transform 420ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 420ms cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: transform;
+}
+
+/* ------------------------------------------------------------------ *
+ * 与「切歌小名片」（styles/song-change-card.css，第十四轮第 8 条）的类名冲撞 · 硬复位
+ *
+ * 那张名片也叫 `.pi-songcard` / `.pi-songcard__cover` / `.pi-songcard__meta`，而它的
+ * 样式表在打包顺序里排在本文件**前面**（`main.tsx:11` 才引本文件，`SongChangeCard.tsx:6`
+ * 引它），所以同名同权重（0,1,0）时后声明的本文件赢；但**本文件没声明过的属性会漏下来**，
+ * 三条后果，第一条就是用户报的「歌曲封面没显示全」：
+ *
+ *   1. `.pi-songcard__cover { height: 44px }` —— 本文件的封面只声明了 `width:100%` 与
+ *      `aspect-ratio:1/1`，没声明 `height`，于是 44px 生效 ⇒ 封面盒 = 312×44（lg 档），
+ *      **宽高都确定时 `aspect-ratio` 不再参与换算**，`img { object-fit: cover }` 就把方封面
+ *      裁成一条 312×44 的横带（只能看见封面中间那一条）。
+ *   2. `.pi-songcard { pointer-events: none }` —— 卡片整棵子树不参与命中测试（该属性可继承），
+ *      `activateAt()` 里 `document.elementFromPoint(...).closest('.pi-songcard')`
+ *      （`SongCards.tsx:457-458`）永远拿不到卡片 ⇒ 真人点卡片没反应（合成 `click()` 与拖动照旧）。
+ *   3. `.pi-songcard__meta { display: grid; gap: 1px }` —— 副标题的
+ *      `text-overflow: ellipsis` 在 grid 容器上不生效。
+ *
+ * 修法：用 `.pi-songcards` 祖先选择器（权重 0,2,0 > 0,1,0）把这几条按本文件原本的意图
+ * 重新声明一遍。这样**不依赖打包顺序**，也不必去动另一张名片所在的文件（它归第十四轮第 8 条）。
+ * 名片还设了 `opacity: 0` / `z-index: 30`：那两条每次渲染都由组件 inline 写
+ * （`SongCards.tsx:660-664` 的 style），本来就不受影响，所以这里不重复声明。
+ * ------------------------------------------------------------------ */
+.pi-songcards .pi-songcard {
+  /* 名片整张不吃指针事件；卡片流要能 hover、能点、能被 elementFromPoint 命中 */
+  pointer-events: auto;
+  /* 名片是横排小卡（`align-items: center`）；卡片流是竖排，封面要撑满卡片宽 */
+  align-items: stretch;
+  /* 名片是 320px 上限的小卡；卡片流的宽度由 --pi-sc-cover 给，不吃这个上限 */
+  max-width: none;
+}
+
+.pi-songcards .pi-songcard__cover {
+  /* 名片的 44×44 定尺 + `flex: none`：高度必须跟宽度一起放开，
+     否则宽高都确定、`aspect-ratio` 失效（见上面第 1 条）。 */
+  flex: 0 0 auto;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1 / 1;
+}
+
+.pi-songcards .pi-songcard__meta {
+  display: block;
+}
+
+/* 按住期间跟手位移：过渡必须关掉，不然每一帧都在追上一帧的目标值，
+   手感会变成拖一团橡胶（拖动本身由组件直接写 style.transform）。 */
+.pi-songcards[data-dragging='true'] .pi-songcard {
+  transition: none;
+}
+
+/* 只画中心附近那几张（|d| ≤ 4）：更远的本来就全透明，画出来白吃合成开销。
+   注意它们仍然留在 DOM 里 —— 桌面冒烟按 .pi-songcard 的下标点歌，藏掉的也要数得上。 */
+.pi-songcard[data-far='true'] {
+  display: none;
+}
+
+/* 可访问性：与 lyric-stage.css 同一套聚焦写法（键盘走到这张卡要有明确的圈） */
+.pi-songcard:focus-visible {
+  outline: 2px solid var(--pi-primary);
+  outline-offset: 3px;
+  border-radius: 16px;
+}
+
+.pi-songcard__cover {
+  display: block;
+  width: 100%;
+  /* 正方形封面是整套卡片的基准 */
+  aspect-ratio: 1 / 1;
+  border-radius: 16px;
+  overflow: hidden;
+  background: var(--pi-glass-sheen);
+  border: 1px solid var(--pi-glass-border);
+  box-shadow: var(--pi-shadow-float);
+  /* 过渡只碰影：位置/缩放走卡片自己的 transform */
+  transition: box-shadow 220ms ease;
+}
+
+.pi-songcard__cover img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  /* 两侧卡片糊一点：模糊做在 img 上才会被封面的圆角 + overflow 裁干净，
+     做在封面层上会有一圈糊出来的毛边。 */
+  transition: filter 420ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.pi-songcard[data-focused='false'] .pi-songcard__cover img {
+  filter: blur(2px);
+}
+
+/* 中心那张加一圈半透明白描边（folia 的 ring-2 ring-white/30）。
+   用 outline 不用 box-shadow：不占布局，也不会把落影盖掉。 */
+.pi-songcard[data-focused='true'] .pi-songcard__cover {
+  outline: 2px solid rgba(255, 255, 255, 0.3);
+  outline-offset: 2px;
+}
+
+.pi-songcard__name {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  /* 字号走变量：中心那张大一号，「变大」这件事本身也做过渡 */
+  font-size: var(--pi-sc-name-size, 14px);
+  font-weight: 600;
+  line-height: 1.25;
+  color: var(--pi-text);
+  opacity: 0.72;
+  transition:
+    font-size 300ms cubic-bezier(0.22, 1, 0.36, 1),
+    color 220ms ease,
+    opacity 300ms ease;
+}
+
+.pi-songcard__meta {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: var(--pi-sc-meta-size, 11px);
+  color: var(--pi-text-tertiary);
+  opacity: 0.45;
+  transition:
+    font-size 300ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 300ms ease;
+}
+
+/* 中心那张：字大、亮、给全。两侧只留个轮廓 —— 需求里「主体歌曲孤立显示在最前面，
+   其他则是灰暗缩小在两旁」。中心只留一行歌名：字号大了以后两行会顶掉下面的副标题。 */
+.pi-songcard[data-focused='true'] {
+  --pi-sc-name-size: 21px;
+  --pi-sc-meta-size: 12.5px;
+}
+
+.pi-songcard[data-focused='true'] .pi-songcard__name {
+  -webkit-line-clamp: 1;
+  opacity: 1;
+  animation: pi-songcard-in 300ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.pi-songcard[data-focused='true'] .pi-songcard__meta {
+  opacity: 0.55;
+  animation: pi-songcard-in 300ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* 换到这一张时从下方 6px 处浮上来（透明度那半截由上面的 opacity 过渡接手）。
+   animation 由 data-focused 翻成 true 触发：同一张卡片一直待着不会重播。 */
+@keyframes pi-songcard-in {
+  from {
+    transform: translateY(6px);
+  }
+  to {
+    transform: none;
+  }
+}
+
+/* hover / 键盘聚焦：封面换一档更深的落影。位移反馈交给卡片流本身，不再抬卡片。 */
+.pi-songcard:hover .pi-songcard__cover,
+.pi-songcard:focus-visible .pi-songcard__cover {
+  box-shadow: var(--pi-shadow-slots-hover);
+}
+
+/* 正在听的那首：歌名用主色（中心那张的白描边是「当前焦点」，两者互不干扰）。
+   color-mix 让这圈高亮在深浅两套主题下都压得住封面本身的花色。 */
+.pi-songcard[data-active='true'] .pi-songcard__name {
+  color: var(--pi-primary);
+}
+
+.pi-songcards__bar {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 12px;
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--pi-text-tertiary);
+}
+
+.pi-songcards__count {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  color: var(--pi-text-sub);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* 过渡与弹簧全关：换焦点直接到位（组件那边不用额外分支，它只是写 style） */
+  .pi-songcard,
+  .pi-songcard__cover,
+  .pi-songcard__cover img,
+  .pi-songcard__name,
+  .pi-songcard__meta {
+    transition: none;
+  }
+  .pi-songcard[data-focused='true'] .pi-songcard__name,
+  .pi-songcard[data-focused='true'] .pi-songcard__meta {
+    animation: none;
+  }
+  /* 缩放/虚化是「信息性」的（区分中心与两侧），保留；位移型反馈一律关掉 */
+  .pi-songcard[data-far='true'] {
+    transition: none;
+  }
+}

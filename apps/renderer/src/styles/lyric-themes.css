@@ -1,0 +1,874 @@
+/**
+ * 五套歌词动效主题的样式（用户 m08768 第 4 条：浮名 / 心象 / 云阶 / 倾诉 / 时计）。
+ *
+ * === AGPL 说明 ===
+ * 每套主题的**数值**借鉴自 folia-major（**AGPL-3.0**，`chthollyphile/folia-major@c249bde`）的同名主题；
+ * 这里只按那些数值重写 CSS，没有拷贝 folia 的样式表文本。数值清单在各主题组件文件的头注释里。
+ * 目前落盘的是云阶 `partita` / 倾诉 `tilt` / 时计 `pendolo` 三套（`fume` / `cadenza` 待规格）。
+ *
+ * === 为什么每条规则都带 `.pi-lyricstage[data-theme='…']` 前缀 ===
+ * `lyric-stage.css` 里 classic 的 `.pi-lyricstage__word { opacity: 0; transform: scale(0.5); filter: blur(10px) }`
+ * 与 `[data-word-state='active']…` 是所有主题的字素共用的类名（DOM 契约要求字素必须挂
+ * `.pi-lyricstage__word` + `data-word-state`）。只写 `.pi-lyricfoo__word` 与它同权重（0,1,0 vs 0,1,0），
+ * 谁赢取决于打包顺序；加上 `[data-theme]` 前缀（0,3,0）才稳。
+ *
+ * === 布局约定（父代理的硬约束 + 第九轮第 4 条） ===
+ * - 主题舞台**不写死 px / vh 的宽高**：三套铺满主题（`fume` / `cadenza` / `partita`）用
+ *   `position: absolute; inset: 0` 贴住 `position: relative` 的 `.pi-home__stage`
+ *   （global.css:2325），边框盒恒等于整页可视区域，窗口任意尺寸 / 最大化 / 全屏都跟着走
+ *   （见下面那条规则的长注释）。`tilt` / `pendolo` 仍走老路径（宽度 100%、居中卡片）。
+ * - 根节点的 `mask-image` 与 `--pi-sweep` 是 UI 冒烟在读的契约，这里**一个字都不动**。
+ * - 行元素的 `pointer-events: auto` 在 overlays.css 里 `.pi-lyricstage[data-theme='…'] [data-lyric-line]` 那条（主题根仍是 `none`，点击走委托）。
+ */
+
+/* ------------------------------------------------------------------ *
+ * 共用：主题舞台 + 配色桥
+ * ------------------------------------------------------------------ */
+
+/* 主题认的是一套变量名。`tilt` / `pendolo` 仍然是「值绑在全局主题色上」；
+ * **`fume` / `cadenza` / `partita` 三套故意不在这里定义这三个变量**——播放页会按当前歌曲的封面
+ * 在祖先节点上注入 `--pi-th-primary / --pi-th-accent / --pi-th-surface`（见 lib/song-palette.ts），
+ * 而自定义属性遵循「局部声明优先于继承」：在这一层写死定义，等于把祖先注进来的歌曲配色挡掉。
+ * 这三套的每条引用都写成 `var(--pi-th-x, <回退链>)`：有祖先注入就用歌曲色，没有才回退全局主题色。 */
+.pi-lyricstage[data-theme='tilt'],
+.pi-lyricstage[data-theme='pendolo'] {
+  --pi-th-primary: var(--pi-primary);
+  --pi-th-accent: var(--pi-np-accent, var(--pi-primary));
+  --pi-th-surface: var(--pi-surface);
+}
+
+/* 主题舞台铺满整个播放页（用户第八轮第 4 条：动效展示范围要全屏；
+ * 第九轮第 4 条：任意窗口尺寸 / 最大化 / 全屏都不能被裁剪、不能变形、不能留空白边）。
+ *
+ * `.pi-home__stage-lyrics`（global.css:2352）带 `padding: 108px 24px 92px`，所以 `.pi-lyricstage`
+ * 本来只拿到「视口 − 48px 宽 / − 200px 高」；fume / cadenza / partita 还额外被 lyric-stage.css 里
+ * `.pi-lyricstage` 自己的 `max-width: 560px` 卡住，主题动效只能在中间一小条里画。
+ *
+ * 顺带提醒：`.pi-home__stage-lyrics` 必须保持**静态定位**（不要给它加 `position` / `transform` /
+ * `filter` / `contain`）——它现在是 static，主题层才能越过它那圈 `padding: 108px 24px 92px`
+ * 贴住整页；一旦它自己成为包含块，三套主题就会被压回那个 padding 盒里。
+ *
+ * 第九轮改成**绝对定位 + `inset: 0` 贴住整个播放页可视区域**（旧做法是负外边距把外边距盒
+ * 撑回外层 grid area）：`.pi-home__stage` 是 `position: relative; height: 100%`（global.css，**这两条别改**），
+ * 正好是三套主题唯一的包含块，于是舞台的边框盒恒等于「整页可视区域」，宽高全部由容器算出——
+ * 窗口缩放、最大化、全屏、任意宽高比都不需要重算任何数字，也不存在旧写法那种
+ * 「撑出去以后又被 `justify-items: center` 居中拉回」的错位风险（旧写法那几个 px 必须和
+ * global.css 的 padding 逐一对齐、连两个断点都照抄，对方一改就少一截 / 多一截 / 偏一边）。
+ *
+ * 顺带把舞台自己的 `grid-template-rows: minmax(300px, 1fr) auto` / `min-height: 300px`
+ * （lyric-stage.css 里 `.pi-lyricstage` 那两条）压成单行弹性轨道：矮窗口（可视高 < 300px）时那两条会把主题层顶出容器，
+ * 竖直方向就被裁掉一截。这三套主题都不渲染 classic 专用的底部字幕（`.pi-lyricstage__sub`），
+ * 所以第二行直接收掉。
+ *
+ * 行元素的 `pointer-events: auto` / `cursor: pointer` 由 overlays.css 里 `.pi-lyricstage[data-theme='…'] [data-lyric-line]` 那条 统一给（主题根仍是
+ * `pointer-events: none`），`mask-image` / `--pi-sweep` / `container-type` 也一个字不动。 */
+.pi-lyricstage[data-theme='fume'],
+.pi-lyricstage[data-theme='cadenza'],
+.pi-lyricstage[data-theme='partita'] {
+  position: absolute;
+  inset: 0;
+  width: auto;
+  height: auto;
+  max-width: none;
+  min-height: 0;
+  margin: 0;
+  grid-template-rows: minmax(0, 1fr);
+  /* 舞台盒子铺满整个视口之后，它自己不能再吃指针事件：`.pi-home__stage-lyrics` 之上再压一层
+     全屏 `pointer-events: auto` 的盒子，会让「点空白处开关悬浮框」这条既有交互在整页范围内失效。
+     行元素由 overlays.css 里 `.pi-lyricstage[data-theme='…'] [data-lyric-line]` 那条 单独恢复 `auto`（`none` 的祖先不挡后代命中），所以
+     「点这句 = 跳到这句播放」照旧，空白处则继续漏给 `.pi-home__stage`。 */
+  pointer-events: none;
+  /* 底部悬浮进度条的安全高度（`.pi-home__bar`：bottom 22px + height 56px = 78px）。
+     cadenza 的贴底译文 / 下两句预览靠它避开进度条；跟窗口高走，不再是一个写死的常数。 */
+  --pi-stage-bleed-bottom: clamp(86px, 11vh, 132px);
+}
+
+/* 窄屏 / 矮屏不再需要自己一套断点常量：盒子由 `inset: 0` 决定，跟 global.css 的 padding
+ * 无关（旧写法的 `--pi-stage-bleed-x/top` 两个断点表已随第九轮删掉）。 */
+
+/* classic 的舞台是 grid（叠两行）；主题要的是「一块撑满的舞台 + 居中的主题层」。 */
+.pi-lyricstage__stage--themed {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  padding: 0;
+  /* 设置页的「主题不透明度」：变量由 `LyricStage` 只挂在主题分支上，
+     缺省 1 = 改造前的观感。整层一起淡出而不是逐元素调 alpha——
+     各主题内部已经把 alpha 用在「三态」上了，在那一层再乘会打架。 */
+  opacity: var(--pi-th-theme-opacity, 1);
+}
+
+/* 主题根容器一律铺满舞台（高度由舞台给，不写死）。 */
+.pi-lyricstage__stage--themed > * {
+  width: 100%;
+  height: 100%;
+}
+
+/* ------------------------------------------------------------------ *
+ * 1) 云阶 = partita
+ * ------------------------------------------------------------------ */
+
+.pi-lyricpartita {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  /* 设计值是 2rem；矮 / 窄窗口按短边收一点，别让这圈留白把云阶层挤到裁切（舞台现在铺满整页）。 */
+  padding: clamp(12px, 2.2vmin, 32px);
+  overflow: hidden;
+  pointer-events: none;
+}
+
+/* 一次只渲染两行：正在看的那一行 + 正在演完出场的上一行（叠在同一格）。 */
+.pi-lyricpartita__line {
+  position: relative;
+  grid-area: 1 / 1;
+  width: 100%;
+  opacity: 0;
+  animation: pi-partita-line-in 0.3s ease both;
+}
+
+.pi-lyricpartita__line[data-hint='short'] {
+  animation-name: pi-partita-line-in-fast;
+  animation-duration: 0.16s;
+}
+
+.pi-lyricpartita__line[data-phase='exit'] {
+  animation-name: pi-partita-line-out;
+  animation-duration: 0.3s;
+}
+
+.pi-lyricpartita__line[data-phase='exit'][data-hint='short'] {
+  animation-name: pi-partita-line-out-fast;
+  animation-duration: 0.16s;
+}
+
+.pi-lyricpartita__line[data-phase='exit'][data-hint='micro'] {
+  animation-name: pi-partita-line-out-micro;
+  animation-duration: 0.12s;
+}
+
+/* 行进场：normal {opacity 0, scale .9, blur 10px} → {1, 1, 0}；出场反过来放大 + 抹开。 */
+@keyframes pi-partita-line-in {
+  from { opacity: 0; transform: scale(0.9); filter: blur(10px); }
+  to { opacity: 1; transform: scale(1); filter: blur(0); }
+}
+
+@keyframes pi-partita-line-in-fast {
+  from { opacity: 0.35; transform: scale(0.96); filter: blur(4px); }
+  to { opacity: 1; transform: scale(1); filter: blur(0); }
+}
+
+@keyframes pi-partita-line-out {
+  from { opacity: 1; transform: scale(1); filter: blur(0); }
+  to { opacity: 0; transform: scale(1.1); filter: blur(20px); }
+}
+
+@keyframes pi-partita-line-out-fast {
+  from { opacity: 1; transform: scale(1); filter: blur(0); }
+  to { opacity: 0; transform: scale(1.04); filter: blur(10px); }
+}
+
+@keyframes pi-partita-line-out-micro {
+  from { opacity: 1; transform: scale(1); filter: blur(0); }
+  to { opacity: 0; transform: scale(1.02); filter: blur(6px); }
+}
+
+/* 呼吸浮动：y [0, -d, 0, d×0.45, 0]、scale [1, 1.01, 1, 0.995, 1]，ease-in-out 无限。 */
+.pi-lyricpartita__float {
+  animation: pi-partita-float var(--pi-float-dur, 8.5s) ease-in-out infinite;
+}
+
+@keyframes pi-partita-float {
+  0% { transform: translateY(0) scale(1); }
+  25% { transform: translateY(calc(var(--pi-float-d, 10px) * -1)) scale(1.01); }
+  50% { transform: translateY(0) scale(1); }
+  75% { transform: translateY(calc(var(--pi-float-d, 10px) * 0.45)) scale(0.995); }
+  100% { transform: translateY(0) scale(1); }
+}
+
+/* 行盒子：一行云阶的**楼梯包围盒**（第十一轮，用户 m03279 第 4 条：从「多根竖列、列内叠词」
+   改成「1~4 个字素的短块沿中轴一路往下、左右交替错开」）。
+   块用绝对定位按自己的中心点摆（`left/top: 50%` + 行内 `--pi-chunk-x/y`），盒子的高度由 JS
+   算出的楼梯包围盒给（行内 style），所以这里**不再要** flex / gap / min-height / max-width：
+   任何写死的尺寸都会让 JS 的「矩形不相交 + 整体放得下」跟真实渲染对不上。 */
+.pi-lyricpartita__rowbox {
+  position: relative;
+  width: 100%;
+  max-width: 100%;
+  margin: 0 auto;
+  transform-style: preserve-3d;
+}
+
+/* 一块云阶 = 一个台阶：横排的短块 + 底下的刻度线；x / y / rotate 由行内变量给。
+   `translate(-50%, -50%)` 让 (left, top) 说的是**块中心**，跟 JS 的矩形（中心 + 宽高）对齐。 */
+.pi-lyricpartita__col {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  /* 故意不写 padding / min-width：外接矩形是按 `measureTextWidth` 的真实字宽算的，
+     盒子上任何多余的留白都会让实际占位比算出来的大，「不相交」就不成立了。 */
+  transform: translate(-50%, -50%) translate3d(var(--pi-chunk-x, 0px), var(--pi-chunk-y, 0px), 0)
+    rotate(var(--pi-chunk-rot, 0deg));
+  transform-style: preserve-3d;
+}
+
+.pi-lyricpartita__stack {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+/* 一块里的**一行文字**：拉丁 / 西里尔整词一级（词内字素横排，否则英文会被一个字母拆散），
+   CJK 一个原子一个字素；同一块里的多个原子之间由 JS 补一个真空格，一起横排不换行。
+   `font-size` 必须在这里显式跟上块的字号：字素 span 自己带 `font-size: var(--pi-partita-font)`，
+   可那个**空白文本节点**只继承本行的字号——不写这行时它按舞台基础字号（~16px）排版，
+   65px 的大字之间只剩 3.7px 的缝（第十四轮冒烟探针量到 空格宽=0.057em 才揪出来），
+   看上去就是「词与词粘在一起」（第 6 条行内断词的另一半原因）。 */
+.pi-lyricpartita__row {
+  display: block;
+  white-space: nowrap;
+  font-size: var(--pi-partita-font, clamp(2.5rem, 5.5vw, 4.5rem));
+}
+
+/* --- 字素三态（数值见 PartitaTheme.tsx 头注释） --- */
+.pi-lyricstage[data-theme='partita'] .pi-lyricpartita__word {
+  display: inline-block;
+  /* 字号由 JS 用真实字宽 / 舞台高宽拟合后写到 `--pi-partita-font`（行元素上）；
+     兜底的 clamp 是「JS 没算出来」时的原值：clamp(2.5rem, 5.5vw, 4.5rem)。 */
+  font-size: var(--pi-partita-font, clamp(2.5rem, 5.5vw, 4.5rem));
+  font-weight: 700;
+  line-height: 1.22;
+  vertical-align: bottom;
+  /* 第十五轮第 4 条：常态 = 白。`--pw-color` 由 TS 给（当前块 = 强调色，其余块 = 常态白），
+   * 这里的兜底也换成同一支白；层次靠不透明度（未唱 0 / 已唱 0.82），不靠灰。 */
+  color: var(--pw-color, var(--pi-lyric-ink, #fff));
+  opacity: 0;
+  transform: translate3d(var(--pw-wait-x, 0px), var(--pw-wait-y, 0px), 0)
+    rotate(var(--pw-wait-rot, 0deg)) scale(0.5);
+  filter: blur(10px);
+  transition:
+    opacity 0.1s linear,
+    transform 0.5s cubic-bezier(0.34, 1.3, 0.5, 1),
+    filter 0.4s ease,
+    /* 第十五轮第 4 条：当前块往下走时，强调色**逐渐**淡回常态白（不是瞬间跳色）。 */
+    color var(--pi-lyric-fade-ms, 900ms) ease-out;
+}
+
+.pi-lyricstage[data-theme='partita'] .pi-lyricpartita__word[data-word-state='active'] {
+  opacity: 1;
+  filter: blur(0);
+  /* 兜底值必须与 `partitaLayout.ts` 的 `PARTITA_ACTIVE_SCALE` 一致：外接矩形是按它
+     算「当前字素放大后占多宽」的（组件会把同一个常数写成行内变量）。 */
+  transform: translate3d(var(--pw-x, 0px), var(--pw-y, 0px), 0) rotate(var(--pw-rot, 0deg))
+    scale(var(--pw-active-scale, 1.2));
+}
+
+.pi-lyricstage[data-theme='partita'] .pi-lyricpartita__word[data-word-state='passed'] {
+  opacity: 0.82;
+  filter: blur(0);
+  transform: translate3d(var(--pw-x, 0px), var(--pw-y, 0px), 0)
+    rotate(var(--pw-passed-rot, 0deg)) scale(var(--pw-scale, 1));
+  transition:
+    opacity 0.2s linear,
+    transform 0.5s cubic-bezier(0.34, 1.3, 0.5, 1),
+    filter 0.4s ease,
+    /* 第十五轮第 4 条：唱过之后颜色继续往常态白淡（与上一档同长，接得上）。 */
+    color var(--pi-lyric-fade-ms, 900ms) ease-out;
+}
+
+/* --- 引导线：竖线（左右各 ±8px，scaleY 0→1）+ 横基线（scaleX 0→1），0.4s ease-out --- */
+.pi-lyricpartita__guide {
+  position: absolute;
+  right: 0;
+  bottom: -16px;
+  left: 0;
+  height: 32px;
+  color: color-mix(in srgb, var(--pi-text) 14%, transparent);
+  transition: color 0.4s ease-out;
+  pointer-events: none;
+}
+
+.pi-lyricpartita__guide::before,
+.pi-lyricpartita__guide::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  width: 1px;
+  height: 32px;
+  background: currentColor;
+  transform: scaleY(0);
+  transform-origin: bottom center;
+  transition: transform 0.4s ease-out;
+}
+
+.pi-lyricpartita__guide::before { left: calc(50% - 8px); }
+.pi-lyricpartita__guide::after { right: calc(50% - 8px); }
+
+.pi-lyricpartita__guide[data-guide='passed'] {
+  color: color-mix(in srgb, var(--pi-text) 22%, transparent);
+}
+
+.pi-lyricpartita__guide[data-guide='active'] {
+  color: var(--pi-th-accent, var(--pi-np-accent, var(--pi-primary)));
+}
+
+.pi-lyricpartita__guide[data-guide='passed']::before,
+.pi-lyricpartita__guide[data-guide='passed']::after,
+.pi-lyricpartita__guide[data-guide='active']::before,
+.pi-lyricpartita__guide[data-guide='active']::after {
+  transform: scaleY(1);
+}
+
+.pi-lyricpartita__baseline {
+  position: absolute;
+  bottom: -8px;
+  left: -18px;
+  width: calc(100% + 36px);
+  height: 1px;
+  background: currentColor;
+  color: color-mix(in srgb, var(--pi-text) 14%, transparent);
+  transform: scaleX(0);
+  transform-origin: center;
+  transition: transform 0.4s ease-out, color 0.4s ease-out;
+  pointer-events: none;
+}
+
+.pi-lyricpartita__baseline[data-guide='passed'] {
+  color: color-mix(in srgb, var(--pi-text) 22%, transparent);
+}
+
+.pi-lyricpartita__baseline[data-guide='active'] {
+  color: var(--pi-th-accent, var(--pi-np-accent, var(--pi-primary)));
+  box-shadow: 0 0 10px
+    color-mix(in srgb, var(--pi-th-accent, var(--pi-np-accent, var(--pi-primary))) 45%, transparent);
+}
+
+.pi-lyricpartita__baseline[data-guide='passed'],
+.pi-lyricpartita__baseline[data-guide='active'] {
+  transform: scaleX(1);
+}
+
+/* --- 副歌涟漪：1px 圆圈，scale 0.2 → 1.5+rand、opacity .8 → 0，0.5s ease-out --- */
+.pi-lyricpartita__ripple {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  height: 150%;
+  aspect-ratio: 1 / 1;
+  border: 1px solid var(--pi-th-accent, var(--pi-np-accent, var(--pi-primary)));
+  border-radius: 50%;
+  filter: blur(1px);
+  opacity: 0;
+  animation: pi-partita-ripple 0.5s ease-out forwards;
+  pointer-events: none;
+}
+
+@keyframes pi-partita-ripple {
+  from {
+    opacity: 0.8;
+    transform: translate(-50%, -50%) scale(0.2);
+  }
+  to {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(var(--pi-ripple-scale, 1.5));
+  }
+}
+
+/* 译文：贴在这一行下面（col 的底边），字号按任务书 clamp(1.05rem, 2.2vw, 1.2rem)。 */
+.pi-lyricpartita__translated {
+  position: absolute;
+  bottom: 0.25rem;
+  left: 50%;
+  max-width: 90%;
+  transform: translateX(-50%);
+  font-size: clamp(1.05rem, 2.2vw, 1.2rem);
+  font-weight: 400;
+  line-height: 1.4;
+  color: var(--pi-text-tertiary);
+  text-align: center;
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------------ *
+ * 1.5) 心象 = cadenza —— 第十五轮第 4 条（常态白 / 高亮主题色 / 逐渐淡回白）
+ * ------------------------------------------------------------------ */
+
+/* cadenza 的**可见正文**在内层 `.pi-lyriccadenza__inner`，而它在 `lyric-moods.css:74` 自己
+ * 声明了 `color: var(--pi-cad-primary, …)` —— 外层 `.pi-lyriccadenza__word` 上的行内 `color`
+ * 继承不进去（这也是本轮之前那处「词体混色」写在外层、正文其实一直是主题 primary 的原因）。
+ *
+ * 这里用更高的特异性（多一个 `.pi-lyricmood--cadenza`）把内层改成读**每词变量**
+ * `--pi-cad-fill`：`CadenzaTheme` 每帧按 `activeMix` 在「常态白 ↔ 当前词色」之间插值后写进这个变量
+ * （未唱 / 唱过 = 白，当前词 = 主题色，词后 800ms 线性淡回白），所以淡出是真的逐帧插值，不依赖 transition。
+ * 没有该变量时回退原来的 `--pi-cad-primary`，与改造前逐位一致。 */
+.pi-lyricmood--cadenza .pi-lyriccadenza__inner {
+  color: var(--pi-cad-fill, var(--pi-cad-primary, var(--pi-primary)));
+}
+
+/* ------------------------------------------------------------------ *
+ * 2) 倾诉 = tilt
+ * ------------------------------------------------------------------ */
+
+/* 舞台铺满整个播放页（第十轮第 4 条：用户要「以整个 app 界面作为展示舞台」+ 参考图
+ * `6275ac15…png`：正常体大字一行 + 红色斜体更大一行，两行都居中、横向占满窗口）。
+ *
+ * 改之前 `.pi-lyricstage` 走的是老路径：`lyric-stage.css` 自己那条 `max-width: 560px`（:38）
+ * 加上 `.pi-home__stage-lyrics` 的 `padding: 108px 24px 92px`（global.css:2464），
+ * 把歌词区压成窗口中间一竖条，`useElementSize`（TiltTheme.tsx:359）量到的 `size.width`
+ * 只有几百 px，于是 `buildPlan` 里那三处字号（TiltTheme.tsx:220-221）全在那个小盒子里算——
+ * 「倾诉只占中间一块」的真因在容器，不在字号公式。
+ *
+ * 写法与上面 `fume` / `cadenza` / `partita` 那条（:65-84 及其长注释）逐条对齐：
+ * 绝对定位 + `inset: 0` 贴住 `position: relative` 的 `.pi-home__stage`（global.css:2437，
+ * 那两条 `position` / `height` 别改），边框盒恒等于整页可视区域，窗口缩放 / 最大化 / 全屏
+ * 都不需要重算任何数字；顺带压掉 `.pi-lyricstage` 的 `grid-template-rows: minmax(300px, 1fr) auto`
+ * 与 `min-height: 300px`（矮窗口时那两条会把主题层顶出容器、竖直方向裁掉一截）。
+ * `.pi-home__stage-lyrics` 必须保持静态定位、那份长注释里记的三个坑在这里同样适用，不再重复；
+ * `mask-image` / `--pi-sweep` / `container-type` 一个字不动。
+ *
+ * **与那四套唯一不同的一处：这里没有 `pointer-events: none`。**
+ * 倾诉的滚轮换行监听挂在 `.pi-lyricstage` 根节点上（LyricStage.tsx:439），`lyric-stage.css:49-51`
+ * 为此专门写着「这里必须是 auto（不能用 folia 那种整块 none）。滚轮监听挂在根节点上，根节点
+ * pointer-events: none 的话事件根本到不了它」；铺满整页之后若把这个盒子也设成 `none`，整页范围的
+ * 滚轮事件都会漏给 `.pi-home__stage-lyrics`，到不了根节点，「滚轮换行」（用户 m08066 第 4 条）
+ * 就静默失效。三套主题反过来敢用 `none`，是因为它们的行在 `overlays.css:330-332` 被单独恢复过
+ * `auto`（倾诉 / 时计 / classic 不在那张名单里），点名它们的行元素就能接住指针；
+ * classic 那一套（`lyric-stage.css:70-73`）出于同一条理由也保持了 `auto`。
+ * 保持 `auto` 的代价只有一个：铺满之后在歌词区点空白不再触发「点空白处开关悬浮框」
+ * （`.pi-home__lyrics` 本来就被 HomePage 那条判据排除掉，与改造前中央一竖条里的行为一致）。
+ * 主题根 `.pi-lyrictilt` 仍是 `pointer-events: none`，行元素与点击委托的层级拓扑一个字没动。 */
+.pi-lyricstage[data-theme='tilt'] {
+  position: absolute;
+  inset: 0;
+  width: auto;
+  height: auto;
+  max-width: none;
+  min-height: 0;
+  margin: 0;
+  grid-template-rows: minmax(0, 1fr);
+  /* 与上面几套同一取值：底部悬浮进度条（`.pi-home__bar`：bottom 22px + height 56px）的安全高度。
+     倾诉的译文在正文块里、本来就不贴底，先与那几套同形备用。 */
+  --pi-stage-bleed-bottom: clamp(86px, 11vh, 132px);
+}
+
+.pi-lyrictilt {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  padding: 2rem;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+/* 换行时整块 0.45s easeInOut 淡入 / 淡出。 */
+.pi-lyrictilt__block {
+  grid-area: 1 / 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.875rem;
+  width: 100%;
+  opacity: 0;
+  animation: pi-tilt-block-in 0.45s ease-in-out both;
+}
+
+.pi-lyrictilt__block[data-phase='exit'] {
+  animation-name: pi-tilt-block-out;
+}
+
+@keyframes pi-tilt-block-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes pi-tilt-block-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+/* 断出来的每一段：普通段 400 字重 / 0.08em 字距；斜体段 300 字重 / italic / 0.15em。 */
+.pi-lyrictilt__part {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: baseline;
+  justify-content: center;
+  font-weight: 400;
+  line-height: 1.35;
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+  /* 第十五轮第 4 条：常态（未唱 / 唱过）一律**白**，主题色只留给当前唱到的那个字
+   * （见下面 `[data-word-state='active']` 的两条规则）。层次靠不透明度与辉光，不靠灰。 */
+  color: var(--pi-lyric-ink, #fff);
+  /* 从主题色**逐渐**淡回白：与其余五套主题共用 `--pi-lyric-fade-ms`（900ms）。 */
+  transition: color var(--pi-lyric-fade-ms, 900ms) ease-out;
+  animation: pi-tilt-part-in 0.55s cubic-bezier(0.25, 0.46, 0.45, 0.94) both;
+}
+
+.pi-lyrictilt__part[data-italic='true'] {
+  font-weight: 300;
+  font-style: italic;
+  line-height: 1.25;
+  letter-spacing: 0.15em;
+  /* 第十五轮第 4 条：斜体段同样常态白（主题色只在它的 active 字上）。 */
+  color: var(--pi-lyric-ink, #fff);
+  animation-name: pi-tilt-part-in-italic;
+  animation-duration: 0.6s;
+}
+
+.pi-lyrictilt__block[data-phase='exit'] .pi-lyrictilt__part {
+  animation-name: pi-tilt-part-out;
+}
+
+.pi-lyrictilt__block[data-phase='exit'] .pi-lyrictilt__part[data-italic='true'] {
+  animation-name: pi-tilt-part-out-italic;
+}
+
+@keyframes pi-tilt-part-in {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes pi-tilt-part-out {
+  from { opacity: 1; transform: translateY(0); }
+  to { opacity: 0; transform: translateY(-12px); }
+}
+
+@keyframes pi-tilt-part-in-italic {
+  from { opacity: 0; transform: translateY(24px) scale(0.92); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes pi-tilt-part-out-italic {
+  from { opacity: 1; transform: translateY(0) scale(1); }
+  to { opacity: 0; transform: translateY(-16px) scale(0.95); }
+}
+
+/* --- 字素：错峰淡入（delay = 视觉序号 × 0.04s / 0.05s），斜体段的字从 ±yOffset×2 落到 ±yOffset --- */
+.pi-lyricstage[data-theme='tilt'] .pi-lyrictilt__word {
+  display: inline-block;
+  color: inherit;
+  opacity: 0;
+  filter: none;
+  transform: translateY(var(--pi-tilt-drop-to, 0px));
+  /* 第十五轮第 4 条：`color` 一起过渡，一句话从「当前」变「唱过」时主题色逐渐淡回白。 */
+  transition: color var(--pi-lyric-fade-ms, 900ms) ease-out;
+  animation: pi-tilt-word-in 0.5s ease both;
+  animation-delay: var(--pi-tilt-delay, 0ms);
+}
+
+.pi-lyricstage[data-theme='tilt'] .pi-lyrictilt__word[data-space='true'] {
+  min-width: 0.25em;
+}
+
+.pi-lyrictilt__part[data-italic='true'] .pi-lyrictilt__word[data-space='true'] {
+  min-width: 0.35em;
+}
+
+/* 第十五轮第 4 条：只有**当前唱到的那一个字**拿主题色。普通段用 `--pi-tilt-normal`
+ * （主题 primaryColor），斜体段用 `--pi-tilt-italic`（主题 accentColor），两者都由
+ * TiltTheme 的根节点行内变量给。辉光走 `.pi-lyrictilt__glyph` 里的 `currentColor`，
+ * 所以颜色淡回白时，光晕也一起从主题色淡成白色（不需要另写一条动画）。 */
+.pi-lyricstage[data-theme='tilt'] .pi-lyrictilt__word[data-word-state='active'] {
+  color: var(--pi-tilt-normal, var(--pi-th-primary));
+}
+
+.pi-lyrictilt__part[data-italic='true'] .pi-lyrictilt__word[data-word-state='active'] {
+  color: var(--pi-tilt-italic, var(--pi-th-accent));
+}
+
+@keyframes pi-tilt-word-in {
+  from {
+    opacity: 0;
+    transform: translateY(var(--pi-tilt-drop-from, 0px));
+  }
+  to {
+    opacity: 1;
+    transform: translateY(var(--pi-tilt-drop-to, 0px));
+  }
+}
+
+/* 逐字脉冲：`--pi-tilt-glow` / `--pi-tilt-scale` 由 rAF 每帧直接写在字素上（不 setState）。 */
+.pi-lyrictilt__glyph {
+  display: inline-block;
+  transform: scale(var(--pi-tilt-scale, 1));
+  transition: transform 0.06s ease-out;
+  text-shadow: 0 0 calc(0.4em * var(--pi-tilt-glow, 0.25))
+    color-mix(in srgb, currentColor 38%, transparent);
+}
+
+/* 译文：倾诉的正文本来就大，译文只做一行小字垫在下面（任务书没给数值）。 */
+.pi-lyrictilt__translated {
+  margin: 0.35rem 0 0;
+  font-size: clamp(0.95rem, 1.8vw, 1.15rem);
+  font-weight: 400;
+  letter-spacing: 0.04em;
+  color: var(--pi-text-tertiary);
+  text-align: center;
+}
+
+/* ------------------------------------------------------------------ *
+ * 3) 时计 = pendolo
+ * ------------------------------------------------------------------ */
+
+/* 舞台铺满整个播放页（第十轮第 4 条：用户要「以整个 app 界面作为展示舞台」，
+ * 观感对齐参考图 `d012d536…png`：圆心在窗口左边缘外侧、外圈被左边缘切掉的一圈大表盘）。
+ *
+ * 改之前 `.pi-lyricstage` 走的是老路径：`lyric-stage.css` 自己那条 `max-width: 560px`（:38）
+ * 加上 `.pi-home__stage-lyrics` 的 `padding: 108px 24px 92px`（global.css:2476），
+ * 把容器压到几百 px，`useElementSize` 量到的宽高就只有那么点，于是
+ * `baseRadius = min(宽, 高) × 0.42`（PendoloTheme.tsx:445）只给出一两百 px 的半径——
+ * 「表盘偏小」的真因在容器，不在几何公式。
+ *
+ * 写法与上面 `fume` / `cadenza` / `partita` 那条（:65-84 及其长注释）逐条对齐：
+ * 绝对定位 + `inset: 0` 贴住 `position: relative` 的 `.pi-home__stage`（global.css:2437，
+ * 那两条 `position` / `height` 别改），边框盒恒等于整页可视区域，窗口缩放 / 最大化 / 全屏
+ * 都不需要重算任何数字。那一份注释里记的三个坑（压掉外层 grid 的多行轨道与 `min-height`、
+ * `.pi-home__stage-lyrics` 必须保持静态定位、全屏盒子必须 `pointer-events: none` 才不会吃掉
+ * 「点空白处开关悬浮框」）在这里同样适用，不再重复；`mask-image` / `--pi-sweep` /
+ * `container-type` 也照旧一个字不动。
+ * 顺带：文件头 :19 那句「`tilt` / `pendolo` 仍走老路径」从这条规则起只对 `tilt` 成立，
+ * 那句在共用段落里，本段按「只许改 pendolo 段」的约束不动它。 */
+.pi-lyricstage[data-theme='pendolo'] {
+  position: absolute;
+  inset: 0;
+  width: auto;
+  height: auto;
+  max-width: none;
+  min-height: 0;
+  margin: 0;
+  grid-template-rows: minmax(0, 1fr);
+  pointer-events: none;
+  /* 与上面三套同一个语义：底部悬浮进度条（`.pi-home__bar`：bottom 22px + height 56px）
+     的安全高度。时计现在的槽位都不贴底（最靠下的一档 ±5 在弧上），先留着备用。 */
+  --pi-stage-bleed-bottom: clamp(86px, 11vh, 132px);
+}
+
+.pi-lyricpendolo {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  /* 铺满整页之后这里不再是「一张居中卡片」：留 320px 的最小高度，在可视高 < 320px 的窗口
+     会把主题层顶出舞台（和上面三套要压掉 `.pi-lyricstage` 的 `min-height: 300px` 是同一个坑）。 */
+  min-height: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+/* 表盘在下层（Canvas 自己管 DPR），歌词环在上层。 */
+.pi-lyricpendolo__dial {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0.92;
+}
+
+.pi-lyricpendolo__ring {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+}
+
+/*
+ * 字号：原来四个值全是写死的 px（焦点 28 / 非焦点 22 / 译文 16 / 12），铺满整页之后
+ * 必须跟着**窗口短边**走——不然 1518×1018 这类窗口上 `baseRadius = min(宽,高) × 0.42`
+ * 已经长到 427px，焦点句还停在 28px，就缩成表盘里的一小点。
+ *
+ * 实测依据（脚本逐行扫参考图 `d012d536…png`，1518×1018，短边 1018）：
+ * - 表盘：窗口左边缘 x=2 处与 y=83 / 934 相交 → 圆心 y = 509 = 高 / 2、半径 ≈ 425.5，
+ *   而 `min(宽,高) × 0.42 = 427.6`，差的 2px 正是 36 齿擒纵轮的齿根（`radius - 2`）——
+ *   参考图用的就是本组件这套几何，所以从它身上量出来的字号可以直接换算。
+ * - 焦点句 "Oh it's going down"：'h / d / t' 顶在 y=460、x-height 带 471–494（23px）、
+ *   基线 ≈ 494、'g / y' 尾巴到 504 → em ≈ 44–47px。这是**屏幕上渲染后**的尺寸，
+ *   而焦点行另外乘了主题自己的 `scale = 1.25`，所以 CSS 侧的 font-size ≈ 45 / 1.25 ≈ 36px
+ *   = 短边的 36 / 1018 ≈ 3.5%。
+ * - 非焦点句（±1 档）换同一把尺子量：em ≈ 25–30px，比焦点小约 1.7 倍——正好等于现状的
+ *   `(22 × 0.92) : (28 × 1.25) = 20.2 : 35`，所以 28 / 22 / 16 / 12 这四个**比例**是对的，
+ *   只差整体放大；译文（焦点行下面那句中文）实测墨迹高 23px → em ≈ 26px ≈ 16px × 1.3，同一档。
+ * - 于是四档一起按短边取 3.5 / 2.75 / 2 / 1.5 vmin（= 28 : 22 : 16 : 12 那套比例）。
+ *
+ * clamp 两端怎么定的：
+ * - 下限直接取**现在的 px 值**（28 / 22 / 16 / 12）→ 短边 ≤ 800px 时与改造前逐位一致；
+ *   窗口最小 960×620（`apps/desktop/src/main/index.ts:154`）→ 短边 620，下限生效，只会更大。
+ * - 上限是下限的 2 倍（56 / 44 / 32 / 24）→ 短边 ≥ 1600px 一起封顶，四个比例不会走样。
+ * - 会不会把弧上的一行撑到互相压住：相邻槽位差 `angleStep = 12.5°`，焦点附近的弧上间距
+ *   ≈ `ringRadius × sin(12.5°)` = `0.48 × min × 0.2164` ≈ 0.104 × 短边；焦点那格连译文
+ *   高 ≈ 2.48 × font-size（正文 1.2em + gap 0.1em + 译文 1.2 × 16/28 em，再乘 scale 1.25），
+ *   相邻档的半高 ≈ 0.71 × font-size（scale 0.92、字号 22/28），两半相加 ≈ 1.95 × font-size。
+ *   代进去：短边 1018 → 焦点 35.6px、占 69px（参考图这一格墨迹实测 80px）对间距 106px；
+ *   短边 620 → 焦点 28px、占 54.6px 对间距 64.5px。上下限之间都不会压。
+ * `--pi-pendolo-font-scale`（设置页「歌词动效参数 → 字号」）继续乘在最外层，语义不变。
+ */
+
+/*
+ * 槽位：left/top 固定在容器原点（弧心在容器左边缘中点），
+ * 每帧由 rAF 写 transform（弧上坐标 + 反向旋转补偿 + scale）与 opacity。
+ */
+.pi-lyricpendolo__slot {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1em;
+  /* 字号吃设置页「歌词动效参数 → 字号」：变量由 `PendoloTheme.tsx` 写在主题根上，
+     默认 1 就是不缩水；具体 px 见上面那大段的 clamp（短边 ≤ 800px 时仍逐位等于原来的 22px）。 */
+  font-size: calc(clamp(22px, 2.75vmin, 44px) * var(--pi-pendolo-font-scale, 1));
+  line-height: 1.2;
+  /* 第十五轮第 4 条：非焦点句（未唱 / 唱过）一律**常态白**，只有焦点句（当前高亮那一句）
+   * 拿主题色（见下面 `[data-lyric-focus='true']` 两条）。层次靠 opacity（0.12 / 0.3 / 0.82 / 1），不靠灰。 */
+  color: var(--pi-lyric-ink, #fff);
+  white-space: nowrap;
+  opacity: 0.12;
+  transform-origin: 0 50%;
+  /* 第十五轮第 4 条：一句从「焦点」变回非焦点时，主题色按六套主题共用的时长**逐渐**淡回白。 */
+  transition: color var(--pi-lyric-fade-ms, 900ms) ease, font-size 0.42s ease;
+  will-change: transform, opacity;
+}
+
+/* 焦点行（= 当前高亮那一句）：3.5vmin（= 短边 800px 时的 28px，见上面那大段）
+ * + mix(primary, accent, 副歌 .58 : 其它 .32)。第十五轮第 4 条之后，这两条是
+ * **pendolo 唯一带主题色的地方**，也是它的「高亮 + 辉光」（辉光见 `.pi-lyricpendolo__halo`）。 */
+.pi-lyricpendolo__slot[data-lyric-focus='true'] {
+  font-size: calc(clamp(28px, 3.5vmin, 56px) * var(--pi-pendolo-font-scale, 1));
+  color: color-mix(in srgb, var(--pi-th-accent) 32%, var(--pi-th-primary));
+}
+
+.pi-lyricpendolo__slot[data-lyric-focus='true'][data-chorus='true'] {
+  color: color-mix(in srgb, var(--pi-th-accent) 58%, var(--pi-th-primary));
+}
+
+.pi-lyricpendolo__text {
+  display: inline-block;
+}
+
+/*
+ * 字素：契约要求每个字素都挂 `.pi-lyricstage__word` + `data-word-state`（冒烟靠它数逐字点亮）。
+ * 时计不是「逐字点亮」主题——非焦点行整句都读得到，只有焦点行按 waiting/active/passed 分三档亮度。
+ */
+.pi-lyricstage[data-theme='pendolo'] .pi-lyricpendolo__word {
+  opacity: 0.42;
+  transform: none;
+  filter: none;
+  transition: opacity 0.32s ease;
+}
+
+.pi-lyricstage[data-theme='pendolo']
+  .pi-lyricpendolo__slot[data-lyric-focus='true']
+  .pi-lyricpendolo__word[data-word-state='waiting'] {
+  opacity: 0.3;
+}
+
+.pi-lyricstage[data-theme='pendolo']
+  .pi-lyricpendolo__slot[data-lyric-focus='true']
+  .pi-lyricpendolo__word[data-word-state='active'] {
+  opacity: 1;
+}
+
+.pi-lyricstage[data-theme='pendolo']
+  .pi-lyricpendolo__slot[data-lyric-focus='true']
+  .pi-lyricpendolo__word[data-word-state='passed'] {
+  opacity: 0.82;
+}
+
+/* 副歌光晕：inset -0.7em -1.1em、中心 42% 50%、blur 10px、scale 1.012 → 1.045。 */
+.pi-lyricpendolo__halo {
+  position: absolute;
+  inset: -0.7em -1.1em;
+  border-radius: 0.6em;
+  background: radial-gradient(
+    circle at 42% 50%,
+    color-mix(in srgb, var(--pi-th-accent) 14%, transparent) 0%,
+    color-mix(in srgb, var(--pi-th-accent) 3.5%, transparent) 55%,
+    transparent 82%
+  );
+  filter: blur(10px);
+  animation: pi-pendolo-halo 0.52s ease-out both;
+  pointer-events: none;
+}
+
+@keyframes pi-pendolo-halo {
+  from { transform: scale(1.012); opacity: 0.55; }
+  55% { transform: scale(1.026); opacity: 1; }
+  to { transform: scale(1.045); opacity: 0.9; }
+}
+
+/* 进度小圆点：0.42em，沿一条 12em 的隐性轨道由 `--pi-pendolo-progress` 推过去。 */
+.pi-lyricpendolo__dot {
+  position: absolute;
+  bottom: -0.75em;
+  left: 0;
+  width: 0.42em;
+  height: 0.42em;
+  border-radius: 50%;
+  background: var(--pi-th-accent);
+  box-shadow: 0 0 7px color-mix(in srgb, var(--pi-th-accent) 58%, transparent);
+  transform: translateX(calc(var(--pi-pendolo-progress, 0) * 12em));
+  transition: transform 0.25s linear;
+  pointer-events: none;
+}
+
+/* 译文：焦点 2vmin / 其它 1.5vmin（= 短边 800px 时的 16 / 12px，同样吃 `--pi-pendolo-font-scale`）。 */
+.pi-lyricpendolo__translated {
+  font-size: calc(clamp(12px, 1.5vmin, 24px) * var(--pi-pendolo-font-scale, 1));
+  line-height: 1.2;
+  color: var(--pi-text-tertiary);
+  opacity: 0.8;
+}
+
+.pi-lyricpendolo__slot[data-lyric-focus='true'] .pi-lyricpendolo__translated {
+  font-size: calc(clamp(16px, 2vmin, 32px) * var(--pi-pendolo-font-scale, 1));
+  opacity: 0.92;
+}
+
+/* ------------------------------------------------------------------ *
+ * 减少动效：动画全关，但**必须把被动画「托着」的可见性补回来**，
+ * 否则 waiting 态（opacity: 0）会把整行吞掉。
+ * ------------------------------------------------------------------ */
+
+@media (prefers-reduced-motion: reduce) {
+  .pi-lyricpartita__line,
+  .pi-lyricpartita__float,
+  .pi-lyricpartita__ripple,
+  .pi-lyrictilt__block,
+  .pi-lyrictilt__part,
+  .pi-lyricstage[data-theme='tilt'] .pi-lyrictilt__word,
+  .pi-lyricpendolo__halo {
+    animation: none !important;
+  }
+
+  .pi-lyricpartita__line,
+  .pi-lyrictilt__block,
+  .pi-lyrictilt__part,
+  .pi-lyricstage[data-theme='tilt'] .pi-lyrictilt__word {
+    opacity: 1 !important;
+  }
+
+  .pi-lyricstage[data-theme='partita'] .pi-lyricpartita__word,
+  .pi-lyrictilt__glyph,
+  .pi-lyricpartita__guide,
+  .pi-lyricpartita__guide::before,
+  .pi-lyricpartita__guide::after,
+  .pi-lyricpartita__baseline,
+  .pi-lyricpendolo__dot {
+    transition: none !important;
+  }
+
+  /* 时计的字素分了 waiting/active/passed 三档亮度，用 transition: none 关掉过渡即可。 */
+  .pi-lyricstage[data-theme='pendolo'] .pi-lyricpendolo__word {
+    transition: none !important;
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "name": "@pi/source-unm",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@pi/shared": "workspace:*",
+    "@pi/source-core": "workspace:*",
+    "@unblockneteasemusic/server": "0.28.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.9.0"
+  }
+}

@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <!--
+      CSP 收紧到「只允许本地与网易云图片域名」：
+      渲染进程不做任何任意网络访问，一切数据走 IPC。
+      img-src 放开 p1.music.126.net 等图片 CDN，避免封面全部加载失败。
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.music.126.net https://*.126.net; media-src 'self' blob: data: http://127.0.0.1:*; connect-src 'self'; font-src 'self' data:"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PI</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

@@ -1,0 +1,519 @@
+/* ------------------------------------------------------------------ *
+ * 设置页外框（用户 m08768 第 8 条）
+ *
+ * 参考图 `docs/ref-m08768-settings-frame.png`：一块带外框的整页 = 中间一排分类 tab、
+ * 下面内容区（第十轮第 1 条把顶部的封面 + 黑胶去掉了，见文件中间那段注释）。
+ *
+ * 这份文件只收「设置页新壳」的样式：外框 / tab 排 / 内容区 / 同步键 /
+ * 歌词主题选择器 / 面板态账号卡。卡片、开关、下拉、音源行这些**既有**控件的样式
+ * 仍然在 `global.css` 里，这里不去覆盖它们——否则冒烟拍到的外观会跟着一起变。
+ *
+ * 主进程冒烟（`apps/desktop/src/main/index.ts` 的 `PI_SMOKE_SETTINGS` 段）依赖的选择器
+ * （`.pi-page-title` / `.pi-card` / `.pi-srcrow` / `input.pi-input`）都在 JSX 里，
+ * 这份 CSS 只改外观、不动结构。注意 `.pi-settings`（global.css）仍是内容列的宽度约束。
+ * ------------------------------------------------------------------ */
+
+/* 第十二轮（用户 m08841 参考图）：设置页换「拍立得卡片」皮肤。
+ *
+ * 参考图是一张竖版圆角白面板：一排圆形图标页签、下面一张张厚白边方块（像拍立得
+ * 照片，底部白边更厚、大圆角、柔和落影），行内控件收成 pill / 分段控件。
+ *
+ * 做法是「换皮肤 + 精简」，不是重做结构：
+ *   - `.pi-card` 本体定义在 global.css 且别处（日志、弹窗等）也在用，
+ *     所以这里一律用更高的特异性 `.pi-settings-frame .pi-card` 只把设置框内的卡换掉；
+ *   - `overlays.css` 在 main.tsx 里比本文件后加载，浮层外框（`__box` / 内层玻璃剥离）
+ *     仍旧归它管，这里不动；
+ *   - 颜色全部走 tokens.css 的 `--pi-*`（亮/暗各一份），不写死色值。
+ *
+ * 冒烟抓手（`.pi-page-title` 文本、`.pi-card` 数量、`data-settings-tab`、
+ * `data-lyric-theme-option`、`data-lyric-tuning`、`.pi-srcrow`、`input.pi-input`）
+ * 全在 JSX 里，这一轮没动结构，也不动它们的类名。 */
+
+.pi-settings-frame {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 760px;
+  padding: 14px;
+  border: 1px solid var(--pi-divider);
+  border-radius: var(--pi-glass-radius);
+  background: var(--pi-glass-bg);
+  backdrop-filter: var(--pi-glass-blur);
+  -webkit-backdrop-filter: var(--pi-glass-blur);
+  box-shadow: var(--pi-glass-edge), var(--pi-shadow-card);
+}
+
+/* ---------------------------- 拍立得卡面 ---------------------------- */
+/* 一张卡 = 一张拍立得：白底、大圆角、柔和落影，四边留白里**底部更厚**
+   （左右 16px / 上 14px / 下 24px），所以第一眼像照片而不是表单。
+   还顺手把卡内标题与正文的行距放松一点，减少「表单感」。 */
+
+.pi-settings-frame .pi-card {
+  padding: 14px 16px 24px;
+  border: 1px solid var(--pi-divider);
+  border-radius: 18px;
+  background: var(--pi-surface);
+  box-shadow: var(--pi-glass-edge), var(--pi-shadow-float);
+}
+.pi-settings-frame .pi-card > .pi-card {
+  /* 保险丝：设置框里目前没有卡中套卡，万一以后套上，别让白边叠白边。 */
+  padding: 12px 12px 16px;
+  border-radius: 14px;
+  box-shadow: none;
+}
+
+/* 第十轮第 1 条（用户 m02362）：顶部「当前播放大封面 + 黑胶 + 歌名/歌手」
+   整块删掉了（原来这里是 `.pi-settings-frame__head/__art/__cover/__meta/__song/__artist`
+   与 `.pi-vinyl / __grooves / __label / __hole / @keyframes pi-vinyl-spin`）。
+   设置页不该再摆一遍正在播的歌——要看得见正在播的歌，播放页本身就有。 */
+
+/* -------------------------------- tab 排 -------------------------------- */
+
+.pi-settings-frame__tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--pi-divider);
+}
+/* 参考图里页签是一排小圆形图标键（选中那个是浅色实心圆），文字标签收进
+   `title` / 无障碍名，所以按钮做成正方形圆角，`.pi-settings-frame__tablabel`
+   靠 clip 隐藏但仍留在 DOM 里当可读名（冒烟也读 DOM，不读可见性）。 */
+.pi-settings-frame__tab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--pi-text-sub);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.pi-settings-frame__tab:hover {
+  background: var(--pi-bg-subtle);
+  color: var(--pi-text);
+}
+.pi-settings-frame__tab[data-active='true'] {
+  border-color: transparent;
+  background: var(--pi-primary-weak);
+  color: var(--pi-primary-deep);
+  font-weight: 600;
+}
+.pi-settings-frame__tab:focus-visible {
+  outline: 2px solid var(--pi-primary);
+  outline-offset: 2px;
+}
+/* 只给读屏和 DOM 查询看，不占版面。 */
+.pi-settings-frame__tablabel {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ------------------------------- 内容区 ------------------------------- */
+
+.pi-settings-frame__body {
+  /* 外框自己撑高度，滚动条落在内容区上：头部与底部同步键因此始终可见。 */
+  max-height: min(58vh, 560px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 4px;
+}
+.pi-settings-frame__body::-webkit-scrollbar {
+  width: 8px;
+}
+.pi-settings-frame__body::-webkit-scrollbar-thumb {
+  border-radius: 4px;
+  background: var(--pi-divider);
+}
+
+.pi-settings__subtitle {
+  margin: 0 0 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--pi-text);
+}
+
+/* ---------------------- 精简后的行与行内控件 ---------------------- */
+
+/* 设置行：原来一行是「标题 + 两行长说明 + 右侧控件」，现在收成浅底圆角 pill 行，
+   只留「名字 + 一行短提示 + 右侧 pill 选择器」。长说明已经搬进 JSX 的 `title`。
+   注意 global.css 里 `.pi-setting:first-child/:last-child` 与这里同特异性，
+   靠文件加载顺序（main.tsx 里本文件在 global.css 之后）胜出；三个选择器写全是为了稳。 */
+.pi-settings-frame .pi-setting,
+.pi-settings-frame .pi-setting:first-child,
+.pi-settings-frame .pi-setting:last-child {
+  align-items: center;
+  gap: 12px;
+  padding: 9px 12px;
+  border-top: 0;
+  border-radius: 14px;
+  background: var(--pi-bg-subtle);
+}
+.pi-settings-frame .pi-setting + .pi-setting {
+  margin-top: 6px;
+}
+.pi-settings-frame .pi-setting__title {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+.pi-settings-frame .pi-setting__hint {
+  margin-top: 2px;
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+/* 下拉 / 输入框 / 按钮统一成 pill，跟参考图右侧那几个小胶囊对齐。 */
+.pi-settings-frame .pi-select {
+  flex: none;
+  border: 1px solid var(--pi-divider);
+  border-radius: 999px;
+  background: var(--pi-surface);
+  padding: 0 12px;
+}
+.pi-settings-frame .pi-input {
+  border-radius: 12px;
+  background: var(--pi-surface);
+}
+.pi-settings-frame .pi-btn {
+  border-radius: 999px;
+}
+
+/* 勾选框改成开关外观：参考图里这一排没有方框勾选，都是胶囊。
+   仍然是原生 `<input type="checkbox">`（`data-lyric-tuning="randomThemePerSong"`
+   的抓手与 onChange 一行没动），只是用 appearance:none + ::after 画出来。 */
+.pi-settings-frame .pi-check {
+  position: relative;
+  flex: none;
+  width: 38px;
+  height: 22px;
+  border: 1px solid var(--pi-divider);
+  border-radius: 999px;
+  background: var(--pi-bg-subtle);
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.pi-settings-frame .pi-check::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--pi-surface);
+  box-shadow: var(--pi-shadow-card);
+  transition: transform 0.15s ease;
+}
+.pi-settings-frame .pi-check:checked {
+  border-color: var(--pi-primary);
+  background: var(--pi-primary);
+}
+.pi-settings-frame .pi-check:checked::after {
+  transform: translateX(16px);
+}
+.pi-settings-frame .pi-check:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+/* 分段控件（播放模式 / 外观 / 界面语言）：浅底胶囊容器 + 选中项白底小胶囊。 */
+.pi-seg {
+  display: inline-flex;
+  flex: none;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 999px;
+  background: var(--pi-bg-subtle);
+}
+.pi-seg__item {
+  padding: 5px 14px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--pi-text-sub);
+  font: inherit;
+  font-size: 13px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+}
+.pi-seg__item:hover:not([data-active='true']) {
+  color: var(--pi-text);
+}
+.pi-seg__item[data-active='true'] {
+  background: var(--pi-surface);
+  color: var(--pi-text);
+  font-weight: 600;
+  box-shadow: var(--pi-shadow-card);
+}
+.pi-seg__item:disabled {
+  cursor: default;
+  opacity: 0.72;
+}
+.pi-seg__item:focus-visible {
+  outline: 2px solid var(--pi-primary);
+  outline-offset: 1px;
+}
+
+/* ------------------------------ 同步按钮 ------------------------------ */
+
+.pi-settings-frame__foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border-top: 0;
+  border-radius: 16px;
+  background: var(--pi-bg-subtle);
+}
+.pi-syncbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-width: 148px;
+  padding: 9px 20px;
+  border: 1px solid var(--pi-primary);
+  border-radius: var(--pi-radius-btn);
+  background: var(--pi-primary);
+  color: #fff;
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.pi-syncbtn:hover:not(:disabled) {
+  border-color: var(--pi-primary-hover);
+  background: var(--pi-primary-hover);
+}
+.pi-syncbtn:disabled {
+  cursor: default;
+  opacity: 0.72;
+}
+.pi-syncbtn[data-sync-state='failed'] {
+  border-color: #d9534f;
+  background: #d9534f;
+}
+.pi-settings-frame__foothint {
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--pi-text-sub);
+}
+
+/* --------------------------- 歌词动效主题 --------------------------- */
+
+.pi-lyric-themes {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+.pi-lyric-theme {
+  display: grid;
+  gap: 4px;
+  padding: 11px 13px;
+  border: 1px solid var(--pi-divider);
+  border-radius: 16px;
+  background: var(--pi-surface);
+  color: var(--pi-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  box-shadow: var(--pi-shadow-card);
+  transition: border-color 0.15s ease, background 0.15s ease, transform 0.15s ease;
+}
+.pi-lyric-theme:hover:not(:disabled) {
+  border-color: var(--pi-primary);
+  transform: translateY(-1px);
+}
+.pi-lyric-theme[data-active='true'] {
+  border-color: var(--pi-primary);
+  background: var(--pi-primary-weak);
+}
+.pi-lyric-theme:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+.pi-lyric-theme__name {
+  font-size: 14px;
+  font-weight: 600;
+}
+.pi-lyric-theme__desc {
+  color: var(--pi-text-sub);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* --------------------------- 音量滑杆 --------------------------- */
+
+/* 参考图里滑杆是「细轨道 + 深色小圆点」，不是浏览器默认的蓝色高光条，
+   所以自己画轨道与拇指；`accent-color` 在 appearance:none 之后不再生效。
+   拇指用 `--pi-text`（亮档近黑 / 暗档近白）自动跟随主题。 */
+.pi-range {
+  flex: none;
+  width: 180px;
+  height: 22px;
+  margin: 0;
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+.pi-range::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--pi-divider);
+}
+.pi-range::-webkit-slider-thumb {
+  width: 14px;
+  height: 14px;
+  margin-top: -5px;
+  border: 0;
+  border-radius: 50%;
+  appearance: none;
+  -webkit-appearance: none;
+  background: var(--pi-text);
+  box-shadow: var(--pi-shadow-card);
+}
+.pi-range:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+/* ------------------------ 歌词动效参数 ------------------------ */
+
+/* 这四根滑杆调的是连续量，「当前 0.85」这种反馈得让轨道长一点才好对准；
+   音量那根是「大概拧到多少」，短一点反而好使，所以只在这张卡里放宽。
+   `[data-lyric-tuning]` 是冒烟探针按字段名的抓手，别删。 */
+.pi-range[data-lyric-tuning] {
+  width: 240px;
+}
+
+/* 参数行的说明文字比主题描述长，标题列不设下限时会被滑杆挤成一行一两个字。 */
+.pi-settings[data-settings-tab-panel='lyric'] .pi-setting__hint {
+  max-width: 420px;
+}
+
+/* 恢复默认是个一次性动作，跟滑杆/下拉排在一起要能一眼看出它不是「当前值」。 */
+.pi-btn[data-lyric-tuning-reset] {
+  flex: none;
+}
+
+/* ------------------------ 面板态账号卡 ------------------------ */
+
+/* 抽屉态（默认）由 global.css 定义，不能在这里碰：那是「我还没登录」的救急路径。 */
+.pi-account--panel {
+  gap: 10px;
+  padding: 0;
+  margin-bottom: 0;
+  border-bottom: none;
+}
+.pi-account--panel .pi-account__avatar {
+  width: 40px;
+  height: 40px;
+}
+.pi-account--panel .pi-account__avatar--empty svg {
+  width: 20px;
+  height: 20px;
+}
+/* 昵称与 ID 分两行：ID 是独立的等宽小字，跟昵称挤一行会先被窄面板截掉。 */
+.pi-account--panel .pi-account__who {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  gap: 1px;
+}
+.pi-account--panel .pi-account__name {
+  flex: none;
+}
+.pi-account--panel .pi-account__id {
+  overflow: hidden;
+  color: var(--pi-text-tertiary);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --------------------------- 快捷键设置区 --------------------------- */
+
+/* 用户 m00001 第 5 条：九条快捷键在设置页「界面」tab 里逐条改绑。
+   类名统一加 `.pi-scut__*` 前缀，避免和并行改动里的其它设置区撞名；
+   卡面与行底继续吃上面那条 `.pi-settings-frame .pi-card` / `.pi-setting` 的拍立得皮肤。 */
+
+.pi-scut__note {
+  margin: 0 0 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--pi-text-sub);
+}
+
+.pi-scut__row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 12px;
+  border-radius: 14px;
+  background: var(--pi-bg-subtle);
+}
+.pi-scut__row + .pi-scut__row {
+  margin-top: 6px;
+}
+
+.pi-scut__meta {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+/* 键位是一颗可以点的胶囊：捕获态换色 + 文案变成「按下新键…」。 */
+.pi-scut__key {
+  flex: none;
+  min-width: 104px;
+  padding: 6px 14px;
+  border: 1px solid var(--pi-divider);
+  border-radius: 10px;
+  background: var(--pi-surface);
+  color: var(--pi-text);
+  font: inherit;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+.pi-scut__key:hover {
+  border-color: var(--pi-primary);
+}
+.pi-scut__key[data-shortcut-capturing='true'] {
+  border-color: var(--pi-primary);
+  background: var(--pi-primary-weak);
+  color: var(--pi-primary-deep);
+}
+.pi-scut__key:focus-visible {
+  outline: 2px solid var(--pi-primary);
+  outline-offset: 2px;
+}
+
+.pi-scut__conflict {
+  margin-top: 2px;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: #d9534f;
+}

@@ -1,0 +1,729 @@
+/* ==================================================================== *
+ * 第八轮的三块浮层（用户 m00003 第 1 / 6 / 7 条）
+ * --------------------------------------------------------------------
+ * 1. 无操作自动隐藏：播放页左上角名片、底部进度条、悬浮球。
+ *    判断「有没有人动」的是 `lib/idle.ts`（写 `.pi-app[data-idle]`），这里只管藏和露。
+ * 2. 设置不再是整页，而是从屏幕中心**流出来的一只框**（`SettingsOverlay`）。
+ * 3. 歌曲卡片列表不再进单独的歌单页，而是播放页**整体模糊**之后浮上来的一层
+ *    （`SongListOverlay`，里面还是那个 `PlaylistDetail`）。
+ * 4. 悬浮球**塌向屏幕中心**——设置那段「坠入 → 塌缩 → 流出」动画的第二幕。
+ *
+ * 这个文件在 `main.tsx` 里**最后**引入：它要覆盖 `global.css` 里
+ * `.pi-home__card` / `.pi-home__bar` / `.pi-orb` / `.pi-detail` 的既有取值，
+ * 靠源码顺序赢过同特异性的规则，不靠 `!important`。
+ * ==================================================================== */
+
+/*
+ * 第十七轮第 7 条（用户 m00006）：「歌曲名片的出现方式改成从底部向上冒出……
+ * 常态隐藏，只有鼠标移动到接近位置或者刚切换完歌曲才出现，其他情况都保持隐藏。」
+ * ⇒ 左下角名片的藏/露**整个搬回它自己的基态**（`global.css` 的 `.pi-home__card`
+ * + `[data-reveal='true']` 的上冒动画），由 HomePage 里那段「指针接近」判定驱动。
+ * 原来这里那两条 `[data-idle='true'] .pi-home__card`（静置淡出 + `:hover` 复原）已删除：
+ * 它们特异性更高（0-3-0 > 0-2-0），会在「指针接近」时把名片重新按掉，
+ * 而且「动鼠标就唤回」和「接近才出现」是两套互相打架的语义。
+ *
+ * 静置淡出现在只剩悬浮球那一套（见下面 `.pi-orb`）——进度条早在第十轮第 3 条就退出了。
+ */
+
+/*
+ * 悬浮球是唯一常驻的控制点，所以只在「没展开、没在拖、没贴成细条」时淡出：
+ * 贴边状态本来就只有 8px 宽，再藏起来就真的找不到了（而且那也是用户自己摆的位置）。
+ * 它比名片/进度条淡得慢一点（0.3s / 0.34s），先没的是内容、最后才是球。
+ */
+.pi-orb {
+  transition:
+    opacity 0.34s ease,
+    transform 0.44s cubic-bezier(0.32, 0, 0.24, 1);
+}
+.pi-app[data-idle='true']
+  .pi-orb[data-snapped='none']:not([data-open='true']):not([data-dragging='true']) {
+  opacity: 0;
+}
+.pi-app[data-idle='true']
+  .pi-orb[data-snapped='none']:not([data-open='true']):not([data-dragging='true']):hover {
+  opacity: 1;
+}
+
+/* ---- 4. 悬浮球塌向屏幕中心（设置动画第二幕）------------------------ */
+/*
+ * 位移量由 `PiOrb.tsx` 算好写进 `--pi-orb-collapse-x/y`（球心 → 视口中心的增量），
+ * 时长必须与那边 `COLLAPSE_MS = 440` 对齐：塌缩演完才 `openSettings()`。
+ * 设置框关掉时（`data-settings` 落回 `none`）这条规则不再命中，transform 由上面
+ * 那条 `.pi-orb` 的 0.44s 过渡反向走回原位。
+ */
+.pi-orb[data-settings='collapse'] {
+  transform: translate(var(--pi-orb-collapse-x, 0px), var(--pi-orb-collapse-y, 0px)) scale(0.14);
+  opacity: 0;
+  /* 塌缩过程中球已经不可见，别再让它在屏幕中心接走指针事件 */
+  pointer-events: none;
+}
+
+/* ---- 2. 设置：从中心流出来的一只框 --------------------------------- */
+.pi-settings-overlay {
+  position: fixed;
+  inset: 0;
+  /* 高过悬浮球(40)、歌单浮层(45)与抽屉(21)：设置开着的时候它们都不该露头 */
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: 26px;
+  background: color-mix(in srgb, var(--pi-bg) 46%, transparent);
+  backdrop-filter: blur(20px) saturate(1.06);
+  -webkit-backdrop-filter: blur(20px) saturate(1.06);
+  animation: pi-settings-veil-in 0.3s ease both;
+}
+.pi-settings-overlay[data-phase='out'] {
+  animation: pi-settings-veil-out 0.32s ease both;
+}
+@keyframes pi-settings-veil-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes pi-settings-veil-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+/*
+ * 「框」本身就是那张卡片：`.pi-settings-frame` 自带的描边 / 底色 / 模糊要在下面剥掉，
+ * 不然是玻璃套玻璃（发灰、双描边）。`overflow: hidden` 顺便把内层滚动的圆角切干净。
+ */
+.pi-settings-overlay__box {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  width: min(760px, 100%);
+  max-height: min(88vh, 880px);
+  border: 1px solid var(--pi-glass-border);
+  border-radius: var(--pi-glass-radius);
+  background: var(--pi-glass-bg-strong);
+  backdrop-filter: var(--pi-glass-blur);
+  -webkit-backdrop-filter: var(--pi-glass-blur);
+  box-shadow: var(--pi-glass-highlight), var(--pi-glass-edge), var(--pi-glass-shadow);
+  overflow: hidden;
+  /* 从中心长出来：与「球塌到屏幕中心」是同一个视觉原点，两段动画才接得上 */
+  transform-origin: center center;
+  animation: pi-settings-flow-in 0.44s cubic-bezier(0.16, 0.92, 0.24, 1.02) both;
+}
+.pi-settings-overlay[data-phase='out'] .pi-settings-overlay__box {
+  animation: pi-settings-flow-out 0.3s cubic-bezier(0.5, 0, 0.78, 0.4) both;
+}
+/* 「向外流出」：先小、糊、透明，一路放大到 1（55% 处已经完全不透明，收尾只放大不闪） */
+@keyframes pi-settings-flow-in {
+  0% {
+    opacity: 0;
+    transform: scale(0.34);
+    filter: blur(12px);
+  }
+  55% {
+    opacity: 1;
+    filter: blur(0);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+    filter: blur(0);
+  }
+}
+@keyframes pi-settings-flow-out {
+  from {
+    opacity: 1;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.36);
+    filter: blur(10px);
+  }
+}
+
+/* 框里的内容也错开一点点：整块先流出来，正文再补上（0.1s 的层次） */
+.pi-settings-overlay[data-phase='in'] .pi-settings-overlay__box > * {
+  animation: pi-settings-content-in 0.36s cubic-bezier(0.22, 0.61, 0.36, 1) 0.1s both;
+}
+@keyframes pi-settings-content-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* 剥掉内层玻璃（只留一张卡片），并让内容区吃掉剩余高度、自己滚 */
+.pi-settings-overlay .pi-settings-frame {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-width: none;
+  padding: 16px 18px 18px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow: none;
+  overflow: hidden;
+}
+.pi-settings-overlay .pi-settings-frame__body {
+  /* 整页时代是 `min(58vh, 560px)`；进了框得改成「占了头/尾之后剩下多少」 */
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+}
+/* 整页时代的「设置」大标题在框里不需要：框顶上就是封面 + 黑胶 */
+.pi-settings-overlay .pi-page-title,
+.pi-settings-overlay .pi-page-sub {
+  display: none;
+}
+
+.pi-settings-overlay__close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--pi-glass-border);
+  border-radius: 50%;
+  background: var(--pi-glass-sheen);
+  color: var(--pi-text-sub);
+  cursor: pointer;
+  transition:
+    color 0.16s ease,
+    background 0.16s ease,
+    transform 0.2s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+.pi-settings-overlay__close:hover {
+  color: var(--pi-text);
+  background: var(--pi-primary-weak);
+  transform: scale(1.08);
+}
+
+/* ---- 3. 歌曲卡片列表：播放页整体模糊 + 浮上来的一层 ---------------- */
+.pi-listoverlay {
+  position: fixed;
+  inset: 0;
+  /*
+   * 层级阶梯（活着的层就这几个）：
+   *   页面内容(1~8) < 卡片列表 = 这里 < 抽屉遮罩 20 / 抽屉 21 < 悬浮球 40
+   *   < 登录遮罩 40 / 搜索 60 / 设置 60 < 噪点 900(不接指针)
+   * 卡片列表必须**低于悬浮球**：它是「播放页上面的一层」，球才是全应用常驻控件。
+   * 否则球被这层盖住，环形菜单的封面环就拖不动、点不到（第八轮冒烟抓到的就是这个：
+   * 球 open=true 却命中 .pi-songcards__stage）。同时它要低于抽屉，不然从环形菜单
+   * 进「账号」抽屉时抽屉会被糊在下面看不见。
+   */
+  z-index: 18;
+  display: grid;
+  place-items: center;
+  /* 第十轮第 4 条（用户 m02362）：「点击空白部分要可以退出到歌曲播放页」。
+     原来 sheet 是「1080px 宽 × 满高」，窗口 1182×772 时四周只剩 24px 一圈，
+     用户根本点不到空白（点哪都是 sheet）。留白加到 44px、sheet 高度收成
+     `min(760px, 100%)`，四周就有一圈真的能命中 `.pi-listoverlay` 本身的空白。 */
+  padding: 44px;
+  /* 第十轮第 10 条（用户 m02362）：用户要的是「模糊歌曲播放面的效果」，
+     不是「加一个白色遮罩」。所以底色从 38% 的 `--pi-bg`（浅色主题下就是一层白纱）
+     降到 8%，模糊 26px → 16px：被糊的播放页（沉浸式封面 / 歌词 / 名片 / 进度条）
+     轮廓都还看得见，只是糊了——这层只负责「糊」，不负责「盖」。 */
+  background: color-mix(in srgb, var(--pi-bg) 8%, transparent);
+  backdrop-filter: blur(16px) saturate(1.12);
+  -webkit-backdrop-filter: blur(16px) saturate(1.12);
+  animation: pi-listoverlay-in 0.28s ease both;
+}
+@keyframes pi-listoverlay-in {
+  from {
+    opacity: 0;
+    backdrop-filter: blur(0) saturate(1);
+  }
+  to {
+    opacity: 1;
+    backdrop-filter: blur(16px) saturate(1.12);
+  }
+}
+.pi-listoverlay__sheet {
+  position: relative;
+  width: min(1080px, 100%);
+  height: min(760px, 100%);
+  animation: pi-listoverlay-sheet-in 0.34s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}
+@keyframes pi-listoverlay-sheet-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/*
+ * `PlaylistDetail` 原来是「整页覆盖」(`position: fixed; inset: 0; background: var(--pi-bg)`)，
+ * 在浮层里要把这层底色和 fixed 脱掉，它才只是浮层里的一张纸：
+ * 背景继续透出被糊掉的播放页，卡片流仍然在自己那一格里滚。
+ */
+.pi-listoverlay .pi-detail {
+  position: absolute;
+  inset: 0;
+  background: transparent;
+  grid-template-rows: 48px 1fr;
+}
+/* 浮层里的顶栏不该还能拖动整个 Electron 窗口（那是整页时代留给无边框窗口的） */
+.pi-listoverlay .pi-detail__bar {
+  -webkit-app-region: no-drag;
+  border-bottom: 0;
+}
+/* 歌单浮层的顶栏就是它自己的「关闭」入口，给它一点玻璃感，像浮在卡片流上方 */
+.pi-listoverlay .pi-detail__bar button {
+  border-radius: var(--pi-radius-btn);
+}
+
+/*
+ * ---- 3.5 先锋风格：把「歌曲列表」换成队列拼贴（用户第十七轮第 ②③ 条） ----
+ *
+ * `SongCollage` 平时是独自占满整页的（`.pi-collage { position: fixed; inset: 0 }`），
+ * 塞进这层浮层要收拾三件事：
+ *   ① 它得改回 absolute 并**只待在正文格里**——不然 48px 的顶栏（「歌单」/「当前播放」那行）
+ *      会被拼贴画布盖住，连退出用的空白都点不着；
+ *   ② 正文格要变成它的定位基准，并且自己不再滚动（拖镜头是拼贴自己的手势）；
+ *   ③ 封面 + 标题那一块 hero、以及「加载更多」键在拼贴里都不需要 —— 贴到边上就自动续页了。
+ *
+ * 退出的路径不变：点玻璃空白处或按 Esc（浮层根节点的逻辑没动）。
+ */
+.pi-listoverlay--collage .pi-detail__body,
+.pi-listoverlay--collage .pi-songslist__body {
+  position: relative;
+  display: block;
+  overflow: hidden;
+  padding: 0;
+}
+.pi-listoverlay--collage .pi-collage {
+  position: absolute;
+  inset: 0;
+}
+.pi-listoverlay--collage .pi-detail__hero,
+.pi-listoverlay--collage .pi-songslist__hero,
+.pi-listoverlay--collage .pi-loadmore {
+  display: none;
+}
+/*
+ * 用户 m03805 第 2 条：**先锋档的 `--songs` 浮层**（当前播放 / 歌手 / 专辑 / 每日推荐）
+ * 正文也要占满整窗。`.pi-songslist` 的轨道是 `48px auto 1fr`（`global.css:938-942`）：
+ * 顶栏、hero、正文三行。上面那条把 hero 改成 `display: none` 之后，**网格里少了一个占位者**，
+ * 自动放置就把正文塞进了第 2 行那根 `auto` 轨道（而正文自己只剩一个绝对定位的拼贴，
+ * 内容高 0）⇒ 正文 0 高、拼贴 0 高，整屏只剩顶栏 + 浮层自己那层糊玻璃 —— 就是用户图 2
+ * 「播放列表不能正常显示当前播放歌单的列表里的歌」（歌单那一档走的是 `.pi-detail`，
+ * 同一类坑在 `playlist-cards.css:415-426` 已按同样思路修过）。
+ *
+ * 用户 m04407 第 1 条：「每日推荐歌单进去的歌曲队列拼贴不是 app 全屏展示，修正」。
+ * m03805 只修好了「拼贴有高度」，板子本身还是 `.pi-listoverlay` 的 44px 留白
+ * （`:236`）加 `.pi-listoverlay__sheet` 的 `min(1080px,100%) × min(760px,100%)`
+ * （`:256-261`），画布实际只有 1080×636。现在把这一档（`--collage` 且 `data-songs`，
+ * 两个标记都由 `components/SongListOverlay.tsx:162-166` 下发）照歌单那一档的手法
+ * （`playlist-cards.css:406-449`）整套铺满整窗，三条缺一不可：
+ *   ① 留白清零 + 纸铺满整窗 → `.pi-songslist__body` 就是整个窗口，
+ *      绝对定位的拼贴（`:313-316`，基准是 body 的 padding 盒）因此拿到整窗；
+ *   ② 顶栏出流（见下）之后，网格里**只剩正文这一行在流内**，所以轨道必须写成单行 `1fr`；
+ *      要是照旧写 `48px 1fr`，正文又会被自动放进那 48px 的第一行 —— 重犯 m03805 那个坑；
+ *   ③ 顶栏改成**浮在拼贴之上**的一条（绝对定位 + 自上而下渐隐的衬底），
+ *      标题「当前播放 / 每日推荐」与队列那一档的 `data-queue-mode` 模式键照旧可读可点。
+ *
+ * 拼贴的几何不用动：`SongCollage` 用 ResizeObserver 量**根节点**的矩形再算格子
+ * （`components/SongCollage.tsx:874-894`），画布从「1080×636」变成整窗之后它会自己重算。
+ *
+ * 只对**先锋歌曲列表**这一档收口：平凡档不带 `--collage`，`.pi-songslist` 仍是
+ * `global.css:938-942` 那三行、一个字都不受影响；歌单那一档走 `.pi-detail`，
+ * 由 `playlist-cards.css:406-449` 管，这里也不碰；`:339-341` 那条
+ * `[data-playlist] padding-bottom: 104px` 是给歌单档底栏垫的，同样没动。
+ * 这一档**没有底栏**（`BottomBar` 只挂在歌单档，`components/SongListOverlay.tsx:80`），
+ * 所以没有 padding 要对齐，也没有新加底栏。
+ *
+ * 代价与歌单那一档一样：「点玻璃空白退出」在这档没有了 —— 那圈空白正是用户要去掉的「框」；
+ * 退出路径仍是浮层根节点上的 Esc（`components/SongListOverlay.tsx:47-54`）与点一首歌。
+ */
+.pi-listoverlay--collage[data-songs] {
+  padding: 0;
+}
+
+.pi-listoverlay--collage[data-songs] .pi-listoverlay__sheet {
+  width: 100%;
+  height: 100%;
+}
+
+.pi-listoverlay--collage[data-songs] .pi-songslist {
+  grid-template-rows: 1fr;
+}
+
+.pi-listoverlay--collage[data-songs] .pi-songslist__bar {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  z-index: 2;
+  height: 48px;
+  /* 一条自上而下渐隐的衬底：拼贴从这条底下穿过去，字与按钮仍然清楚，
+     又不会在顶部重新长出一道「框」的硬边。 */
+  background: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--pi-bg) 82%, transparent),
+    color-mix(in srgb, var(--pi-bg) 40%, transparent) 60%,
+    transparent
+  );
+  /* 这一条底下就是画布：只有按钮自己接指针，别把整条 48px 变成「拖不动的天花板」。 */
+  pointer-events: none;
+}
+
+.pi-listoverlay--collage[data-songs] .pi-songslist__bar button {
+  pointer-events: auto;
+}
+/* 第十八轮第 5/8/10 条（用户 m01482）：歌单浮层底部也挂着那条药丸（`BottomBar`），
+   给正文垫出它的高度，免得平凡列表最后几行被药丸压住 —— 和「我的喜欢」平凡列表
+   那 104px 一个口径（`.pi-detail__body` 的 padding 只影响内容盒，
+   绝对定位的拼贴仍按 padding 盒铺满，所以先锋那一档的 `padding: 0` 不受影响）。 */
+.pi-listoverlay[data-playlist] .pi-detail__body {
+  padding-bottom: 104px;
+}
+
+/* 窄/矮窗口：别让浮层内容顶到边上 */
+@media (max-height: 620px) {
+  .pi-listoverlay {
+    padding: 12px;
+  }
+  .pi-settings-overlay {
+    padding: 14px;
+  }
+  .pi-settings-overlay__box {
+    max-height: calc(100vh - 28px);
+  }
+}
+
+/* ---- 5. 主题歌词行可以点（第八轮第 3 条）--------------------------- */
+/*
+ * 动效主题的舞台根都是 `pointer-events: none`——动效层本来
+ * 就不该接指针。子元素继承之后，`LyricStage` 里那条点击委托（`closest('[data-lyric-line]')`）
+ * 永远拿不到行元素，主题下「点歌词跳那一句」就静默失效。
+ * 只把**行元素**重新打开指针：浮名的行是被世界相机变换过的绝对定位块，命中区会跟着动，
+ * 但总比整层拦不到好。classic / 倾诉 不需要：它们的行自己带了 onClick。
+ *
+ * 用户 m01402 第 7 条（「时计可以滚轮切换歌词，并且点击歌词可以跳进度，**而不是出现圆球**」）
+ * 把 pendolo 也加了进来：时计的槽位一直没开指针（这里原来只列了 fume / cadenza / partita），
+ * 真实鼠标落点会穿过整个主题层、命中下面的 `.pi-home__stage-lyrics`——于是委托拿不到行元素、
+ * seek 静默失效，反倒被 `HomePage` 那条「点空白 → 浮出 PI 球」接走（正是用户看到的现象）。
+ * 行元素打开之后：委托那条 `CLICK_SEEK_THEMES` 恢复生效，而 HomePage 排除名单里本来就有
+ * `[data-lyric-line]`，圆球不会再冒出来。
+ */
+.pi-lyricstage[data-theme='fume'] [data-lyric-line],
+.pi-lyricstage[data-theme='cadenza'] [data-lyric-line],
+.pi-lyricstage[data-theme='partita'] [data-lyric-line],
+.pi-lyricstage[data-theme='pendolo'] [data-lyric-line] {
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+/* ==================================================================== *
+ * 6. 专辑页 / 歌手页（M4 剩余项：「专辑/歌手独立页」）
+ *
+ * 这两页不是搜索页、也不是「歌曲信息」那张小面板，而是一整页：
+ * `components/SongPageOverlay.tsx`（外壳：玻璃 + 相位进出场 + 顶栏）
+ * + `pages/AlbumPage.tsx` / `pages/ArtistPage.tsx`（页体：大封面 + 名称 + 曲目/专辑区）。
+ *
+ * 三件事与既有浮层刻意对齐，别单独改：
+ * - **z-index 18**：与 `.pi-listoverlay` 同一层（阶梯见本文件 `:220-229` 的注释）——
+ *   要盖住播放页内容(1~8)与卡片列表，又不能压过搜索(60)/设置(60)/登录(40)；
+ * - **阶段动画**：`data-phase='in'|'out'` + 退场动画跑完才卸载，与
+ *   `components/SettingsOverlay.tsx` 同一条路（那边 `EXIT_MS=340`，这里 280 —— 这一层
+ *   的位移更小，跑满 340ms 会显得拖）；
+ * - **材质**：`--pi-glass-*` 那套四槽落影 + 模糊，和设置框/歌单浮层同一份取值。
+ *
+ * 挂在 `main.tsx` 末尾的 `overlays.css` 里而不新开一个文件：新文件要在 `main.tsx`
+ * 里补一行 `import`（那个文件不在本轮授权清单里），追加在这里顺序也是安全的
+ * （它紧随 `.pi-listoverlay` 之后，只新增类名，不覆盖任何既有选择器）。
+ * ==================================================================== */
+
+.pi-songpage-overlay {
+  position: fixed;
+  inset: 0;
+  /* 与 `.pi-listoverlay` 同层：盖得住播放页，压不过搜索 / 设置（那两个是 60）。 */
+  z-index: 18;
+  display: grid;
+  place-items: center;
+  /* 与 `.pi-listoverlay` 同一圈留白：两页之间来回看不会觉得纸换了大小时边距在跳。 */
+  padding: 44px;
+  background: color-mix(in srgb, var(--pi-bg) 8%, transparent);
+  backdrop-filter: blur(16px) saturate(1.12);
+  -webkit-backdrop-filter: blur(16px) saturate(1.12);
+  animation: pi-songpage-veil-in 0.28s ease both;
+  /* 整页可拖窗口（顶栏是 no-drag），纸以外的空白不属于拖拽区。 */
+  -webkit-app-region: drag;
+}
+
+.pi-songpage-overlay[data-phase='out'] {
+  animation: pi-songpage-veil-out 0.24s ease both;
+}
+
+.pi-songpage-overlay__box {
+  display: grid;
+  /* 顶栏 56px 与 `.pi-songslist__bar` 的 48px 不同：这一页标题更大，头部给宽一点。 */
+  grid-template-rows: 56px 1fr;
+  width: min(1080px, 100%);
+  height: min(760px, 100%);
+  overflow: hidden;
+  border: 1px solid var(--pi-glass-border);
+  border-radius: var(--pi-glass-radius);
+  background: var(--pi-glass-bg-strong);
+  backdrop-filter: var(--pi-glass-blur);
+  -webkit-backdrop-filter: var(--pi-glass-blur);
+  box-shadow: var(--pi-glass-highlight), var(--pi-glass-edge), var(--pi-glass-shadow);
+  animation: pi-songpage-flow-in 0.34s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+  -webkit-app-region: no-drag;
+}
+
+.pi-songpage-overlay[data-phase='out'] .pi-songpage-overlay__box {
+  animation: pi-songpage-flow-out 0.24s cubic-bezier(0.5, 0, 0.78, 0.4) both;
+}
+
+.pi-songpage__bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px 0 22px;
+  border-bottom: 1px solid var(--pi-divider);
+  color: var(--pi-text-sub);
+}
+
+.pi-songpage__bar strong {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--pi-text);
+}
+
+/* 关闭键自己吃下右侧全部余量（不依赖 `.pi-detail__spacer` 的 flex 值）。 */
+.pi-songpage__bar .pi-iconbtn {
+  margin-left: auto;
+}
+
+/* 页体：上行 hero、下行正文（正文那一格自己滚）。 */
+.pi-songpage {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  min-height: 0;
+  animation: pi-songpage-content-in 0.32s cubic-bezier(0.22, 0.61, 0.36, 1) 0.06s both;
+}
+
+.pi-songpage__hero {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 18px 26px 16px;
+}
+
+.pi-songpage__cover {
+  display: grid;
+  place-items: center;
+  flex: none;
+  /* 大封面：比歌单浮层那张 96px 大一圈（那是「卡片标题行」，这是一整页的门面）。 */
+  width: 176px;
+  height: 176px;
+  border-radius: 14px;
+  object-fit: cover;
+  background: var(--pi-bg-subtle);
+  border: 1px solid var(--pi-glass-border);
+  box-shadow: var(--pi-shadow-float);
+  color: var(--pi-primary-deep);
+}
+
+/* 歌手没有头像通道（`ArtistRef` 只有 id/name），用的是这首歌的专辑封面，
+   所以裁成圆的当头像，免得看起来像「一张专辑卡片放错了地方」。 */
+.pi-songpage__cover--artist {
+  border-radius: 50%;
+}
+
+.pi-songpage__heading {
+  min-width: 0;
+}
+
+.pi-songpage__kind {
+  display: inline-block;
+  margin-bottom: 10px;
+  padding: 3px 10px;
+  border: 1px solid var(--pi-glass-border-light);
+  border-radius: 999px;
+  background: var(--pi-glass-bg-light);
+  backdrop-filter: var(--pi-glass-blur-light);
+  -webkit-backdrop-filter: var(--pi-glass-blur-light);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--pi-text-sub);
+}
+
+.pi-songpage__title {
+  margin: 0 0 8px;
+  font-size: 30px;
+  font-weight: 700;
+  line-height: 1.15;
+  color: var(--pi-text);
+  overflow-wrap: anywhere;
+}
+
+.pi-songpage__meta {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--pi-text-tertiary);
+}
+
+.pi-songpage__body {
+  display: grid;
+  align-content: start;
+  gap: 22px;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 26px 22px;
+}
+
+.pi-songpage__section {
+  display: grid;
+  gap: 10px;
+}
+
+.pi-songpage__section-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.pi-songpage__section-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--pi-text);
+}
+
+.pi-songpage__section-count {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--pi-text-tertiary);
+}
+
+/*
+ * 先锋风格：曲目区换成队列拼贴（`SongCollage`，与歌单浮层同一套分流）。
+ * 拼贴自己量**根节点**的矩形（`SongCollage.tsx:874-894` 的 `ResizeObserver`），
+ * 所以这里给它一个有界的方格盒即可 —— 不用像浮层那样把整页让给拼贴：
+ * 独立页的 hero 与「专辑」区（歌手页）要留着，拼贴只占曲目那一块。
+ */
+.pi-songpage--collage .pi-songpage__tracks {
+  position: relative;
+  height: min(420px, 44vh);
+  overflow: hidden;
+  border: 1px solid var(--pi-glass-border);
+  border-radius: 16px;
+  isolation: isolate;
+}
+
+.pi-songpage--collage .pi-songpage__tracks .pi-collage {
+  position: absolute;
+  inset: 0;
+  border-radius: 16px;
+}
+
+@keyframes pi-songpage-veil-in {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes pi-songpage-veil-out {
+  from {
+    opacity: 1;
+  }
+
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes pi-songpage-flow-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.985);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes pi-songpage-flow-out {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+
+  to {
+    opacity: 0;
+    transform: translateY(10px) scale(0.99);
+  }
+}
+
+@keyframes pi-songpage-content-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* 矮窗口：和 `.pi-listoverlay` / `.pi-settings-overlay` 同一个 `max-height: 620px` 断点。 */
+@media (max-height: 620px) {
+  .pi-songpage-overlay {
+    padding: 12px;
+  }
+
+  .pi-songpage__cover {
+    width: 120px;
+    height: 120px;
+  }
+
+  .pi-songpage__title {
+    font-size: 24px;
+  }
+
+  .pi-songpage--collage .pi-songpage__tracks {
+    height: min(320px, 40vh);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* 关掉动画之后这一层是「原样出现 / 原样消失」——不改 JS 时序（`EXIT_MS` 那 280ms 照样等）。 */
+  .pi-songpage-overlay,
+  .pi-songpage-overlay[data-phase='out'],
+  .pi-songpage-overlay__box,
+  .pi-songpage-overlay[data-phase='out'] .pi-songpage-overlay__box,
+  .pi-songpage {
+    animation: none;
+  }
+}

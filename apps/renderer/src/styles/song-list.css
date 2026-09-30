@@ -1,0 +1,175 @@
+/**
+ * 平凡风格：竖排歌曲列表（用户第十七轮第 ② 条，参考 image 3）。
+ *
+ * 视觉刻意做得「平」：没有卡片、没有阴影、没有位移，只有 hover 的浅色底和播放中的高亮，
+ * 这样它和左边的歌单网格 / 上面的页面标题是同一层信息，不会抢歌单平铺的注意力。
+ */
+.pi-songlist {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+
+.pi-songlist__rows {
+  margin: 0;
+  padding: 0 6px 4px;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.pi-songlist__item {
+  display: block;
+  min-width: 0;
+}
+
+.pi-songrow {
+  display: grid;
+  grid-template-columns: 32px 42px minmax(0, 1.35fr) minmax(0, 1fr) 52px;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background 0.16s ease,
+    border-color 0.16s ease;
+}
+
+.pi-songrow:hover {
+  background: color-mix(in srgb, var(--pi-primary) 8%, transparent);
+  border-color: color-mix(in srgb, var(--pi-primary) 14%, transparent);
+}
+
+.pi-songrow:focus-visible {
+  outline: 2px solid var(--pi-primary);
+  outline-offset: 1px;
+}
+
+.pi-songrow[data-playing='true'] {
+  background: color-mix(in srgb, var(--pi-primary) 13%, transparent);
+  border-color: color-mix(in srgb, var(--pi-primary) 22%, transparent);
+}
+
+.pi-songrow__no {
+  display: grid;
+  place-items: center;
+  color: var(--pi-text-tertiary);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.pi-songrow[data-playing='true'] .pi-songrow__no {
+  color: var(--pi-primary);
+}
+
+.pi-songrow__cover {
+  position: relative;
+  width: 42px;
+  height: 42px;
+  border-radius: var(--pi-radius-cover);
+  overflow: hidden;
+  background: color-mix(in srgb, var(--pi-text) 8%, transparent);
+  box-shadow: var(--pi-glass-edge);
+}
+
+.pi-songrow__cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.pi-songrow__cover-empty {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  color: var(--pi-text-tertiary);
+}
+
+/* 悬停时封面上浮一层播放键：image 3 里飘在行尾的 `+` 在这里落成封面上的播放键，
+   因为本播放器点行本身就会开播，不需要再区分「加进队列」和「播放」。 */
+.pi-songrow__badge {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  background: color-mix(in srgb, var(--pi-text) 46%, transparent);
+  opacity: 0;
+  transition: opacity 0.16s ease;
+}
+
+.pi-songrow:hover .pi-songrow__badge,
+.pi-songrow:focus-visible .pi-songrow__badge,
+.pi-songrow[data-playing='true'] .pi-songrow__badge {
+  opacity: 1;
+}
+
+.pi-songrow__main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.pi-songrow__name {
+  color: var(--pi-text);
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pi-songrow[data-playing='true'] .pi-songrow__name {
+  color: var(--pi-primary-deep);
+}
+
+.pi-songrow__artists,
+.pi-songrow__meta {
+  color: var(--pi-text-sub);
+  font-size: 12.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pi-songrow__meta {
+  color: var(--pi-text-tertiary);
+}
+
+.pi-songrow__time {
+  color: var(--pi-text-tertiary);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.pi-songlist__hint {
+  margin: 0;
+  padding: 0 10px;
+  color: var(--pi-text-tertiary);
+  font-size: 12px;
+}
+
+/* 窄视口（浮层里会被压到 700px 以下）把专辑列、序号收起来，只留封面 + 歌名 + 时长。 */
+@media (max-width: 720px) {
+  .pi-songrow {
+    grid-template-columns: 42px minmax(0, 1fr) 52px;
+  }
+
+  .pi-songrow__no,
+  .pi-songrow__meta {
+    display: none;
+  }
+}

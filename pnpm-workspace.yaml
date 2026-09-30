@@ -1,0 +1,14 @@
+packages:
+  - 'apps/*'
+  - 'packages/*'
+
+# pnpm 10 默认禁止依赖执行 install 脚本。
+# 注意：electron@44 起**已经不再有 postinstall**（二进制改为首次 require 时懒下载），
+# 所以这里只需要放行 esbuild；留着 electron 只会误导后来人。
+# 想提前把 Electron 运行时拉下来，用 `pnpm electron:install`（见 docs/ADR/0003）。
+onlyBuiltDependencies:
+  - esbuild
+
+# 采用 hoisted 布局：electron-builder 对 pnpm 的符号链接式 node_modules 支持很差，
+# 跨平台打包时极易失败。hoisted 牺牲一点依赖严格性，换来打包链路的确定性（见 docs/PLAN.md §2.6）。
+nodeLinker: hoisted

@@ -1,0 +1,140 @@
+/* ---------------------------------------------------------------- *
+ * 搜索浮层（用户 m06304 第 6 条）
+ *
+ * 一层盖住整页的玻璃：自身做 backdrop-filter，底下的页面整体糊掉，
+ * 中间一个搜索框 + 下面一行封面卡片。层要高过环形菜单（.pi-orb 是 40），
+ * 否则球会插在浮层上面。
+ * ---------------------------------------------------------------- */
+
+.pi-searchoverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  /* 顶部对齐 + 固定内边距：结果行出现/消失时输入框不会上下跳 */
+  justify-content: flex-start;
+  gap: 18px;
+  padding: 15vh 24px 48px;
+  background: rgba(248, 251, 255, 0.55);
+  backdrop-filter: blur(26px) saturate(1.6);
+  -webkit-backdrop-filter: blur(26px) saturate(1.6);
+  animation: pi-searchoverlay-in 180ms ease both;
+}
+
+[data-theme='dark'] .pi-searchoverlay {
+  background: rgba(15, 18, 24, 0.58);
+}
+
+@keyframes pi-searchoverlay-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* 搜索框：玻璃三件套（半透明底 + 模糊 + 内高光） */
+.pi-searchoverlay__box {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: min(560px, 100%);
+  height: 56px;
+  padding: 0 12px 0 18px;
+  border: 1px solid var(--pi-glass-border);
+  border-radius: 18px;
+  background: var(--pi-glass-bg-strong);
+  backdrop-filter: var(--pi-glass-blur-strong);
+  -webkit-backdrop-filter: var(--pi-glass-blur-strong);
+  box-shadow: var(--pi-glass-highlight), var(--pi-glass-shadow);
+  color: var(--pi-text);
+  transition:
+    border-color 180ms ease,
+    box-shadow 180ms ease;
+}
+
+/* 输入时给一点蓝：这一层是全屏焦点，需要看得出「现在在打字」 */
+.pi-searchoverlay__box:focus-within {
+  border-color: color-mix(in srgb, var(--pi-primary) 45%, var(--pi-glass-border));
+  box-shadow:
+    var(--pi-glass-highlight),
+    0 10px 30px rgba(31, 155, 255, 0.28);
+}
+
+.pi-searchoverlay__icon {
+  flex: 0 0 auto;
+  color: var(--pi-text-sub);
+}
+
+.pi-searchoverlay__input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--pi-text);
+  font-family: inherit;
+  font-size: 16px;
+}
+
+.pi-searchoverlay__input::placeholder {
+  color: var(--pi-text-tertiary);
+}
+
+.pi-searchoverlay__close {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--pi-text-sub);
+  cursor: pointer;
+  transition:
+    background 140ms ease,
+    color 140ms ease;
+}
+
+.pi-searchoverlay__close:hover {
+  background: rgba(31, 155, 255, 0.14);
+  color: var(--pi-primary-deep);
+}
+
+.pi-searchoverlay__hint {
+  margin: 0;
+  color: var(--pi-text-sub);
+  font-size: 13px;
+  text-align: center;
+}
+
+.pi-searchoverlay__error {
+  margin: 0;
+  color: #e5484d;
+  font-size: 13px;
+  text-align: center;
+}
+
+/*
+ * 第九轮第 6 条：结果区不再是「一行横向小卡」（`.pi-searchoverlay__card` 那套连同它的
+ * 悬停蒙层、拖拽光标一起删了），改挂和歌单里**同一个** `SongCards` 卡片流。
+ * 这一格只负责给它一块确定的宽度与高度：卡片流自带宽高（`--pi-sc-stage-h`）与横向
+ * 拖拽（`useDragScroll`），所以这里不要再加 overflow-x / scroll-snap / cursor:grab，
+ * 否则两套横向手势会互相抢。宽度跟搜索框那一列对齐（同 1080px 上限）。
+ */
+.pi-searchoverlay__stage {
+  display: grid;
+  align-content: start;
+  width: min(1080px, 100%);
+  min-height: 0;
+}
+
+

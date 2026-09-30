@@ -1,0 +1,3822 @@
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: var(--pi-font);
+  font-size: 14px;
+  color: var(--pi-text);
+  background: var(--pi-bg);
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+  user-select: none;
+}
+
+button {
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+  border: none;
+  background: none;
+  cursor: pointer;
+}
+
+input {
+  font-family: inherit;
+  font-size: inherit;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--pi-text-tertiary) 45%, transparent);
+  border: 3px solid transparent;
+  background-clip: content-box;
+  border-radius: 8px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--pi-text-tertiary) 70%, transparent);
+  background-clip: content-box;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* ---------------------------------------------------------------- *
+ * 应用骨架：标题栏 / 侧边栏 / 主区 / 播放条
+ * ---------------------------------------------------------------- */
+
+.pi-app {
+  display: grid;
+  /* M3 改版：导航收进「悬浮球 + 抽屉」、播放条变成可拖动的悬浮 dock，
+     两列骨架不再需要——主区独占第二行，dock 与抽屉都是盖在上面的浮层。
+     玻璃观感仍然依赖「内容从浮层下面穿过去」，所以浮层绝不能占网格行。 */
+  grid-template-columns: 1fr;
+  /* 第十一轮第 5 条（用户 m03279）：标题栏整条取消，骨架只剩主区一行——
+     原来的 `grid-template-rows: var(--pi-titlebar-height) 1fr` 与 'titlebar' 区一起删掉。
+     窗口三键 / 导航入口 / 版本号改由 `components/WindowControls.tsx` 的固定定位浮层承担，
+     仍然守着「浮层不占网格行」这条老规矩（同下面的 `.pi-app::after`）。
+     玻璃观感依赖「内容从浮层下面穿过去」，所以浮层绝不能占网格行。 */
+  grid-template-areas: 'main';
+  height: 100vh;
+}
+
+/* m06982 第 6 条：全应用罩一层极淡的颗粒（folia 材质里最像纸/胶片的那一手）。
+   挂在整个骨架上而不是每个面板上——一层就够，少一堆合成层；`soft-light` 让它在
+   浅色底上像纸纹、深色底上像胶片颗粒，都不会把文字糊掉。`position: fixed` 的
+   伪元素不参与 grid 布局（绝对定位的子项不会生成网格轨道），所以不会顶掉骨架。 */
+.pi-app::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 900;
+  pointer-events: none;
+  background-image: var(--pi-noise);
+  background-size: 120px 120px;
+  opacity: var(--pi-grain-opacity);
+  mix-blend-mode: soft-light;
+}
+
+/* ---------------------------------------------------------------- *
+ * 窗口控制浮层（第十一轮第 5 条，用户 m03279）
+ *
+ * 为什么把 `.pi-titlebar` 整条删掉：用户要求「app 窗口顶部的标题栏直接取消，鼠标
+ * 接近右上（角）时向下浮出三个按键」。主进程跟着把 Windows 那块的
+ * `titleBarStyle: 'hidden' + titleBarOverlay` 换成了 `frame: false`（原生三键一起没了，
+ * 见 `apps/desktop/src/main/index.ts` 的 createWindow），顶栏不再占网格行，
+ * 内容从窗口最上沿开始画。
+ *
+ * 原来标题栏承担的三件事现在归 `components/WindowControls.tsx`：
+ * ① 窗口三键（最小化 / 最大化·还原 / 关闭）＝指针贴到右上角才向下滑出的小面板；
+ * ② 导航抽屉入口 `[data-nav-toggle]`（冒烟 `openNav()` 依赖它）**改成一个 1×1 的隐藏抓手**：
+ *    用户 m04183 第 1 条要求删掉左上角那块「PI 方块 + 版本号」部件与它点开的导航抽屉，
+ *    可视面板与左两张触发热区都已不再渲染（见 `components/WindowControls.tsx` 文件头）；
+ * ③ 无边框窗口必须自己给的拖拽区 → 最上沿那条 32px 的 `__dragstrip`。
+ * ---------------------------------------------------------------- */
+
+/* 拖拽区。左右各让开 160px：角落那一带留给触发热区，重叠会让
+   「这一点算拖拽还是算页面」变含糊。
+   用户 m02213 第 6 条：「顶框周围鼠标长按不是显示圆球而是可以拖拽 app 窗口」——
+   无边框窗口的标题栏全靠这条自己给，原来只有最上沿 7px，现在加高到 32px，
+   顶框那一带整条都能起拖；落在 drag 区的按下收不到页面指针事件，所以也就不会
+   再「点哪儿哪儿浮出 PI 键」。两层注意：① z-index 35 必须低于悬浮球（45，见
+   `quick-orb.css`），球被拖到最上沿时仍算拖球；② 两块触发热区
+   （`.pi-windowcontrols__hot`，z-index 54 + `no-drag`）压在它上面，三键照旧浮得出来。 */
+.pi-windowcontrols__dragstrip {
+  position: fixed;
+  top: 0;
+  left: 160px;
+  right: 160px;
+  height: 32px;
+  /* 球可以被拖到窗口最上沿，压在上面的话那一带会变成「拖窗口」而不是「拖球」。 */
+  z-index: 35;
+  pointer-events: auto;
+  -webkit-app-region: drag;
+}
+
+/* 触发热区：只吃窗口最外沿的 14px 薄带。
+   为什么不做一整块 140×120 的透明矩形：「pointer-events: auto」的整块矩形会把它盖住的
+   内容全部点不动——歌单页 `.pi-detail__bar`（z-index 30）右上角那枚「添加歌曲」键正好落在
+   这片区域里，而浮层的 z-index 比它高。薄带盖住的本来就是被 drag 条占着、点不到的那一条，
+   沿着上沿或右沿滑向角落照样能触发。`-webkit-app-region: no-drag` 是必需的：
+   drag 区域收不到页面指针事件，不声明就永远浮不出来。 */
+.pi-windowcontrols__hot {
+  position: fixed;
+  z-index: 54;
+  pointer-events: auto;
+  -webkit-app-region: no-drag;
+  background: transparent;
+}
+.pi-windowcontrols__hot--top-right {
+  top: 0;
+  right: 0;
+  width: 160px;
+  height: 14px;
+}
+.pi-windowcontrols__hot--side-right {
+  top: 0;
+  right: 0;
+  width: 14px;
+  height: 120px;
+}
+/* 用户 m04183 第 1 条：左上两张热区（`__hot--top-left` / `__hot--side-left`）随品牌面板一起删。 */
+/* 抽屉打开时热区全部停用：浮层 z-index 压得住抽屉，不收起来会挡住抽屉顶部。 */
+.pi-windowcontrols__hot[data-armed='false'] {
+  pointer-events: none;
+}
+
+/* 浮出面板本体：默认整体滑到窗口上沿之外 + 全透明 + 不吃指针，像从标题栏后面滑出来。 */
+.pi-windowcontrols {
+  position: fixed;
+  top: 0;
+  z-index: 56;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  border: 1px solid var(--pi-glass-border);
+  border-top: 0;
+  border-radius: 0 0 14px 14px;
+  background: var(--pi-glass-sheen), var(--pi-glass-bg-strong);
+  -webkit-backdrop-filter: var(--pi-glass-blur);
+  backdrop-filter: var(--pi-glass-blur);
+  box-shadow: var(--pi-glass-highlight), var(--pi-shadow-float);
+  opacity: 0;
+  transform: translateY(-110%);
+  pointer-events: none;
+  -webkit-app-region: no-drag;
+  transition:
+    transform 0.2s cubic-bezier(0.22, 0.61, 0.36, 1),
+    opacity 0.2s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+.pi-windowcontrols[data-visible='true'] {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+/* 第十二轮第 6 条（用户 m04193）：「右上的三个按键不要有边框就是单独的三个图标，参考图4」
+   ⇒ 右侧那块面板自己透明无框：没有玻璃底、没有描边、没有落影，滑下来只看到三个图标。
+   品牌浮层（左上）保留玻璃底——那上面有版本号文字，裸字压在封面图上读不清。 */
+.pi-windowcontrols--right {
+  right: 0;
+  padding: 2px 8px;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  box-shadow: none;
+}
+.pi-windowcontrols button {
+  -webkit-app-region: no-drag;
+}
+
+/* 三键（第十二轮第 6 条，用户 m04193）：**只有图标**——不描边、不铺底、不切圆角，
+   悬停只把图标变深并微微放大（不再出现一块圆角色块，那正是用户说的「边框」）。
+   关闭键悬停仍然走系统红，让「要关窗口了」这件事有颜色提示。 */
+.pi-windowcontrols__btn {
+  width: 42px;
+  height: 34px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: var(--pi-text-sub);
+  font: inherit;
+  cursor: pointer;
+  transition:
+    color 0.14s ease,
+    transform 0.18s cubic-bezier(0.34, 1.4, 0.64, 1);
+}
+.pi-windowcontrols__btn:hover {
+  background: none;
+  color: var(--pi-text);
+  transform: scale(1.12);
+}
+.pi-windowcontrols__btn:focus-visible {
+  outline: 2px solid var(--pi-primary);
+  outline-offset: 1px;
+}
+.pi-windowcontrols__btn--close:hover {
+  background: none;
+  color: #e5484d;
+}
+.pi-windowcontrols__btn:active {
+  transform: scale(0.94);
+}
+
+/* 用户 m04183 第 1 条：左上品牌块（PI 方块 + PI + 版本号）与它浮出的面板整块删掉了
+   （`.pi-windowcontrols--brand` / `__brand` / `__logo` / `__meta` 四条规则随之作废）。
+   抽屉入口只剩这个隐藏抓手：1×1、完全透明、不参与指针命中 —— 用户点不到，
+   而冒烟 `openNav()`（`apps/desktop/src/main/index.ts:1023`）用的是 `element.click()`，
+   合成事件不走命中测试，所以照样能打开抽屉。 */
+.pi-windowcontrols__navhook {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  border: 0;
+  background: none;
+  opacity: 0;
+  pointer-events: none;
+  -webkit-app-region: no-drag;
+}
+
+/* ---- 悬浮球 + 导航抽屉（M3：侧边栏的替代品） -------------------- */
+
+/* 位置由内联 left/top 决定（拖动逻辑见 lib/drag-snap.ts），这里只管长相 */
+.pi-navball {
+  position: fixed;
+  z-index: 30;
+  width: 48px;
+  height: 48px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: var(--pi-text-sub);
+  background: var(--pi-glass-sheen);
+  backdrop-filter: var(--pi-glass-blur);
+  -webkit-backdrop-filter: var(--pi-glass-blur);
+  border: 1px solid var(--pi-glass-border);
+  box-shadow: var(--pi-glass-highlight), var(--pi-glass-shadow);
+  cursor: grab;
+  /* 拖动要吃掉指针事件，不然 Chromium 会拿去滚页面 */
+  touch-action: none;
+}
+.pi-navball:hover,
+.pi-navball--on {
+  color: var(--pi-primary);
+}
+.pi-navball[data-dragging='true'] {
+  cursor: grabbing;
+  box-shadow: var(--pi-glass-highlight), 0 14px 34px rgba(31, 84, 148, 0.28);
+}
+
+.pi-navdrawer__scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  background: color-mix(in srgb, #0b1220 22%, transparent);
+}
+
+.pi-navdrawer {
+  position: fixed;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  z-index: 21;
+  width: min(300px, 84vw);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 10px;
+  background: var(--pi-glass-sheen);
+  backdrop-filter: var(--pi-glass-blur-strong);
+  -webkit-backdrop-filter: var(--pi-glass-blur-strong);
+  border-right: 1px solid var(--pi-glass-border);
+  box-shadow: var(--pi-glass-highlight), var(--pi-shadow-float);
+  overflow-y: auto;
+}
+.pi-searchbar--drawer {
+  width: 100%;
+  margin-bottom: 4px;
+}
+.pi-navdrawer__scroll {
+  display: grid;
+  gap: 2px;
+  padding-bottom: 8px;
+}
+.pi-navdrawer__group {
+  margin: 14px 8px 6px;
+  font-size: 12px;
+  color: var(--pi-text-tertiary);
+}
+.pi-navitem {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 38px;
+  padding: 0 12px;
+  border-radius: 10px;
+  color: var(--pi-text-sub);
+  text-align: left;
+}
+.pi-navitem:hover {
+  background: color-mix(in srgb, var(--pi-primary) 8%, transparent);
+  color: var(--pi-text);
+}
+.pi-navitem[aria-current='page'] {
+  background: var(--pi-primary-weak);
+  color: var(--pi-primary);
+  font-weight: 600;
+}
+.pi-navdrawer__footer {
+  margin-top: auto;
+  padding-top: 12px;
+  border-top: 1px solid var(--pi-divider);
+  display: grid;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--pi-text-tertiary);
+}
+
+/* iOS 毛玻璃的底色（m06304 第 2 条）：纯白页面上「玻璃」看起来还是白的，
+   垫一层极淡的天蓝/藕色光晕，浮层把它糊过去材质才看得出来。
+   仍然是近白底 + 低饱和，守住白 85% / 天蓝 10% 的主色纪律。 */
+.pi-app::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(1100px 620px at 6% -12%, rgba(31, 155, 255, 0.16), transparent 62%),
+    radial-gradient(900px 540px at 104% 4%, rgba(146, 132, 255, 0.12), transparent 58%),
+    radial-gradient(900px 620px at 48% 118%, rgba(255, 138, 176, 0.1), transparent 62%),
+    linear-gradient(180deg, #fbfdff 0%, #f5faff 100%);
+}
+[data-theme='dark'] .pi-app::before {
+  background:
+    radial-gradient(1100px 620px at 6% -12%, rgba(31, 155, 255, 0.18), transparent 62%),
+    radial-gradient(900px 540px at 104% 4%, rgba(146, 132, 255, 0.14), transparent 58%),
+    linear-gradient(180deg, #10141b 0%, #0c1017 100%);
+}
+
+.pi-main {
+  grid-area: main;
+  overflow-y: auto;
+  /* 底部留白给悬浮 dock 让位：内容可以滚到它后面，但不能永久被它盖住 */
+  padding: 20px 24px 132px;
+}
+/* 播放器主页自己管布局（整屏背景 + 内部滚动），不吃主区的内边距 */
+.pi-main[data-page='home'] {
+  padding: 0;
+  overflow: hidden;
+}
+.pi-page-title {
+  margin: 0 0 4px;
+  font-size: 22px;
+  font-weight: 700;
+}
+.pi-page-sub {
+  margin: 0 0 18px;
+  color: var(--pi-text-sub);
+  font-size: 13px;
+}
+.pi-card {
+  /* 卡片也走玻璃（m06304 第 2 条）：底色本来就接近白，压到 88% 让环境光晕透一点 */
+  background: color-mix(in srgb, var(--pi-surface) 88%, transparent);
+  backdrop-filter: var(--pi-glass-blur);
+  -webkit-backdrop-filter: var(--pi-glass-blur);
+  box-shadow: var(--pi-glass-edge);
+  border: 1px solid var(--pi-divider);
+  border-radius: var(--pi-radius-card);
+  box-shadow: var(--pi-shadow-card);
+  padding: 16px;
+}
+.pi-placeholder {
+  display: grid;
+  gap: 8px;
+  color: var(--pi-text-sub);
+}
+
+.pi-searchbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: min(520px, 100%);
+  height: 38px;
+  padding: 0 14px;
+  border: 1px solid var(--pi-divider);
+  border-radius: var(--pi-radius-btn);
+  background: var(--pi-bg-subtle);
+  margin-bottom: 18px;
+}
+.pi-searchbar input {
+  flex: 1;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--pi-text);
+}
+.pi-searchbar:focus-within {
+  border-color: var(--pi-primary);
+  background: var(--pi-surface);
+}
+
+.pi-songlist {
+  display: grid;
+  gap: 2px;
+}
+.pi-songrow {
+  display: grid;
+  grid-template-columns: 44px 1fr auto auto;
+  align-items: center;
+  gap: 12px;
+  height: 56px;
+  padding: 0 12px;
+  border-radius: 10px;
+}
+.pi-songrow:hover {
+  background: var(--pi-bg-subtle);
+}
+.pi-songrow__cover {
+  width: 44px;
+  height: 44px;
+  border-radius: var(--pi-radius-cover);
+  object-fit: cover;
+  background: var(--pi-bg-subtle);
+}
+.pi-songrow__name {
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pi-songrow__meta {
+  font-size: 12px;
+  color: var(--pi-text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pi-songrow__time {
+  font-variant-numeric: tabular-nums;
+  color: var(--pi-text-tertiary);
+  font-size: 12px;
+}
+.pi-badge {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 6px;
+  border: 1px solid var(--pi-primary);
+  color: var(--pi-primary);
+  white-space: nowrap;
+}
+/* 来源徽标：次要信息，不跟实测格式抢注意力 */
+.pi-badge--ghost {
+  border-color: var(--pi-divider);
+  color: var(--pi-text-sub);
+}
+/* 试听徽标：必须显眼，否则用户会以为播放器坏了 */
+.pi-badge--warn {
+  border-color: #e5a13d;
+  color: #b9741a;
+  background: rgba(229, 161, 61, 0.12);
+}
+.pi-nowplaying__source {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 10px 0 0;
+}
+
+.pi-playerbar {
+  /* 叠在第 2 行底部：内容从玻璃下面滚过去，液态玻璃才有东西可糊 */
+  grid-row: 2;
+  grid-column: 1 / 3;
+  align-self: end;
+  z-index: 8;
+  position: relative;
+  height: var(--pi-playerbar-height);
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto minmax(180px, 1fr);
+  align-items: center;
+  gap: 16px;
+  padding: 0 16px;
+  /* iOS 液态玻璃：半透明底 + 背景模糊 + 一道内高光 + 向上投影 */
+  background: var(--pi-glass-bg);
+  backdrop-filter: var(--pi-glass-blur);
+  -webkit-backdrop-filter: var(--pi-glass-blur);
+  border-top: 1px solid var(--pi-glass-border);
+  box-shadow: var(--pi-glass-highlight), 0 -8px 28px rgba(31, 84, 148, 0.1);
+}
+.pi-playerbar__now {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.pi-playerbar__cover {
+  width: 48px;
+  height: 48px;
+  border-radius: var(--pi-radius-cover);
+  background: var(--pi-bg-subtle);
+  object-fit: cover;
+  flex: none;
+}
+.pi-playerbar__controls {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.pi-iconbtn {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  color: var(--pi-text-sub);
+}
+.pi-iconbtn:hover:not(:disabled) {
+  background: var(--pi-primary-weak);
+  color: var(--pi-primary);
+}
+.pi-iconbtn:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+.pi-iconbtn--primary {
+  width: 40px;
+  height: 40px;
+  background: var(--pi-primary);
+  color: #fff;
+}
+.pi-iconbtn--primary:hover:not(:disabled) {
+  background: var(--pi-primary-hover);
+  color: #fff;
+}
+.pi-iconbtn[aria-pressed='true'] {
+  color: var(--pi-primary);
+}
+.pi-playerbar__right {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.pi-nowplaying {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  grid-template-rows: 56px 1fr;
+  overflow: hidden;
+  background: var(--pi-bg);
+}
+/* 专辑封面模糊背景：两层合成，底层放大 1.15 防白边，上层渐变保文字对比度 */
+.pi-nowplaying__bg,
+.pi-nowplaying__scrim {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+}
+.pi-nowplaying__bg {
+  background-size: cover;
+  background-position: center;
+  filter: blur(64px) saturate(1.6) brightness(0.9);
+  transform: scale(1.15);
+}
+.pi-nowplaying__bg--empty {
+  background: linear-gradient(140deg, var(--pi-primary), var(--pi-primary-weak));
+}
+.pi-nowplaying__scrim {
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--pi-bg) 72%, transparent),
+    color-mix(in srgb, var(--pi-bg) 92%, transparent)
+  );
+}
+/* 左窄列（封面 → 歌名 → 歌手 → 四个入口）/ 右宽列（整块歌词）。
+   版式由用户在 m01646 指定：文字与按钮都压在封面下面，右边全留给歌词。 */
+.pi-nowplaying__body {
+  display: grid;
+  grid-template-columns: minmax(260px, 380px) 1fr;
+  gap: 36px;
+  padding: 0 40px 36px;
+  overflow-y: auto;
+  align-items: start;
+}
+.pi-nowplaying__left {
+  display: grid;
+  gap: 10px;
+  justify-items: center;
+  text-align: center;
+}
+.pi-nowplaying__right {
+  min-width: 0;
+}
+/* 窗口窄了就退回单列，否则歌词区会被挤成一条 */
+@media (max-width: 900px) {
+  .pi-nowplaying__body {
+    grid-template-columns: 1fr;
+  }
+}
+.pi-nowplaying__cover {
+  width: min(330px, 100%);
+  aspect-ratio: 1;
+  border-radius: 18px;
+  object-fit: cover;
+  box-shadow: var(--pi-shadow-float);
+  background: var(--pi-bg-subtle);
+}
+.pi-nowplaying__empty-cover {
+  display: grid;
+  place-items: center;
+  color: #fff;
+  font-size: 34px;
+  font-weight: 700;
+  background: linear-gradient(140deg, var(--pi-primary), #9ed3ff);
+}
+.pi-nowplaying__title {
+  margin: 6px 0 0;
+  font-size: 26px;
+  font-weight: 700;
+}
+.pi-nowplaying__artists {
+  margin: 0;
+  color: var(--pi-text-sub);
+}
+.pi-nowplaying__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 8px;
+}
+.pi-btn {
+  height: 34px;
+  padding: 0 16px;
+  border-radius: var(--pi-radius-btn);
+  border: 1px solid var(--pi-divider);
+  background: var(--pi-surface);
+  color: var(--pi-text-sub);
+}
+.pi-btn:hover {
+  border-color: var(--pi-primary);
+  color: var(--pi-primary);
+}
+.pi-btn[aria-pressed='true'] {
+  background: var(--pi-primary);
+  border-color: var(--pi-primary);
+  color: #fff;
+}
+.pi-lyrics {
+  display: grid;
+  gap: 10px;
+  color: var(--pi-text-sub);
+  font-size: 15px;
+  line-height: 1.6;
+}
+
+/* 详情页顶栏：与主标题栏分开定义，避免复用 grid-area 造成布局错乱 */
+.pi-nowplaying__bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 20px;
+  -webkit-app-region: drag;
+}
+.pi-nowplaying__bar button,
+.pi-nowplaying__bar a {
+  -webkit-app-region: no-drag;
+}
+.pi-flip-y {
+  transform: rotate(180deg);
+}
+
+/* ------------------------------------------------------------------ *
+ * M1：账号区、登录弹窗、歌单网格与歌单详情
+ * ------------------------------------------------------------------ */
+
+/* 主按钮。蓝色只在自己的「行动点」上出现（登录/扫码），符合 §4 的配色纪律。 */
+.pi-btn--primary {
+  background: var(--pi-primary);
+  border-color: var(--pi-primary);
+  color: #fff;
+}
+.pi-btn--primary:hover {
+  background: var(--pi-primary-hover);
+  border-color: var(--pi-primary-hover);
+  color: #fff;
+}
+
+.pi-account {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding-bottom: 10px;
+  margin-bottom: 10px;
+  border-bottom: 1px solid var(--pi-divider);
+  color: var(--pi-text-sub);
+}
+.pi-account__avatar {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex: none;
+  background: var(--pi-primary-weak);
+}
+.pi-account__avatar--empty {
+  display: grid;
+  place-items: center;
+  color: var(--pi-primary);
+}
+.pi-account__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--pi-text);
+}
+
+/* 遮罩 + 弹窗：登录用，将来的确认框也复用 */
+.pi-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  background: rgba(16, 20, 30, 0.42);
+}
+.pi-dialog {
+  width: 344px;
+  max-width: calc(100vw - 48px);
+  border-radius: var(--pi-radius-card);
+  background: var(--pi-surface);
+  box-shadow: 0 18px 48px rgba(20, 28, 48, 0.24);
+  overflow: hidden;
+}
+.pi-dialog__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--pi-divider);
+}
+.pi-dialog__body {
+  display: grid;
+  gap: 12px;
+  justify-items: center;
+  padding: 22px 20px 16px;
+}
+.pi-dialog__error {
+  color: #e5484d;
+  font-size: 13px;
+  text-align: center;
+}
+.pi-dialog__hint {
+  margin: 0;
+  color: var(--pi-text-sub);
+  font-size: 13px;
+  text-align: center;
+}
+.pi-dialog__url {
+  margin: 0;
+  color: var(--pi-text-tertiary);
+  font-size: 11px;
+  word-break: break-all;
+  text-align: center;
+}
+.pi-dialog__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 16px;
+  background: var(--pi-bg-subtle);
+  border-top: 1px solid var(--pi-divider);
+}
+.pi-dialog__safe {
+  color: var(--pi-text-tertiary);
+  font-size: 11px;
+  line-height: 1.4;
+}
+.pi-qr {
+  width: 200px;
+  height: 200px;
+  border-radius: var(--pi-radius-cover);
+  border: 1px solid var(--pi-divider);
+  background: #fff;
+  object-fit: contain;
+}
+.pi-qr--loading {
+  display: grid;
+  place-items: center;
+  color: var(--pi-text-tertiary);
+  font-size: 13px;
+}
+
+/* 歌单网格 */
+.pi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 18px 16px;
+}
+.pi-plcard {
+  display: grid;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  text-align: left;
+  color: inherit;
+}
+.pi-plcard__cover {
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: 10px;
+  object-fit: cover;
+  background: var(--pi-bg-subtle);
+  transition: transform 160ms ease, box-shadow 160ms ease;
+}
+.pi-plcard__cover--empty {
+  display: grid;
+  place-items: center;
+  color: var(--pi-text-tertiary);
+}
+.pi-plcard:hover .pi-plcard__cover {
+  transform: translateY(-2px);
+  box-shadow: var(--pi-shadow-card);
+}
+.pi-plcard__name {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: 13px;
+  color: var(--pi-text);
+}
+.pi-plcard__meta {
+  font-size: 12px;
+  color: var(--pi-text-tertiary);
+}
+
+/* 歌单详情：和听歌详情页一样是整页覆盖，M1 阶段先不引路由 */
+.pi-detail {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: grid;
+  grid-template-rows: 48px 1fr;
+  background: var(--pi-bg);
+}
+.pi-detail__bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 20px;
+  border-bottom: 1px solid var(--pi-divider);
+  -webkit-app-region: drag;
+}
+.pi-detail__bar button {
+  -webkit-app-region: no-drag;
+}
+.pi-detail__body {
+  display: grid;
+  gap: 18px;
+  align-content: start;
+  overflow: auto;
+  padding: 20px 24px 28px;
+}
+.pi-detail__hero {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.pi-detail__cover {
+  width: 96px;
+  height: 96px;
+  border-radius: 10px;
+  object-fit: cover;
+  flex: none;
+  background: var(--pi-bg-subtle);
+}
+.pi-detail__title {
+  margin: 0 0 6px;
+  font-size: 20px;
+  color: var(--pi-text);
+}
+
+/* ------------------------------------------------------------------ *
+ * 歌手 / 专辑 / 当前播放的卡片列表（用户第九轮第 2、8 条）
+ *
+ * 它挂在 `.pi-listoverlay` 那一层玻璃里（整页模糊 + 浮上来的一张纸，见
+ * `styles/overlays.css` 的 `.pi-listoverlay`），纸本身与 `.pi-detail` 同构：
+ * 顶栏 / 曲库头 / 卡片流三段，卡片流那一格自己有高度、自己滚。
+ * 与 `.pi-detail` 的区别只有一个：没有「返回」键（第九轮第 3 条），
+ * 顶栏左边是来源图标 + 「歌手 / 专辑 / 当前播放」，队列那一档多一个播放模式键。
+ * ------------------------------------------------------------------ */
+.pi-songslist {
+  display: grid;
+  /* 顶栏高与 `.pi-detail__bar` 一致，浮层之间切换时头部不会跳 */
+  grid-template-rows: 48px auto 1fr;
+}
+.pi-songslist__bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 4px;
+  color: var(--pi-text);
+}
+.pi-songslist__bar strong {
+  font-size: 14px;
+  font-weight: 600;
+}
+.pi-songslist__hero {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 6px 4px 16px;
+}
+/* 与 `.pi-detail__cover` 同尺寸：两套浮层说的都是「一张封面 + 一个标题」 */
+.pi-songslist__cover {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 96px;
+  height: 96px;
+  border-radius: 10px;
+  object-fit: cover;
+  background: var(--pi-bg-subtle);
+  color: var(--pi-primary-deep);
+}
+.pi-songslist__title {
+  margin: 0 0 6px;
+  font-size: 20px;
+  color: var(--pi-text);
+}
+.pi-songslist__body {
+  display: grid;
+  align-content: start;
+  gap: 18px;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 4px 8px;
+}
+
+.pi-loadmore {
+  display: grid;
+  place-items: center;
+  padding: 8px 0 4px;
+}
+
+/* 致命错误：preload 桥缺失时整屏接管（见 apps/renderer/src/main.tsx）。
+   没有桥就没有任何数据通道，与其渲染一个空壳装作正常，不如直接说清楚。 */
+.pi-fatal {
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: 10px;
+  min-height: 100vh;
+  padding: 48px;
+  text-align: center;
+  background: var(--pi-bg);
+  color: var(--pi-text);
+}
+
+.pi-fatal h1 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  color: #e5484d;
+}
+
+.pi-fatal p {
+  max-width: 520px;
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--pi-text-sub);
+}
+
+.pi-fatal code {
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: var(--pi-bg-subtle);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+/* ------------------------------------------------------------------ *
+ * M2：播放
+ * ------------------------------------------------------------------ */
+
+/* 进度条做成 dock 顶部的一条 3px 细线（对齐网易云的位置），悬停才显形滑块 */
+.pi-progress {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  width: 100%;
+  height: 3px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  appearance: none;
+  background: var(--pi-divider);
+  cursor: pointer;
+}
+.pi-progress::-webkit-slider-runnable-track {
+  height: 3px;
+  background: inherit;
+}
+.pi-progress::-webkit-slider-thumb {
+  appearance: none;
+  width: 10px;
+  height: 10px;
+  margin-top: -3.5px;
+  border-radius: 50%;
+  background: var(--pi-primary);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.pi-dock:hover .pi-progress::-webkit-slider-thumb {
+  opacity: 1;
+}
+
+.pi-volume {
+  width: 92px;
+  height: 4px;
+  appearance: none;
+  border-radius: 2px;
+  background: var(--pi-divider);
+  cursor: pointer;
+}
+.pi-volume::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  background: inherit;
+}
+.pi-volume::-webkit-slider-thumb {
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  margin-top: -4px;
+  border-radius: 50%;
+  background: var(--pi-primary);
+}
+
+/* 提示语（跳过不可播、加载失败）用主色，避免被当成普通副标题忽略掉 */
+.pi-dock__notice {
+  color: var(--pi-primary);
+}
+
+.pi-songrow--active {
+  background: var(--pi-primary-weak);
+  box-shadow: inset 3px 0 0 var(--pi-primary);
+}
+.pi-songrow--active .pi-songrow__name {
+  color: var(--pi-primary-deep);
+  font-weight: 600;
+}
+
+/* ---------------------------------------------------------------- *
+ * M2.6：天蓝主题的液态玻璃 / 推荐页区块 / 播放队列抽屉
+ * ---------------------------------------------------------------- */
+
+/* 玻璃三件套：半透明底 + 背景模糊 + 一道内高光。
+   只写 backdrop-filter 得到的是灰糊，内高光与描边才是「玻璃」的关键。 */
+.pi-iconbtn--glass,
+.pi-btn--glass {
+  background: var(--pi-glass-sheen);
+  backdrop-filter: var(--pi-glass-blur);
+  -webkit-backdrop-filter: var(--pi-glass-blur);
+  border: 1px solid var(--pi-glass-border);
+  box-shadow: var(--pi-glass-highlight), 0 4px 14px rgba(31, 84, 148, 0.1);
+}
+.pi-iconbtn--glass {
+  width: 36px;
+  height: 36px;
+  color: var(--pi-text);
+}
+.pi-iconbtn--glass:hover:not(:disabled),
+.pi-btn--glass:hover:not(:disabled) {
+  background: var(--pi-glass-bg);
+  color: var(--pi-primary-deep);
+}
+/* 队列按钮「开着」的状态：aria-pressed=true 的样式只管颜色，这里补底色 */
+.pi-iconbtn--on {
+  background: var(--pi-primary-weak);
+  color: var(--pi-primary);
+}
+.pi-btn--ghost {
+  height: 28px;
+  padding: 0 12px;
+  color: var(--pi-text-sub);
+  border-radius: var(--pi-radius-btn);
+}
+.pi-btn--ghost:hover {
+  background: var(--pi-primary-weak);
+  color: var(--pi-primary);
+}
+
+.pi-nowplaying__bartitle {
+  font-size: 13px;
+  color: var(--pi-text-sub);
+}
+.pi-nowplaying__hint {
+  color: var(--pi-text-tertiary);
+  font-size: 13px;
+}
+/* 歌词面板：右侧整块，本身就是一块玻璃 */
+.pi-lyrics--panel {
+  display: grid;
+  gap: 10px;
+  align-content: start;
+  min-height: 340px;
+  padding: 24px;
+  border-radius: var(--pi-radius-card);
+  background: var(--pi-glass-bg);
+  backdrop-filter: var(--pi-glass-blur);
+  -webkit-backdrop-filter: var(--pi-glass-blur);
+  border: 1px solid var(--pi-glass-border);
+  box-shadow: var(--pi-glass-highlight), var(--pi-glass-shadow);
+}
+
+/* 推荐页区块（每日推荐 / 私人雷达 / 推荐歌单 / 推荐新音乐） */
+.pi-section {
+  margin: 22px 0 8px;
+}
+.pi-section__head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.pi-section__title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+}
+.pi-section__sub {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--pi-text-tertiary);
+  font-size: 12px;
+}
+.pi-section__head .pi-btn--ghost {
+  margin-left: auto;
+  flex: none;
+}
+
+/* 第九轮第 8 条：原来的「播放队列抽屉」（`.pi-queue` 行列表）整块删掉了。
+   环形菜单的「播放列表」现在开的是与歌手/专辑同一套歌曲卡片浮层
+   （`components/SongListOverlay.tsx` 的 `kind: 'queue'`），行列表那套 CSS 一并退场。 */
+
+/* ------------------------------------------------------------------ *
+ * 设置页（M2.5 音源体系）
+ * ------------------------------------------------------------------ */
+
+.pi-settings {
+  display: grid;
+  gap: 14px;
+  max-width: 760px;
+}
+.pi-setting {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 12px 0;
+  border-top: 1px solid var(--pi-divider);
+}
+.pi-setting:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+.pi-setting:last-child {
+  padding-bottom: 0;
+}
+.pi-setting__title {
+  display: block;
+  font-size: 14px;
+  font-weight: 600;
+}
+.pi-setting__hint {
+  display: block;
+  max-width: 480px;
+  margin-top: 3px;
+  color: var(--pi-text-sub);
+  font-size: 12px;
+  line-height: 1.55;
+}
+.pi-check {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  margin-top: 2px;
+  accent-color: var(--pi-primary);
+}
+.pi-select {
+  flex: none;
+  height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--pi-divider);
+  border-radius: 8px;
+  background: var(--pi-bg-subtle);
+  color: var(--pi-text);
+  font: inherit;
+  font-size: 13px;
+}
+.pi-sectionhead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.pi-sectionhead .pi-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.pi-srcrow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 0;
+  border-top: 1px solid var(--pi-divider);
+}
+.pi-srcrow--off {
+  opacity: 0.55;
+}
+.pi-srcrow__name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.pi-srcrow__tier {
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: var(--pi-primary-weak);
+  color: var(--pi-primary-deep);
+  font-size: 11px;
+  font-weight: 500;
+}
+.pi-srcrow__state {
+  flex: 1;
+  overflow: hidden;
+  color: var(--pi-text-sub);
+  font-size: 12px;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pi-plugin-import {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--pi-divider);
+}
+.pi-textarea {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--pi-divider);
+  border-radius: 10px;
+  background: var(--pi-bg-subtle);
+  color: var(--pi-text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  resize: vertical;
+}
+.pi-textarea:focus {
+  outline: none;
+  border-color: var(--pi-primary);
+}
+.pi-plugin-import__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 本地曲库（L4）的路径输入 */
+.pi-pathrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+.pi-input {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 10px;
+  border: 1px solid var(--pi-divider);
+  border-radius: 10px;
+  background: var(--pi-bg-subtle);
+  color: var(--pi-text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+.pi-input:focus {
+  outline: none;
+  border-color: var(--pi-primary);
+}
+
+/* 音质日志 */
+.pi-logrow {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 4px 12px;
+  padding: 10px 0;
+  border-top: 1px solid var(--pi-divider);
+}
+.pi-logrow__title {
+  font-size: 14px;
+  font-weight: 600;
+}
+.pi-logrow__meta {
+  color: var(--pi-text-sub);
+  font-size: 12px;
+}
+.pi-logrow__chain {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 2px;
+}
+.pi-logrow__attempt {
+  padding: 1px 6px;
+  border: 1px solid var(--pi-divider);
+  border-radius: 6px;
+  color: var(--pi-text-sub);
+  font-size: 11px;
+}
+.pi-logrow__attempt--ok {
+  border-color: color-mix(in srgb, var(--pi-primary) 45%, transparent);
+  background: var(--pi-primary-weak);
+  color: var(--pi-primary-deep);
+}
+.pi-logrow__attempt--bad {
+  border-color: color-mix(in srgb, #e5a13d 50%, transparent);
+  color: #b9741a;
+}
+
+/* ------------------------------------------------------------------ *
+ * M3：底部 dock（简易 / 详细）/ 播放器主页 / 评论 / 可折叠区块
+ * ------------------------------------------------------------------ */
+
+/* ---- dock 外壳：两种外形共用一个可拖动、可吸附的玻璃容器 ---------- */
+.pi-dock {
+  position: fixed;
+  z-index: 25;
+  border-radius: 18px;
+  background: var(--pi-glass-sheen);
+  backdrop-filter: var(--pi-glass-blur);
+  -webkit-backdrop-filter: var(--pi-glass-blur);
+  border: 1px solid var(--pi-glass-border);
+  box-shadow: var(--pi-glass-highlight), var(--pi-glass-shadow);
+  /* 拖动要吃掉指针事件，否则 Chromium 会拿去做文本选择/滚动 */
+  touch-action: none;
+}
+.pi-dock[data-dragging='true'] {
+  box-shadow: var(--pi-glass-highlight), 0 18px 40px rgba(31, 84, 148, 0.26);
+}
+.pi-dock__grip {
+  position: absolute;
+  left: 5px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 14px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border-radius: 7px;
+  color: var(--pi-text-tertiary);
+  cursor: grab;
+}
+.pi-dock__grip:hover {
+  color: var(--pi-primary);
+  background: color-mix(in srgb, var(--pi-primary) 10%, transparent);
+}
+.pi-dock[data-dragging='true'] .pi-dock__grip {
+  cursor: grabbing;
+}
+/* dock 里的进度线贴住圆角内沿，不再像听歌条那样顶到边 */
+.pi-dock .pi-progress {
+  left: 20px;
+  right: 16px;
+  width: auto;
+  border-radius: 3px;
+}
+
+/* ---- 简易外形：左播放模式 / 中播放键 / 右切换形态 ----------------- */
+.pi-dock--simple {
+  padding: 8px 14px 10px 20px;
+}
+.pi-dock__simple {
+  position: relative;
+  height: 100%;
+  display: grid;
+  grid-template-rows: 1fr auto;
+}
+.pi-dock__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+.pi-dock__transport {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.pi-dock__caption {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--pi-text-sub);
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pi-dock__line {
+  position: absolute;
+  left: 0;
+  bottom: -7px;
+  height: 3px;
+  border-radius: 3px;
+  background: var(--pi-primary);
+  transition: width 0.2s linear;
+}
+
+/* ---- 详细外形：老播放条 + 喜欢/评论/专辑/歌手 ---------------------- */
+.pi-dock--detail {
+  padding: 10px 16px 12px 22px;
+}
+.pi-dock__detail {
+  position: relative;
+  height: 100%;
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) auto minmax(190px, auto);
+  grid-template-rows: 1fr auto;
+  align-items: center;
+  gap: 8px 14px;
+}
+.pi-dock__now {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.pi-dock__cover {
+  width: 54px;
+  height: 54px;
+  flex: none;
+  border-radius: 10px;
+  object-fit: cover;
+  background: var(--pi-bg-subtle);
+}
+.pi-dock__right {
+  display: flex;
+  align-items: center;
+  justify-self: end;
+  gap: 8px;
+}
+.pi-dock__actions {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.pi-dock__action {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 11px;
+  border-radius: 13px;
+  border: 1px solid var(--pi-divider);
+  color: var(--pi-text-sub);
+  font-size: 12px;
+}
+.pi-dock__action:hover:not([disabled]) {
+  color: var(--pi-primary);
+  border-color: var(--pi-primary);
+}
+.pi-dock__action[disabled] {
+  opacity: 0.45;
+  cursor: default;
+}
+.pi-dock__action--on {
+  color: var(--pi-primary);
+  border-color: var(--pi-primary);
+  background: var(--pi-primary-weak);
+}
+
+/* ---- 播放器主页：大封面 + 评论/信息 --------------------------------- */
+.pi-home {
+  position: relative;
+  height: 100%;
+  overflow: hidden;
+}
+.pi-home__bg {
+  position: absolute;
+  inset: -40px;
+  background-size: cover;
+  background-position: center;
+  filter: blur(42px) saturate(1.6);
+  opacity: 0.5;
+  transform: scale(1.06);
+}
+.pi-home__scrim {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--pi-bg) 62%, transparent) 0%,
+    color-mix(in srgb, var(--pi-bg) 88%, transparent) 38%,
+    var(--pi-bg) 78%
+  );
+}
+.pi-home__body {
+  position: relative;
+  height: 100%;
+  overflow-y: auto;
+  padding: 26px 28px 140px;
+  display: grid;
+  align-content: start;
+  gap: 22px;
+}
+.pi-home__hero {
+  display: grid;
+  grid-template-columns: minmax(180px, 240px) 1fr;
+  align-items: end;
+  gap: 24px;
+}
+.pi-home__cover {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  border-radius: 16px;
+  object-fit: cover;
+  background: color-mix(in srgb, var(--pi-text-tertiary) 18%, transparent);
+  box-shadow: var(--pi-shadow-float);
+}
+.pi-home__info {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+.pi-home__title {
+  margin: 0;
+  font-size: 30px;
+  line-height: 1.2;
+  font-weight: 700;
+}
+.pi-home__artists {
+  margin: 0;
+  color: var(--pi-text-sub);
+  font-size: 14px;
+}
+.pi-home__actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 4px;
+}
+.pi-home__empty {
+  margin: auto;
+  display: grid;
+  justify-items: center;
+  gap: 12px;
+  text-align: center;
+  color: var(--pi-text-sub);
+}
+.pi-home__panel {
+  border-radius: var(--pi-radius-card);
+  background: color-mix(in srgb, var(--pi-surface) 82%, transparent);
+  backdrop-filter: var(--pi-glass-blur);
+  -webkit-backdrop-filter: var(--pi-glass-blur);
+  border: 1px solid var(--pi-divider);
+  box-shadow: var(--pi-shadow-card);
+  padding: 14px 18px 18px;
+}
+.pi-home__tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--pi-divider);
+}
+.pi-home__tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  color: var(--pi-text-sub);
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+.pi-home__tab:hover {
+  color: var(--pi-text);
+}
+.pi-home__tab--on {
+  color: var(--pi-primary);
+  border-bottom-color: var(--pi-primary);
+  font-weight: 600;
+}
+
+/* ---- 评论 ---------------------------------------------------------- */
+.pi-comments {
+  display: grid;
+  gap: 16px;
+}
+.pi-comments__group {
+  display: grid;
+  gap: 2px;
+}
+.pi-comments__title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--pi-text-sub);
+}
+.pi-comments__count {
+  font-weight: 400;
+  color: var(--pi-text-tertiary);
+}
+.pi-comments__hint {
+  margin: 4px 0;
+  color: var(--pi-text-tertiary);
+  font-size: 13px;
+}
+.pi-comments__hint--error {
+  color: #e5484d;
+}
+.pi-comments__more {
+  justify-self: start;
+}
+.pi-comment {
+  display: grid;
+  grid-template-columns: 34px 1fr;
+  gap: 10px;
+  padding: 10px 8px;
+  border-radius: 10px;
+}
+.pi-comment:hover {
+  background: var(--pi-bg-subtle);
+}
+.pi-comment__avatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: var(--pi-bg-subtle);
+}
+.pi-comment__avatar--empty {
+  display: grid;
+  place-items: center;
+  color: var(--pi-text-tertiary);
+}
+.pi-comment__body {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.pi-comment__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.pi-comment__name {
+  color: var(--pi-primary-deep);
+  font-size: 13px;
+}
+.pi-comment__time {
+  color: var(--pi-text-tertiary);
+  font-size: 12px;
+}
+.pi-comment__text {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.pi-comment__reply {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--pi-bg-subtle);
+  color: var(--pi-text-sub);
+  font-size: 13px;
+  display: grid;
+  gap: 4px;
+}
+.pi-comment__reply b {
+  color: var(--pi-primary-deep);
+  font-weight: 500;
+}
+.pi-comment__foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--pi-text-tertiary);
+  font-size: 12px;
+}
+.pi-comment__like {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+}
+
+/* ---- 歌曲信息（专辑 / 歌手 / 音源实测） ---------------------------- */
+.pi-info {
+  display: grid;
+  gap: 18px;
+}
+.pi-info__album {
+  display: grid;
+  grid-template-columns: 96px 1fr;
+  align-items: center;
+  gap: 16px;
+}
+.pi-info__cover {
+  width: 96px;
+  height: 96px;
+  border-radius: var(--pi-radius-cover);
+  object-fit: cover;
+  background: var(--pi-bg-subtle);
+}
+.pi-info__label {
+  color: var(--pi-text-tertiary);
+  font-size: 12px;
+}
+.pi-info__value {
+  margin-bottom: 8px;
+  font-size: 14px;
+}
+.pi-info__list {
+  margin: 0;
+  display: grid;
+  gap: 6px;
+}
+.pi-info__row {
+  display: grid;
+  grid-template-columns: 90px 1fr;
+  gap: 10px;
+}
+.pi-info__row dt {
+  color: var(--pi-text-tertiary);
+  font-size: 13px;
+}
+.pi-info__row dd {
+  margin: 0;
+  font-size: 13px;
+}
+.pi-info__attempts {
+  display: grid;
+  gap: 4px;
+}
+.pi-info__attempt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.pi-info__ok {
+  color: var(--pi-primary);
+}
+.pi-info__fail {
+  color: #e5484d;
+}
+.pi-info__dim {
+  color: var(--pi-text-tertiary);
+}
+
+/* ---- 可折叠区块（网易云歌单风格，用于推荐页） --------------------- */
+.pi-fold {
+  margin-bottom: 14px;
+  border-radius: var(--pi-radius-card);
+  background: var(--pi-surface);
+  border: 1px solid var(--pi-divider);
+  box-shadow: var(--pi-shadow-card);
+  overflow: hidden;
+}
+.pi-fold__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px 6px 8px;
+}
+.pi-fold__toggle {
+  flex: 1;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 8px 6px;
+  text-align: left;
+  min-width: 0;
+}
+.pi-fold__title {
+  font-size: 16px;
+  font-weight: 600;
+}
+.pi-fold__sub {
+  color: var(--pi-text-tertiary);
+  font-size: 12px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.pi-fold__chevron {
+  margin-left: auto;
+  align-self: center;
+  color: var(--pi-text-tertiary);
+  transition: transform 0.18s ease;
+}
+.pi-fold--open .pi-fold__chevron {
+  transform: rotate(180deg);
+}
+.pi-fold__body {
+  padding: 0 8px 10px;
+}
+
+/* ====================================================================
+   M3 第二版（用户 m05361）：一个悬浮球 + 环形菜单 + 播放器详情页
+
+   旧的 `.pi-navball`（导航球）与 `.pi-dock*`（底部听歌条）已经被这一节取代，
+   上面那两段规则留作对照，不再有组件引用。
+   ==================================================================== */
+
+/* ---- 悬浮球 -------------------------------------------------------- */
+.pi-orb {
+  position: fixed;
+  /* 比抽屉遮罩(20)、抽屉(21)都高：球在抽屉打开时也要能点、能拖 */
+  z-index: 40;
+  /* 拖动要吃掉指针事件，不然 Chromium 会拿去滚页面 */
+  touch-action: none;
+  /* 第十一轮第 5 条：球永远不是窗口拖动区。它自己的拖动逻辑走指针事件，
+     哪怕它被拖到顶部那条 7px 的 drag 条范围内，也不该变成「拖窗口」。 */
+  -webkit-app-region: no-drag;
+}
+
+/* 环形菜单的柔光：有按键被指到时亮一点（m05797 第 1 条之后不再按半边亮） */
+.pi-orb__glow {
+  position: absolute;
+  width: 330px;
+  height: 330px;
+  margin: -165px 0 0 -165px;
+  border-radius: 50%;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.24s ease;
+  background: radial-gradient(
+    circle,
+    color-mix(in srgb, var(--pi-primary) 30%, transparent) 0%,
+    transparent 66%
+  );
+}
+.pi-orb:not([data-hover='none']) .pi-orb__glow {
+  opacity: 1;
+}
+
+.pi-orb__ball {
+  position: relative;
+  z-index: 2;
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: var(--pi-primary-deep);
+  /* iOS 毛玻璃：斜向白渐变 + 冷色细描边（m06304 第 2 条）。
+     第十轮第 2 条（用户 m02362）：换成「透光」那一档——底几乎透明、模糊里带
+     `saturate/brightness`，让悬浮球底下的沉浸式背景颜色透上来（原来 `--pi-glass-sheen`
+     是近乎不透明的白，球在深色封面上就是一块白饼）。 */
+  background: var(--pi-glass-bg-light);
+  backdrop-filter: var(--pi-glass-blur-light);
+  -webkit-backdrop-filter: var(--pi-glass-blur-light);
+  border: 1px solid var(--pi-glass-border-light);
+  /* 这条按钮不能留 UA 的 `padding: 1px 6px`：它是 border-box，贴边细条上的
+     `width: 8px` 会被「padding+border 之和」顶住（内容盒不能为负 ⇒ 实测用量宽度
+     13.6px＝12px padding + 1.6px 描边），于是「细条更细」根本细不下去。
+     把 padding 归零，细条的 8px / 悬停 12px 才是真的。 */
+  padding: 0;
+  box-shadow: var(--pi-glass-highlight), var(--pi-glass-edge), var(--pi-glass-shadow);
+  cursor: grab;
+  transition:
+    transform 0.2s ease,
+    box-shadow 0.2s ease,
+    width 0.28s cubic-bezier(0.3, 0.7, 0.2, 1),
+    height 0.28s cubic-bezier(0.3, 0.7, 0.2, 1),
+    border-radius 0.28s ease;
+}
+.pi-orb__ball:hover {
+  transform: scale(1.05);
+}
+.pi-orb[data-open='true'] .pi-orb__ball {
+  transform: scale(1.04);
+}
+.pi-orb[data-dragging='true'] .pi-orb__ball {
+  cursor: grabbing;
+  transform: scale(1.06);
+  box-shadow: var(--pi-glass-highlight), var(--pi-glass-edge), 0 16px 36px rgba(31, 84, 148, 0.3);
+}
+
+/* ---- 点球的互动反馈（m06982 第 3 条）-------------------------------- */
+/* 按下缩一下：`.pi-orb[data-snapped='none']` 是为了压过上面 data-open/data-dragging
+   的 transform，同时不把贴边细条也缩一下（细条不该有按压缩放）。 */
+.pi-orb[data-snapped='none'] .pi-orb__ball:active {
+  transform: scale(0.94);
+}
+
+/* 点击涟漪：从球边缘荡开一圈，`key` 换一次重放一次 */
+.pi-orb__ripple {
+  position: absolute;
+  inset: -1px;
+  border: 2px solid color-mix(in srgb, var(--pi-primary) 62%, transparent);
+  border-radius: 50%;
+  pointer-events: none;
+  animation: pi-orb-ripple 0.55s cubic-bezier(0.2, 0.8, 0.3, 1) both;
+}
+@keyframes pi-orb-ripple {
+  from {
+    transform: scale(1);
+    opacity: 0.5;
+  }
+  to {
+    transform: scale(2.05);
+    opacity: 0;
+  }
+}
+
+/* 收球时球自己「吞」一下（第 2 条）：先被吸扁，再回弹，最后归位 */
+.pi-orb[data-closing='true'] .pi-orb__ball {
+  animation: pi-orb-gulp 0.52s cubic-bezier(0.3, 0, 0.2, 1) both;
+}
+@keyframes pi-orb-gulp {
+  0% {
+    transform: scale(1.04);
+  }
+  45% {
+    transform: scale(0.93);
+  }
+  72% {
+    transform: scale(1.11);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+/* ---- 贴边细条（m06304 第 7 条，m08768 第 7 条收细到 8px）------------- */
+/* 球吸附到窗口边缘时不再是一个圆，而是缩成贴着那一边的细条；
+   位置用负偏移把细条推到窗口边上（球位本身留了 12px 边距 ⇒ 偏移恒为 -12px，
+   只改粗细：这样细条永远贴着窗口边，不会因为变细而离开边缘）。 */
+.pi-orb[data-snapped='left'] .pi-orb__ball,
+.pi-orb[data-snapped='right'] .pi-orb__ball,
+.pi-orb[data-snapped='top'] .pi-orb__ball,
+.pi-orb[data-snapped='bottom'] .pi-orb__ball {
+  position: absolute;
+  z-index: 2;
+  border-radius: 999px;
+  transform: none;
+}
+.pi-orb[data-snapped='left'] .pi-orb__ball {
+  left: -12px;
+  top: 0;
+  width: 8px;
+  height: 100%;
+  border-radius: 0 999px 999px 0;
+}
+.pi-orb[data-snapped='right'] .pi-orb__ball {
+  right: -12px;
+  top: 0;
+  width: 8px;
+  height: 100%;
+  border-radius: 999px 0 0 999px;
+}
+.pi-orb[data-snapped='top'] .pi-orb__ball {
+  left: 0;
+  top: -12px;
+  width: 100%;
+  height: 8px;
+  border-radius: 0 0 999px 999px;
+}
+.pi-orb[data-snapped='bottom'] .pi-orb__ball {
+  left: 0;
+  bottom: -12px;
+  width: 100%;
+  height: 8px;
+  border-radius: 999px 999px 0 0;
+}
+/* 贴边时把球里的 PI 字样与转圈收掉，只留细条 */
+.pi-orb[data-snapped='left'] .pi-orb__logo,
+.pi-orb[data-snapped='right'] .pi-orb__logo,
+.pi-orb[data-snapped='top'] .pi-orb__logo,
+.pi-orb[data-snapped='bottom'] .pi-orb__logo,
+.pi-orb[data-snapped='left'] .pi-orb__spinner,
+.pi-orb[data-snapped='right'] .pi-orb__spinner,
+.pi-orb[data-snapped='top'] .pi-orb__spinner,
+.pi-orb[data-snapped='bottom'] .pi-orb__spinner {
+  opacity: 0;
+}
+/* 细条里那一段蓝 = 播放进度（跟着进度条长出来） */
+.pi-orb__stripbar {
+  position: absolute;
+  inset: 3px 1px;
+  border-radius: 999px;
+  opacity: 0;
+  pointer-events: none;
+  background: linear-gradient(0deg, var(--pi-primary), color-mix(in srgb, var(--pi-primary) 30%, transparent));
+  transition: opacity 0.2s ease;
+}
+.pi-orb[data-snapped='left'] .pi-orb__stripbar,
+.pi-orb[data-snapped='right'] .pi-orb__stripbar,
+.pi-orb[data-snapped='top'] .pi-orb__stripbar,
+.pi-orb[data-snapped='bottom'] .pi-orb__stripbar {
+  opacity: 0.85;
+}
+.pi-orb[data-snapped='left'] .pi-orb__stripbar,
+.pi-orb[data-snapped='right'] .pi-orb__stripbar {
+  transform: scaleY(var(--pi-progress, 0));
+  transform-origin: 50% 100%;
+}
+.pi-orb[data-snapped='top'] .pi-orb__stripbar,
+.pi-orb[data-snapped='bottom'] .pi-orb__stripbar {
+  transform: scaleX(var(--pi-progress, 0));
+  transform-origin: 0 50%;
+  background: linear-gradient(90deg, var(--pi-primary), color-mix(in srgb, var(--pi-primary) 30%, transparent));
+}
+/* 指到细条上会变粗一点，暗示「可以拉出来」（16 → 12，跟着主干一起收细） */
+.pi-orb[data-snapped='left'] .pi-orb__ball:hover,
+.pi-orb[data-snapped='right'] .pi-orb__ball:hover {
+  transform: none;
+  width: 12px;
+}
+.pi-orb[data-snapped='top'] .pi-orb__ball:hover,
+.pi-orb[data-snapped='bottom'] .pi-orb__ball:hover {
+  transform: none;
+  height: 12px;
+}
+.pi-orb__logo {
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  background: linear-gradient(160deg, #8fd8ff 0%, #35a7f5 45%, #0b6fd0 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  /* 收成细条时要淡出 */
+  transition: opacity 0.2s ease;
+}
+.pi-orb__spinner {
+  position: absolute;
+  inset: -5px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  border-top-color: var(--pi-primary);
+  animation: pi-orb-spin 0.9s linear infinite;
+}
+@keyframes pi-orb-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* 外圈那一段蓝弧 = 播放进度 */
+.pi-orb__meter {
+  position: absolute;
+  inset: -5px;
+  width: calc(100% + 10px);
+  height: calc(100% + 10px);
+  z-index: 1;
+  pointer-events: none;
+  transform: rotate(-90deg);
+}
+.pi-orb__track {
+  fill: none;
+  stroke: var(--pi-divider);
+  stroke-width: 3;
+  opacity: 0.75;
+}
+.pi-orb__bar {
+  fill: none;
+  stroke: var(--pi-primary);
+  stroke-width: 3;
+  stroke-linecap: round;
+  transition: stroke-dashoffset 0.25s linear;
+}
+
+/* ---- 环形菜单的按钮 ------------------------------------------------ */
+/* 默认只有图标；指到哪一个，哪一个向外升起 RISE=12px 并把文字淡出来（m05797 第 1、5 条）。 */
+.pi-orb__item {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  /* m06304 第 4 条：按键 40→48px、图标 18→21px，别那么难点。
+     第八轮第 8 条「环形菜单按键贴近悬浮球」：48→44px（`PiOrb.tsx` 的 ITEM_SIZE 必须同步），
+     一圈里按键越小、半径反解出来越小，整圈才能贴着球；图标 21→19px 配上 44px 正好。 */
+  width: 44px;
+  height: 44px;
+  margin: -22px 0 0 -22px;
+  z-index: 3;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: var(--pi-text-sub);
+  background: var(--pi-glass-sheen);
+  backdrop-filter: var(--pi-glass-blur);
+  -webkit-backdrop-filter: var(--pi-glass-blur);
+  border: 1px solid var(--pi-glass-border);
+  /* m06982 第 6 条：换成正弦的等长 4 槽阴影，悬停时与 --pi-shadow-slots-hover
+     逐槽插值（下面那条 :hover 与 box-shadow 0.34s 的过渡配合） */
+  box-shadow: var(--pi-glass-highlight), var(--pi-glass-edge), var(--pi-shadow-slots);
+  /* 径向位置（含悬停升起）由内联的 --pi-x/--pi-y 给，CSS 只负责画出来 */
+  transform: translate(var(--pi-x, 0px), var(--pi-y, 0px));
+  will-change: transform;
+  transition:
+    transform 0.24s cubic-bezier(0.22, 0.61, 0.36, 1),
+    opacity 0.2s ease,
+    color 0.16s ease,
+    background 0.16s ease,
+    box-shadow 0.34s cubic-bezier(0.32, 0.72, 0, 1);
+}
+.pi-orb__item:hover {
+  box-shadow: var(--pi-glass-highlight), var(--pi-glass-edge), var(--pi-shadow-slots-hover);
+}
+
+/* ---- 换页过渡（m06304 第 1 条）------------------------------------ */
+/* 旧页的按键一个一个坠进 PI 图标里（越靠后越晚出发），
+   新页的按键再从图标里按顺序冒出来；用 --pi-i 做逐个错开。 */
+.pi-orb[data-phase='out'] .pi-orb__item,
+.pi-orb[data-phase='out'] .pi-orb__cover {
+  pointer-events: none;
+  /* 加速曲线：先慢慢被拽离原位，最后一下快得看不清（像被球吸进去） */
+  animation: pi-orb-dive 0.23s cubic-bezier(0.5, 0, 0.9, 0.6) both;
+  animation-delay: calc(var(--pi-i, 0) * 22ms);
+}
+.pi-orb[data-phase='in'] .pi-orb__item,
+.pi-orb[data-phase='in'] .pi-orb__cover {
+  animation: pi-orb-pop 0.3s cubic-bezier(0.2, 0.9, 0.25, 1) backwards;
+  animation-delay: calc(var(--pi-i, 0) * 26ms);
+}
+
+/*
+ * 用户 m08066 第 1 条（展开/收起掉帧）：换页这 0.23~0.3s 里，11 个按键正在位移+缩放，
+ * 而每个按键都挂着 `backdrop-filter: blur(24px)`——模糊层每帧都要重新采样它背后的画面，
+ * 11 个按键 + 球 = 一帧十几次全屏模糊，这是这条动画最贵的一笔。
+ *
+ * 动画期间把模糊摘掉：按键此时本来就在快速变形，人眼分辨不出「背后有没有被真正模糊」，
+ * 但合成器省掉了每帧十几遍的全屏重采样；动画一结束标记消失、模糊自动回来。
+ * 只碰 backdrop-filter，不动背景色/描边/阴影，玻璃的观感保持。
+ *
+ * 注意**不能**挂在 `[data-phase='in']` 上：`phase` 只有 `in`/`out` 两态、落地之后长期停在
+ * `in`（`PiOrb.tsx` 的 `shownPhase = closing ? 'out' : phase`），那样写等于让按键永久失去模糊。
+ * `[data-transiting='true']` 是 JS 里那个短命标记（`POP_TOTAL_MS` 后自己消失），只覆盖动画窗口。
+ */
+.pi-orb[data-transiting='true'] .pi-orb__item,
+.pi-orb[data-transiting='true'] .pi-orb__cover {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+@keyframes pi-orb-dive {
+  0% {
+    transform: translate(var(--pi-x, 0px), var(--pi-y, 0px)) scale(1);
+    opacity: 1;
+  }
+  /* 中途只走了三分之一路：前段慢、后段被「吸」进去 */
+  55% {
+    transform: translate(calc(var(--pi-x, 0px) * 0.34), calc(var(--pi-y, 0px) * 0.34)) scale(0.86);
+    opacity: 0.95;
+  }
+  to {
+    transform: translate(0, 0) scale(0.12);
+    opacity: 0;
+  }
+}
+@keyframes pi-orb-pop {
+  from {
+    transform: translate(0, 0) scale(0.28);
+    opacity: 0;
+  }
+}
+
+.pi-orb__item[data-hover='true'],
+.pi-orb__item[data-active='true'] {
+  color: var(--pi-primary);
+  background: color-mix(in srgb, var(--pi-primary) 14%, var(--pi-glass-bg-strong));
+  box-shadow: var(--pi-glass-highlight), var(--pi-glass-edge), 0 12px 28px rgba(31, 155, 255, 0.24);
+}
+/* 指到时图标上移，给下面的文字让位 */
+.pi-orb__icon {
+  transition: transform 0.2s ease;
+}
+.pi-orb__item[data-hover='true'] .pi-orb__icon {
+  transform: translateY(-5px);
+}
+.pi-orb__label {
+  position: absolute;
+  left: 50%;
+  bottom: 3px;
+  max-width: 62px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  font-size: 9px;
+  line-height: 1.1;
+  opacity: 0;
+  transform: translateX(-50%) translateY(4px);
+  transition:
+    opacity 0.18s ease,
+    transform 0.2s ease;
+}
+.pi-orb__item[data-hover='true'] .pi-orb__label {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+/* ---- 歌单封面环（m05797 第 6 条） ---------------------------------- */
+.pi-orb__cover {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  /* m06304 第 4 条：封面 44→60px，环半径也按 60px 反解（≈96.5px），离球更远 */
+  width: 60px;
+  height: 60px;
+  margin: -30px 0 0 -30px;
+  z-index: 3;
+  padding: 0;
+  overflow: hidden;
+  border-radius: 50%;
+  border: 1px solid var(--pi-glass-border);
+  background: var(--pi-glass-sheen);
+  box-shadow: var(--pi-glass-highlight), var(--pi-glass-edge), var(--pi-shadow-float);
+  cursor: grab;
+  transform: translate(var(--pi-x, 0px), var(--pi-y, 0px));
+  will-change: transform;
+  transition:
+    transform 0.24s cubic-bezier(0.22, 0.61, 0.36, 1),
+    opacity 0.22s ease,
+    box-shadow 0.2s ease;
+}
+.pi-orb__cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  border-radius: 50%;
+  pointer-events: none;
+}
+.pi-orb__cover-empty {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  color: var(--pi-text-tertiary);
+}
+.pi-orb__cover[data-hover='true'] {
+  box-shadow: var(--pi-glass-highlight), 0 12px 28px rgba(31, 155, 255, 0.28);
+}
+.pi-orb[data-dragging='true'] .pi-orb__cover {
+  cursor: grabbing;
+}
+
+/* 环形菜单当前这一页的说明（「设置」「我的歌单 · 按住封面转」） */
+.pi-orb__caption {
+  position: absolute;
+  left: var(--pi-orb-caption-left, 50%);
+  top: calc(100% + var(--pi-orb-ring-y, 0px) + var(--pi-orb-caption-gap, 12px));
+  transform: translateX(calc(-50% + var(--pi-orb-caption-shift, 0px)));
+  z-index: 4;
+  padding: 3px 9px;
+  border-radius: 999px;
+  white-space: nowrap;
+  pointer-events: none;
+  font-size: 11px;
+  color: var(--pi-text-sub);
+  background: var(--pi-glass-sheen);
+  backdrop-filter: var(--pi-glass-blur);
+  -webkit-backdrop-filter: var(--pi-glass-blur);
+  border: 1px solid var(--pi-glass-border);
+  box-shadow: var(--pi-shadow-float);
+}
+
+/* 第九轮第 8 条：`.pi-orb .pi-queue` 那条「队列挂到球上方」的重锚规则随队列抽屉一起删了。 */
+
+/* ---- 播放器主页：空白页（天蓝 PI） --------------------------------- */
+.pi-home--empty {
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 12px;
+  text-align: center;
+}
+.pi-home__logo {
+  font-size: clamp(96px, 15vw, 190px);
+  font-weight: 800;
+  letter-spacing: 8px;
+  line-height: 1;
+  background: linear-gradient(165deg, #a5e2ff 0%, #35a7f5 44%, #0a6ed0 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  filter: drop-shadow(0 20px 46px rgba(31, 155, 255, 0.3));
+  animation: pi-home-float 6s ease-in-out infinite;
+}
+@keyframes pi-home-float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-10px);
+  }
+}
+.pi-home__slogan {
+  margin: 6px 0 0;
+  font-size: 15px;
+  color: var(--pi-text-sub);
+}
+.pi-home--empty .pi-home__hint {
+  /* 收紧到 420px 时这句提示会折成两行、末尾只剩一个「器。」，所以给足一行宽度。 */
+  max-width: 580px;
+  line-height: 1.6;
+}
+.pi-home__hint {
+  margin: 0;
+  color: var(--pi-text-tertiary);
+  font-size: 12px;
+}
+
+/* ---- 播放器主页：歌词全屏 + 左上角名片 + 底部浮空进度条 -------------- */
+/* 用户 m08768 第 6 条：封面与歌名缩成左上角一张小名片，整页让给歌词，播放控制从
+   「封面下方的一排按钮」挪到底部一条浮空的玻璃药丸里。这一组是当前唯一生效的版本
+   （文件上面 1400 行附近那套是早期大封面版，留着没删）。 */
+.pi-home__body {
+  position: relative;
+  z-index: 1;
+  height: 100%;
+  /* 单列全幅：这里原来是「封面列 + 歌词列」的两列 grid。 */
+  display: block;
+  padding: 0;
+  overflow: hidden;
+}
+/* m06982 第 6 条：暗角——四角压一点点，视线收回中间的歌词上。
+   folia 是 78% 处开始压、边缘 .52，浅色界面用 .16 就够，再重就脏了。
+   名片与进度条是 z-index 3，压在它上面（玻璃上不该有暗角）。 */
+.pi-home__body::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  background: radial-gradient(ellipse at center, transparent 78%, rgba(12, 24, 40, 0.16) 100%);
+}
+.pi-home__stage {
+  position: relative;
+  height: 100%;
+  /* 一行：歌词那块吃掉整页高度，名片与进度条是浮在上面的绝对定位层。
+     原来这里的 `isolation: isolate` 撤掉了——它会把名片/进度条关进一个 z-index: auto
+     的层里，于是那层暗角反过来盖在玻璃上。 */
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  min-width: 0;
+  cursor: pointer;
+  /* m06982 第 6 条：封面衍生色的两团环境光——folia 的双 radial 思路（两团分别
+     在左上/右下，色相来自当前歌曲），比一整片纯色更像「有光的环境」。
+     现在这两团铺满整页，正好成了「歌词浮在这首歌的颜色里」。 */
+  background-image:
+    radial-gradient(
+      58% 52% at 14% 12%,
+      color-mix(in srgb, var(--pi-np-accent) 16%, transparent),
+      transparent 70%
+    ),
+    radial-gradient(
+      54% 48% at 86% 82%,
+      color-mix(in srgb, var(--pi-np-accent) 13%, transparent),
+      transparent 72%
+    );
+}
+/* 歌词的可用区：宽高占满、居中；上下内边距让开名片与底部进度条。
+   这里**不**碰 `.pi-lyricstage` 自己的尺寸——舞台多高、几套主题都是它那套 CSS 说了算。 */
+.pi-home__stage-lyrics {
+  grid-area: 1 / 1;
+  display: grid;
+  /* 横向居中交给这里（舞台自己那条 `margin: 0 auto` 也可能被主题改写）；
+     纵向**拉伸**：`.pi-lyricstage` 是 `grid-template-rows: minmax(300px, 1fr) auto`，
+     只有拿到确定高度，中间那行才能吃掉整页——跟它原来待在两列 grid 里的行为一致。
+     （写成 `place-items: center` 会让它缩回内容高度，页面下半截就空掉了。） */
+  place-items: stretch center;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  padding: 108px 24px 92px;
+}
+
+/* 左下角的小名片（用户 m08768 第 6 条；第九轮第 2 条把它从左上挪到左下）。
+   名片自己已经**不再是按钮**：第十九轮第 8 条（用户 m02213）删掉了「点名片向上伸出操作框」
+   那一套，四个动作改挂在封面四角（`.pi-home__coverbtn`，规则在 styles/up-next-card.css）。
+   冒烟脚本按 `.pi-home__card` 找它、读 rect 与 opacity，别改名。 */
+.pi-home__card {
+  position: absolute;
+  left: 22px;
+  bottom: 22px;
+  top: auto;
+  z-index: 3;
+  /* 第十二轮第 4 条（用户 m04193）：「名片里的信息改成竖着排列展示的，顶部展示歌曲封面」
+     ⇒ 从「左封面 + 右文字」的横排改成竖排：封面在上、信息在下；卡片因此变窄变高，
+     和同一轮的设置页一起走「拍立得卡片」那种观感。 */
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 9px;
+  width: 188px;
+  max-width: min(188px, calc(100% - 44px));
+  padding: 9px 9px 11px;
+  border-radius: var(--pi-glass-radius);
+  /* 第十轮第 2 条（用户 m02362）：名片也是「透光玻璃」——底下沉浸式背景的颜色要透上来 */
+  background: var(--pi-glass-bg-light);
+  backdrop-filter: var(--pi-glass-blur-light);
+  -webkit-backdrop-filter: var(--pi-glass-blur-light);
+  border: 1px solid var(--pi-glass-border-light);
+  box-shadow: var(--pi-glass-highlight), var(--pi-shadow-slots);
+  text-align: left;
+  /* 第十七轮第 7 条（用户 m00006）：「歌曲名片的出现方式改成从底部向上冒出，有一个流畅生动的
+     动画。常态隐藏，只有鼠标移动到接近位置或者刚切换完歌曲才出现，其他情况都保持隐藏。」
+     ⇒ 基态就是**藏着的**：透明 + 往下压 46px + 点不到。`pointer-events: none` 很关键——
+     藏起来的名片不该截胡空白处的点击（那颗 PI 键就浮在附近）。
+     谁能让它露出来由宿主说了算：`data-reveal='true'`（指针接近 or 刚切完歌，
+     判定见 `pages/HomePage.tsx` 的 `CARD_NEAR_MARGIN` 与 `cardRevealed`）。 */
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(46px);
+  transition:
+    opacity 0.24s ease,
+    transform 0.34s cubic-bezier(0.22, 0.61, 0.36, 1),
+    box-shadow 0.34s cubic-bezier(0.32, 0.72, 0, 1);
+}
+.pi-home__card:hover {
+  box-shadow: var(--pi-glass-highlight), var(--pi-shadow-slots-hover);
+}
+/* 封面缩略图：冒烟脚本要找的 `.pi-home__cover` 就是它（别改名） */
+.pi-home__cover {
+  flex: 0 0 auto;
+  /* 第十二轮第 4 条：封面在名片顶部，占满卡片宽、正方形。 */
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1 / 1;
+  border-radius: 13px;
+  object-fit: cover;
+  background: color-mix(in srgb, var(--pi-text-tertiary) 18%, transparent);
+  box-shadow: 0 6px 18px rgba(15, 46, 82, 0.22);
+}
+.pi-home__meta {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  /* 竖排名片：文字在封面下面左对齐，仍然必须能收缩——长歌名要拿省略号收尾而不是把卡片撑破。 */
+  min-width: 0;
+  text-align: left;
+}
+.pi-home__title {
+  margin: 0;
+  min-width: 0;
+  font-size: 15px;
+  line-height: 1.25;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* 第九轮第 2 条：名片里的歌手名与专辑名是**按钮**——点歌手出歌手歌曲卡片、
+   点专辑出专辑歌曲卡片（`state/ui.ts` 的 `openSongs` → `SongListOverlay`）。 */
+.pi-home__artists,
+.pi-home__album {
+  margin: 0;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--pi-text-sub);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.3;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.pi-home__artists:hover,
+.pi-home__album:hover {
+  color: var(--pi-primary);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+/* 音质那一行（`StatusLine` 渲染的 `.pi-home__status` 就长在里面） */
+.pi-home__quality {
+  margin-top: 2px;
+  min-width: 0;
+  max-width: 100%;
+  color: var(--pi-text-tertiary);
+  font-size: 11px;
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pi-home__badges {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+.pi-home__time {
+  color: var(--pi-text-tertiary);
+  font-size: 12px;
+}
+.pi-home__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin-top: 4px;
+}
+.pi-home__status {
+  margin: 0;
+  min-height: 18px;
+  font-size: 12px;
+  color: var(--pi-text-tertiary);
+}
+/* 状态行缩成名片里的一行极小字（原来的 min-height: 18px 是给大标题下面留位的） */
+.pi-home__card .pi-home__status {
+  min-height: 0;
+  max-width: 100%;
+  font-size: 11px;
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pi-home__status--error {
+  color: #e5484d;
+}
+.pi-home__status-dim {
+  color: var(--pi-text-tertiary);
+}
+/* 第九轮第 2 条：名片里那行 10px 的「点封面浮出操作面板」提示已随悬浮框一起删掉，
+   提示文案改由名片自身的 `title` 承担（「点名片：展开操作」）。 */
+
+/* 底部浮空的进度条（用户 m08768 第 6 条；第九轮第 1 条改造）。
+   收起态 ≈ 原来的 1/4（190px——就是用户图 1 那个「00:05 ▬▬ 04:30」的样子），
+   指针移上去才展开：宽度长回去，**左边**浮出暂停键、**右边**浮出音量键（音量键再往上
+   弹一条竖向音量条，见下面的 `.pi-home__volpop`）。开合全靠 `:hover`/`:focus-within`，
+   没有额外 state。
+   第十轮第 3 条（用户 m02362）：宽度**固定**成原来放大后的那一档
+   （用户原话「单独进度条的长度变成放大后的一倍即可」），悬停**不再改宽度**——
+   暂停键与音量键一直占着固定位置、只用 opacity 淡入，所以进度条 track 的
+   长度在「静置 / 悬停」两态下**一模一样**（用户要求「进度条本身长度不变」）。
+   第十一轮第 2 条（用户 m03279）：用户说「进度条这个部件整体缩小到如图一所示比例大小」
+   ——参考图里那颗药丸只占窗口宽约 1/4（我们原来是 55%），所以整个部件（宽度、高度、
+   两个键、时间字号、轨道与滑块）一起缩到约一半档位，比例关系保持不变。
+   窄窗时给左下角的名片留出位置，两者不叠。 */
+.pi-home__bar {
+  /* 用户 m00736 第 3 条后半句（原话：「部件常态如图 4 所示，两端空隙太大，去掉一些」）：
+     常态那两颗键（暂停键 40 + 音量键 34 = 74px）本来就是透明的，却还在行里**占着位置**，
+     于是常态药丸左端白留 12（内边距）+ 40 + 6（间距）= 58px、右端 12 + 34 + 6 = 52px，
+     两侧还不一样宽。现在常态改用负 margin 把这 74px 占位收掉（见 `.pi-home__play` /
+     `.pi-home__volbtn`，悬停/聚焦时再加回来），药丸宽度也整体减掉这 74px：
+       ① 常态两端只剩内边距 + 间距 = 18px（58/52 → 18/18，两侧终于对称）；
+       ② 常态「进度条本身」的长度**逐像素不变**（药丸 -74px、行内固定占位同样 -74px）；
+       ③ 悬停宽度公式跟着换成 +17px（推导见下一条注释），悬停轨道仍是常态的 150%。
+     两处 clamp 的上下限都按 -74px 平移过，所以**任何窗口宽度下轨道长度都与改动前逐像素相同**，
+     变的只是药丸那一圈外框（顺带更接近用户第十一轮说的「约占窗口 1/4」）。 */
+  --pi-bar-hidden-keys: 74px;
+  --pi-bar-width: clamp(174px, calc(29% - var(--pi-bar-hidden-keys)), 366px);
+  /* 第十七轮第 6 条（用户 m00006）：「进度条本身在鼠标悬停在部件放大时放大到原来的 150%」。
+     药丸里的常驻内容分两态：**悬停**（两颗键都回来了）= 暂停键 40 + 两个时间各 33 + 音量键 34
+     + 4 个 6px 间距 + 左右内边距 24 = 188px；**常态**（两颗键靠负 margin 不占位）= 114px。
+     上/下一首是绝对定位、不占行内位置；暂停键靠 `scale` 长大也不改变布局。
+     所以「进度条本身」悬停恒为 `药丸宽 - 188`、常态恒为 `药丸宽 - 114`；要让它正好变成 1.5 倍：
+     药丸宽′ = 1.5 × (w - 114) + 188 = 1.5w + 17。（与改动前的 1.5w - 94 完全等价：
+     w 减了 74，1.5 × (-74) + 111 = 0 —— 悬停药丸宽度也逐像素不变。） */
+  --pi-bar-hover-width: calc(var(--pi-bar-width) * 1.5 + 17px);
+  position: absolute;
+  /* 第十七轮第 6 条：悬停要宽到 150%，但**右沿必须钉住**。主页右边那条「评论 / 歌曲信息」
+     抽屉是 z-index 8（药丸 3），它的左沿正好压在收起态药丸的右沿上：宽度若左右对称地长，
+     悬停时音量键就钻到抽屉底下（实测合成指针落到 `pi-home__drawer-body` 上、音量弹层
+     永远浮不出来，真人也点不到）。改成「左沿跟着宽度往左长、右沿恒为收起态右沿」：
+     收起态像素级不变（宽度/位置/占窗比例都与以前一致），悬停时音量键原地不动、
+     也不再伸进抽屉；顺带没有「边缘追着指针长」的抖动。 */
+  /* 第十八轮第 1 条（用户 m01482）：「底部进度条部件是以中心轴为基准放大，而不是以进度条
+     本体右端为基准」——放大时左右两侧对称往外长（`left: 50%` + `translateX(-50%)`）。
+     第十七轮为了躲右边那条抽屉（z-index 8）曾把右沿钉死；现在改回中心轴，改用层级解决：
+     药丸抬到 9，压在抽屉之上（悬停时药丸右端会盖住抽屉左沿那几十 px，指针也因此能正常
+     落在音量键上——上一轮「音量键钻到抽屉底下、弹层浮不出来」的真因就是抽屉把它盖住了）。 */
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  z-index: 9;
+  width: var(--pi-bar-width);
+  height: 44px;
+  padding: 0;
+  /* 药丸：999px 在任何高度下都是完美胶囊（悬停会往上长高 12px）。 */
+  border-radius: 999px;
+  /* 第十轮第 2 条（用户 m02362）：进度条也换成「透光玻璃」，底下的封面颜色透上来 */
+  background: var(--pi-glass-bg-light);
+  backdrop-filter: var(--pi-glass-blur-light);
+  -webkit-backdrop-filter: var(--pi-glass-blur-light);
+  border: 1px solid var(--pi-glass-border-light);
+  box-shadow: var(--pi-glass-highlight), var(--pi-shadow-slots);
+  /* 第十三轮第 3 条（用户 m04663）：「底部进度条部件在鼠标悬停时变大一点」——
+     变大只往上长：下沿（bottom: 18px）与里面那一行（`__barlyn` 贴底、高度固定）都不动，
+     多出来的 20px 正好留给药丸顶部两角的「上一首 / 下一首」。宽度一 px 不变，
+     所以「进度条本身长度不变」继续成立。 */
+  transition:
+    opacity 0.18s ease,
+    height 0.3s cubic-bezier(0.33, 1, 0.68, 1),
+    width 0.3s cubic-bezier(0.33, 1, 0.68, 1);
+}
+.pi-home__bar:hover,
+.pi-home__bar:focus-within {
+  /* 第十八轮第 1 条（用户 m01482）：「调整边框可以像图 1 一样包裹暂停键」——暂停键悬停时
+     40 → 48px（用户 m00736 第 3 条「缩小一点停止键」之后的值，原来是 56px，见下面那句
+     `scale(1.2)`），药丸 44 → 64：常驻行贴底、那颗键靠 `translateY(-10px)` 回到药丸正中，
+     上下各留 (64 - 48) / 2 = 8px，边框把它整颗裹住（图 1 那圈边）。 */
+  height: 64px;
+  /* 第十七轮第 6 条：「进度条本身放大到 150%」。宽度一次给足、由 `transition` 滑出来
+     （不是跳变）；窄窗再兜一个上限，别顶到窗口两边。 */
+  width: var(--pi-bar-hover-width);
+  max-width: calc(100vw - 48px);
+}
+/* 药丸里那一行常驻内容（播放 / 上一首 / 时间 / 进度条 / 时间 / 下一首 / 音量）：钉在药丸下沿，
+   自己高度固定。药丸悬停向上长高时这一行**不动**——这正是「进度条本身长度/位置不变」的实现方式。 */
+.pi-home__barlyn {
+  position: absolute;
+  left: 0;
+  right: 0;
+  /* 用户 m00001 第 2 条：「进度条本身不要居中，往下一点」——常驻行改回**贴着药丸下沿**
+     （第十八轮第 1 条的 `top: 50%` 竖直居中撤掉）。收起态药丸与行都是 44px，贴底与居中
+     逐像素相同；悬停时药丸 64、行 44，整段多出来的 20px 全留在**上方**，于是：
+     ① 轨道（连两个时间、音量键）比原来低 10px，正是「往下一点」；
+     ② 上方那 20px 让给上/下一首那两颗键（它们本来就绝对定位在轨道两端**上方**），
+        键因此能从 22px 放到 28px（见 `.pi-home__prev/.pi-home__next`）。
+     另外：行贴底之后**静置与悬停的视口位置完全相同**（药丸下沿钉在 bottom: 18px，行贴着它），
+     悬停时只有药丸往上长，「进度条本身长度/位置不变」这条比居中那版还更严格。
+     暂停键不再跟着行居中，靠 `:hover` 里那句 `translateY(-10px)` 单独挪回药丸中心，
+     48px 的键仍然被药丸边框完整裹住，而且整颗落在左端那段 32px 圆弧里（第十八轮第 1 条的要求继续成立）。 */
+  bottom: 0;
+  top: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 44px;
+  padding: 0 12px;
+}
+/* 第十五轮第 3 条（用户 m06435）：「上/下一首的按键应该在进度条本身首尾两端**上面**，
+   而不是首尾旁边；并且常态不显示、放大后才显示。进度条本身还需增长到原来的 150%。」
+   ——这一层就是「进度条本身」的盒子：相对定位，`.pi-home__progress` 在里面撑满，
+   两个箭头绝对定位到它的首尾两端**上方**（见下面 `.pi-home__prev/.pi-home__next`）。
+   两个键离开行内布局之后，轨道又长出它们原来占的宽度（22 + 22 + 两个 6px 的 gap = 56px），
+   加上时间/音量键不动，轨道长度自然就超过原来的 150%（冒烟里量「轨道条」原文对比）。 */
+.pi-home__track {
+  position: relative;
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  height: 16px;
+  /* 用户 m04407 第 3 条：`--pi-home-track-thick` / `--pi-home-thumb` 原来声明在
+     `.pi-home__progress` 上，现在挪到这一层——新加的「已播胶囊」（`.pi-home__progressfill`，
+     见下面「进度」那一段）是 input 的**兄弟**，读不到 input 自己的自定义属性。
+     挪到共同祖先上之后 input 照样继承，所以 `apps/desktop/src/main/index.ts` 的探针
+     读 `[data-home-progress]` 的 computed `--pi-home-track-thick` / `--pi-home-thumb`
+     仍然拿到 6px / 12px；悬停覆写也跟着从 `.pi-home__progress` 移到本层
+     （见 `.pi-home__bar:hover .pi-home__track`），悬停档读到的还是 10px / 16px。 */
+  --pi-home-track-thick: 6px;
+  --pi-home-thumb: 12px;
+}
+/* 暂停键与音量键：**一直占同样大小的位置**，静置时全透明且点不到。
+   第十一轮第 2 条（用户 m03279）：跟着整条进度条一起缩小，32 → 24。
+   第十四轮第 1 条（用户 m05281）：「参考图 1 重新设计停止键/音量键大小」——
+   两个键都放大（播放键 30 → 38、音量键 30 → 34），并且**音量键去掉按键边框、只留图标**
+   （不再有底色圆/边框，只有 hover 时图标变主色）。它们仍在行里占位，
+   所以「进度条本身」的长度仍与改动前逐像素相同（常态那 74px 占位改由药丸宽度减掉）。注意别给 `.pi-home__bar` 加 `overflow: hidden`
+   ——音量条是往上弹的，会被裁掉。 */
+.pi-home__play,
+.pi-home__volbtn {
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  pointer-events: none;
+  color: var(--pi-primary-deep);
+  cursor: pointer;
+  /* 第十二轮第 5 条（用户 m04193）：「常态没有停止键和音量键，鼠标悬停在上面才出现，
+     消失和出现的动画要生动流畅」⇒ 静置不只是透明，还缩到 0，浮出时用带回弹的曲线长回原位。
+     用户 m01402 第 6 条把方向收紧了：「放大后的停止键和音量键消失的动画不要向外边渐渐消失，
+     而是在原地缩小消失」——所以静置态只剩 `scale(0)`（暂停键另留竖直基准，见下面
+     `.pi-home__play`），横向那 ±8px 的位移全部去掉。`translate`/`scale` 都不参与布局，
+     所以整条进度条的长度**一 px 都不会变**（第十一轮第 2 条的要求继续成立）。 */
+  transform-origin: center;
+  transition:
+    opacity 0.2s ease,
+    transform 0.36s cubic-bezier(0.34, 1.56, 0.64, 1),
+    /* 用户 m00736 第 3 条：常态收掉的那段占位（负 margin）跟药丸变宽同一条曲线滑开/滑回，
+       读起来是「药丸张开、两颗键跟着长出来，内容被让开」——不要瞬移。 */
+    margin 0.3s cubic-bezier(0.33, 1, 0.68, 1),
+    color 0.16s ease,
+    background 0.16s ease;
+}
+.pi-home__play {
+  /* 第十六轮第 5 条（用户 m07538）：「底部进度条部件停止键与进度条的大小对比参考图 1」——
+     参考图里那颗键的直径约是轨道厚度的 6.5 倍，而我们原来是 38 : 3 ≈ 12.7 : 1（轨道太细）。
+     所以键 38 → 40、轨道 3 → 6、滑块 10 → 12，比值落到约 6.7 : 1；键同时按参考图改成
+     「实心圆 + 白图标」（底色仍用主题主色，不换成参考图的纯黑，免得与主题颜色设置打架）。 */
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  overflow: hidden;
+  color: #fff;
+  background: var(--pi-primary);
+  /* 用户 m00736 第 3 条：常态**不占行内位置**——用负 margin 把 40px 让出来（省下的宽度由
+     `--pi-bar-width` 一起减掉），但 offsetWidth / offsetHeight 仍是 40×40（冒烟第十六轮⑥
+     量的正是这两个 layout 尺寸，负 margin 不动它们）。悬停时 margin 回 0（见下面那条 hover）。 */
+  margin-left: -40px;
+  /* 用户 m01402 第 6 条：静置态「在原地缩小」——横向位移归零，只留 `scale(0)`。
+     竖直那 -10px 必须保住（下面 hover 那条：常驻行贴底后键要上挪 10px 才回到药丸正中），
+     否则缩小的同时还会往下滑一截。 */
+  transform: translateY(-10px) scale(0);
+}
+.pi-home__volbtn {
+  width: 34px;
+  height: 34px;
+  /* 用户 m00736 第 3 条：和暂停键一样，常态用负 margin 把 34px 让出来（合计 40 + 34 = 74px
+     = `--pi-bar-hidden-keys`），悬停时在下面回 0。 */
+  margin-right: -34px;
+  /* 第十四轮第 1 条：「音量键去掉按键边框，只有图标」——没有底色、没有圆、没有描边。 */
+  border-radius: 0;
+  background: none;
+  /* 用户 m01402 第 6 条：和暂停键一样原地缩小/长出，不再往右挪 8px。 */
+  transform: scale(0);
+}
+.pi-home__bar:hover .pi-home__play,
+.pi-home__bar:focus-within .pi-home__play,
+.pi-home__bar:hover .pi-home__volbtn,
+.pi-home__bar:focus-within .pi-home__volbtn {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateX(0) scale(1);
+}
+/* 用户 m00736 第 3 条：悬停/聚焦时把常态收掉的那 74px 占位还回来（40 + 34）。和药丸变宽
+   同一条 0.3s 曲线 ⇒ 药丸左右张开的同时，两颗键各自把时间/轨道往里推，内容不会被挤跳。 */
+.pi-home__bar:hover .pi-home__play,
+.pi-home__bar:focus-within .pi-home__play {
+  margin-left: 0;
+}
+.pi-home__bar:hover .pi-home__volbtn,
+.pi-home__bar:focus-within .pi-home__volbtn {
+  margin-right: 0;
+}
+/* 第十七轮第 6 条（用户 m00006）：「暂停键半径放大 40%」；用户 m00736 第 3 条前半句又把它收回来：
+   原话「底部进度条部件放大后，如图 3 所示外边框离停止键太近了，多留点空隙（缩小一点停止键）」。
+   —— 药丸悬停高 64px，40px 的键 ×1.4 = 56px，上下只剩 4px；更要紧的是药丸是胶囊，左端那段
+   圆弧的半径就是 32px，而 56px 那颗键的圆心离左端圆心只有 8px、8 + 28 = 36 > 32：键的左缘
+   其实已经**顶出圆弧**（图 3 里键的左上角压着边框、只省 2~3px 观感，就是这个）。
+   ×1.2 = 48px 之后：
+     · 上下各留 (64 - 48) / 2 = 8px（原来 4px，正好翻倍）；
+     · 键的圆心离左端圆心 4px，4 + 24 = 28 ≤ 32 ⇒ 整颗键连圆弧一起落在胶囊内，四周余 4px。
+   仍用 `scale` 而不是改 width/height：行内布局一 px 都不动，「进度条本身」的长度仍然只由药丸
+   宽度决定（算法见 `.pi-home__bar` 的 `--pi-bar-hover-width`）；offsetWidth/Height 也照旧是
+   40×40（冒烟第十六轮⑥量的正是这两个 layout 值）。 */
+.pi-home__bar:hover .pi-home__play,
+.pi-home__bar:focus-within .pi-home__play {
+  /* 用户 m00001 第 2 条之后常驻行贴底（不再竖直居中），行的中心比药丸中心低 10px，
+     所以这颗键要往上挪同样的 10px 才回到药丸正中 → 48px 的键上下各 8px，且对称。 */
+  transform: translateY(-10px) scale(1.2);
+}
+.pi-home__play {
+  box-shadow: 0 6px 16px color-mix(in srgb, var(--pi-primary) 34%, transparent);
+}
+.pi-home__play:hover {
+  color: #fff;
+  /* 第十六轮第 5 条：键在静置态就是主色实心圆（参考图那颗键），所以悬停要**更深**才有反馈。 */
+  background: var(--pi-primary-deep);
+}
+.pi-home__volbtn:hover,
+.pi-home__volbtn:focus-visible {
+  color: var(--pi-primary);
+}
+/* 第十五轮第 3 条（用户 m06435）：「上/下一首的按键应该在进度条本身首尾两端**上面**，
+   而不是首尾旁边；并且常态不显示、放大后才显示」。
+   —— 第十四轮把它们塞进了行内（`[播放] ‹ 时间 进度 时间 › [音量]`），用户要的是**在轨道的
+   首尾两端上方**：所以改成绝对定位到 `.pi-home__track` 里，`left: 0` / `right: 0` 再各自
+   平移半个自身宽度把中心钉在轨道两端上，`bottom: calc(100% + 2px)` 让它们落在轨道上方
+   那 12px 里（药丸悬停从 44 长到 56，多出来的正好是这一条）。
+   「常态不显示」⇒ 静止 `opacity: 0` 且点不到，悬停/`focus-within` 才淡入并回正。 */
+.pi-home__prev,
+.pi-home__next {
+  position: absolute;
+  bottom: calc(100% + 2px);
+  display: grid;
+  place-items: center;
+  /* 用户 m00001 第 2 条：「可以给上/下一首更大的图标」——键 22 → 28px、图标 14 → 18
+     （`HomePage.tsx` 里两个 `<Icon size>`）。行贴底之后上方空出 20px，28px 的键正好落在
+     轨道上方那片余量里。中心同时往里挪 3px：键变大之后，中心若仍压在轨道端点上，图标会
+     顶到药丸那圈圆角边外面去（`left/right: 3px` 就是为这个留的）。 */
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: var(--pi-text-tertiary);
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transform-origin: center;
+  transition:
+    opacity 0.18s ease,
+    transform 0.26s cubic-bezier(0.34, 1.56, 0.64, 1),
+    color 0.16s ease;
+}
+/* 两个键各自的「中心压在轨道端点上」的位移写在 transform 里，浮出时只把 y 位移与缩放收回，
+   水平那半个身位一直保留（否则键会跳半格）。 */
+.pi-home__prev {
+  left: 3px;
+  transform: translate(-50%, 6px) scale(0.7);
+}
+.pi-home__next {
+  right: 3px;
+  transform: translate(50%, 6px) scale(0.7);
+}
+.pi-home__bar:hover .pi-home__prev,
+.pi-home__bar:focus-within .pi-home__prev {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translate(-50%, 0) scale(1);
+}
+.pi-home__bar:hover .pi-home__next,
+.pi-home__bar:focus-within .pi-home__next {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translate(50%, 0) scale(1);
+}
+/* 第十八轮第 1 条（用户 m01482）：「上/下一首鼠标悬停时图标放大」——两个键各自的
+   「半个身位」位移必须保留（否则键会跳半格），只把缩放从 1 提到 1.3。
+   选择器带 `:hover` 的那一层（0-4-0）特异度高于上面浮出用的 0-3-0，才盖得住。 */
+.pi-home__bar:hover .pi-home__prev:hover,
+.pi-home__bar:focus-within .pi-home__prev:hover {
+  transform: translate(-50%, 0) scale(1.3);
+}
+.pi-home__bar:hover .pi-home__next:hover,
+.pi-home__bar:focus-within .pi-home__next:hover {
+  transform: translate(50%, 0) scale(1.3);
+}
+/* 第十八轮第 5 条（用户 m01482）：「进入歌单页进度条部件会有如图 3 所示的显示 bug，
+   正常应该与歌曲播放页的表现一致，即常态只显示进度条，鼠标悬停才放大显示其他功能。」
+   —— 图 3 那个「键全露」的状态就是这里原来的第十六轮第 4 条(d) 常驻档
+   （`.pi-home__bar[data-persistent='true']`，`HomeBar` 的 `persistent` prop）。
+   规则整段删掉：现在所有底栏（播放页 / 我的喜欢 / 歌单浮层）都不带常驻档，
+   开合一律走上面的 `:hover` / `:focus-within`。 */
+/* 拼贴视图里挂药丸的那层固定容器：让它不受拼贴画布的拖拽/滚动影响，
+   位置与自己那一页里逐像素一致（`.pi-home__bar` 仍是 absolute + left:50%）。 */
+.pi-collage-bar {
+  position: fixed;
+  inset: 0;
+  z-index: 6;
+  pointer-events: none;
+}
+.pi-collage-bar > .pi-home__bar {
+  pointer-events: auto;
+}
+/* 第十六轮第 6 条后半段（用户 m07538）：「在歌曲队列拼贴展示页面，滚轮向下滚打开搜索
+   检索歌单里的歌曲，输入关键字自动定位到歌曲拼贴位置」。
+   这条搜索条钉在拼贴视图顶端，用和底栏同一套玻璃皮肤；搬动镜头交给
+   `SongCollage` 的 `focusSong()`，这里只管输入与提示。 */
+.pi-collage-search {
+  position: fixed;
+  /* 第十八轮第 7 条（用户 m01482）：「歌单页滑动滚轮的搜索应该往下一点」——
+     原来贴顶 16px，现在挪到 34px，也给下面那条「从顶部往下冒出」留了行程。 */
+  top: 34px;
+  left: 50%;
+  transform: translateX(-50%);
+  /* 比底栏（z 6）高一层，比设置/抽屉这些整页弹层低。 */
+  z-index: 7;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: min(560px, calc(100vw - 64px));
+  padding: 7px 8px 7px 14px;
+  border-radius: 999px;
+  background: var(--pi-glass-bg-light);
+  backdrop-filter: var(--pi-glass-blur-light);
+  -webkit-backdrop-filter: var(--pi-glass-blur-light);
+  border: 1px solid var(--pi-glass-border-light);
+  box-shadow: var(--pi-glass-highlight), var(--pi-shadow-slots);
+  color: var(--pi-text-sub);
+  /* 第十八轮第 7 条：进场 = 从顶部往下冒出（退场见下面 `[data-collage-search-closing]`）。 */
+  animation: pi-collage-search-in 260ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+@keyframes pi-collage-search-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -28px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+/* 第十八轮第 7 条：「拖动拼贴/点击歌曲拼贴播放时搜索框自动隐藏，有一个升入顶部的动画」。
+   宿主先置 `closing`、等 `COLLAGE_SEARCH_EXIT_MS` 之后再卸载（见 `CollageSearchBar.tsx`）。 */
+@keyframes pi-collage-search-out {
+  from {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+  to {
+    opacity: 0;
+    transform: translate(-50%, -28px);
+  }
+}
+.pi-collage-search[data-collage-search-closing='true'] {
+  animation: pi-collage-search-out 220ms cubic-bezier(0.4, 0, 1, 1) forwards;
+  pointer-events: none;
+}
+/* 歌单详情浮层里的那一条：浮层自己是 z 18，搜索条得盖在它上面（`.pi-listoverlay`）。 */
+.pi-listoverlay--collage .pi-collage-search {
+  z-index: 24;
+}
+@media (prefers-reduced-motion: reduce) {
+  .pi-collage-search,
+  .pi-collage-search[data-collage-search-closing='true'] {
+    animation: none;
+  }
+}
+.pi-collage-search__input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: none;
+  background: none;
+  color: var(--pi-text);
+  font: inherit;
+  outline: none;
+}
+.pi-collage-search__note {
+  flex: 0 1 auto;
+  max-width: 230px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--pi-text-tertiary);
+}
+/* 第十六轮第 6 条（用户 m07538）：「删去悬浮球」之后，播放页点任意空白处会在**那一点**
+   浮出一颗 PI 圆键（`components/PiQuickOrb.tsx`，自己那套样式在 `styles/quick-orb.css`），
+   上划 / 下划 / 右划打开两张拍立得卡（`components/PiQuickPanels.tsx` +
+   `styles/quick-panels.css`）。宿主只需要把球与卡挂在播放页上，样式不在这里重复。 */
+/* 第十六轮第 3 条（用户 m07538）：「去掉切换歌曲的小名片，替代为显示播放页左下角的歌曲名片」
+   ⇒ 切歌时**这张名片自己**弹一下。
+   第十七轮第 7 条（用户 m00006）：「出现方式改成从底部向上冒出，有一个流畅生动的动画。
+   常态隐藏，只有鼠标移动到接近位置或者刚切换完歌曲才出现」——所以这段动画现在负责
+   「从下面冒上来」：起点在下方 46px 且完全透明，中途**过冲**一点点（-4px / scale 1.012）
+   再落回原位，就是那种「弹上来又稳住」的手感。收起时不需要动画：基态的 `transition`
+   会让它顺着原路沉回去。
+   注意 `[data-reveal='true']` 里把 opacity / pointer-events / transform 一起写死成「露出态」：
+   动画只有 0.62s，跑完就得靠这三条撑着，否则会掉回基态（藏起来）。 */
+@keyframes pi-home-card-reveal {
+  0% {
+    opacity: 0;
+    transform: translateY(46px) scale(0.96);
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--pi-primary) 55%, transparent);
+  }
+  55% {
+    opacity: 1;
+    transform: translateY(-4px) scale(1.012);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    box-shadow: 0 0 0 16px color-mix(in srgb, var(--pi-primary) 0%, transparent);
+  }
+}
+.pi-home__card[data-reveal='true'] {
+  opacity: 1;
+  pointer-events: auto;
+  transform: none;
+  animation: pi-home-card-reveal 0.62s cubic-bezier(0.22, 1, 0.36, 1);
+}
+/* 用户 m00001 第 6 条（原话：「其与歌曲名片的切换要有自然的过渡动画，比如小名片放大变成
+   歌曲名片」）：`data-handoff='true'` = 这一下露出是**刚切完歌**触发的（宿主 `HomePage.tsx`
+   的 `cardRevealed`，并且在同一段露出期间定档、不中途翻）。
+   左下角那张「接下来播放」小名片就在同一块地方、切歌瞬间卸载（见 `styles/up-next-card.css`），
+   所以这一档不能再用「从底下冒上来」——那读起来像另开一张卡；改成以**两张卡共用的那个
+   左下角**为轴缩着放大上来：小名片刚没，歌曲名片就从同一个角长大，交接连成一口气。
+   选择器 0-3-0 压得住上面那条 0-2-0；指针靠近那一档（`data-handoff='false'`）原样不变。
+
+   用户 m00736 第 4 条（原话：「切换歌曲时小名片变幻到歌曲名片的动画更流畅生动一些」）——
+   这一段现在分三层编排（总时长 0.62s，全段只动 opacity/transform，不碰 `filter`，
+   免得跟玻璃的 `backdrop-filter` 打架）：
+     ① 卡片本体 `pi-home-card-morph`：从 0.5 倍、偏左下 14/16px 处长大，两次过冲
+        （1.06 → 0.975 → 1.012）再落定——原来那条只有一次过冲（1.015）就停，收尾发死；
+     ② 封面 `pi-home-card-cover-in`：缩放轴同样钉在左下角，从小名片那颗 42px 封面
+        （约等于大封面的 0.28 倍）的大小长出来，比本体晚 20ms；
+     ③ 文字层 `pi-home-card-meta-in` + 标题/歌手/专辑各错峰 80~170ms，幅度更小：
+        读起来是「卡片先落位、内容随后依次就位」，而不是整块一起淡入。
+   每一层的最后一帧都与基态逐值相同，所以动画一结束不会「跳」一下。 */
+@keyframes pi-home-card-morph {
+  0% {
+    opacity: 0;
+    transform: translate(-14px, 16px) scale(0.5);
+  }
+  18% {
+    opacity: 1;
+  }
+  46% {
+    opacity: 1;
+    transform: translate(0, 0) scale(1.06);
+  }
+  68% {
+    transform: translate(0, 0) scale(0.975);
+  }
+  84% {
+    transform: translate(0, 0) scale(1.012);
+  }
+  100% {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes pi-home-card-cover-in {
+  0% {
+    opacity: 0;
+    transform: translate(-10px, 12px) scale(0.28);
+  }
+  52% {
+    opacity: 1;
+    transform: translate(0, -2px) scale(1.045);
+  }
+  76% {
+    transform: translate(0, 1px) scale(0.99);
+  }
+  100% {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes pi-home-card-meta-in {
+  0% {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  60% {
+    opacity: 1;
+    transform: translateY(-2px);
+  }
+  100% {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes pi-home-card-line-in {
+  0% {
+    opacity: 0;
+    transform: translateY(7px) scale(0.98);
+  }
+  62% {
+    opacity: 1;
+    transform: translateY(-1px) scale(1.005);
+  }
+  100% {
+    opacity: 1;
+    transform: none;
+  }
+}
+.pi-home__card[data-reveal='true'][data-handoff='true'] {
+  transform-origin: left bottom;
+  animation: pi-home-card-morph 0.62s cubic-bezier(0.22, 1, 0.36, 1);
+}
+/* 三层的错峰：`both` 让延迟期间就停在 0%（封面/文字先藏住），不会在卡片本体长大时
+   先闪出一张「已经摆好」的内容。封面与卡片本体共用左下角这个轴。 */
+.pi-home__card[data-reveal='true'][data-handoff='true'] .pi-home__cover {
+  transform-origin: left bottom;
+  animation: pi-home-card-cover-in 0.5s cubic-bezier(0.22, 1, 0.36, 1) 0.02s both;
+}
+.pi-home__card[data-reveal='true'][data-handoff='true'] .pi-home__meta {
+  animation: pi-home-card-meta-in 0.46s cubic-bezier(0.22, 1, 0.36, 1) 0.08s both;
+}
+.pi-home__card[data-reveal='true'][data-handoff='true'] .pi-home__title {
+  animation: pi-home-card-line-in 0.42s cubic-bezier(0.22, 1, 0.36, 1) 0.12s both;
+}
+.pi-home__card[data-reveal='true'][data-handoff='true'] .pi-home__artists,
+.pi-home__card[data-reveal='true'][data-handoff='true'] .pi-home__album {
+  animation: pi-home-card-line-in 0.4s cubic-bezier(0.22, 1, 0.36, 1) 0.17s both;
+}
+.pi-home__prev:hover,
+.pi-home__next:hover,
+.pi-home__prev:focus-visible,
+.pi-home__next:focus-visible {
+  color: var(--pi-primary);
+}
+.pi-home__bar .pi-home__time {
+  flex: 0 0 auto;
+  min-width: 33px;
+  text-align: center;
+  color: var(--pi-text-sub);
+  font-size: 10.5px;
+  /* 等宽数字：秒数跳的时候，右边的进度条不会跟着左右晃。 */
+  font-variant-numeric: tabular-nums;
+}
+/* 进度：input[type=range] 的轨道没法按值上色。「已播」从用户 m04407 第 3 条起不再画在
+   这条轨道上（原来是 `::-webkit-slider-runnable-track` 的一层主色渐变 + `--pi-progress`
+   的 `background-size`，右端是条竖直硬边），改由 `.pi-home__track` 里 input 前面那层
+   `.pi-home__progressfill` 画（两端圆头的胶囊）；底下的 divider 色就是「未播」。
+   外面留 16px 高的盒子、6px 的轨画在 track 里——不然滑块只有 6px 的可抓高度，鼠标基本按不住。 */
+.pi-home__progress {
+  /* 轨道粗细 / 滑块直径提成自定义属性有两个原因：① 轨道是 UA 影子 DOM 里画的
+     （`::-webkit-slider-runnable-track`），JS 量不到它的高度，冒烟探针只能读这两个变量；
+     ② 滑块与轨道要联动（`margin-top = (轨道 − 滑块) / 2`），写成一个算式改一处就够。
+     用户 m04407 第 3 条：这两个变量本身挪到了父层 `.pi-home__track`（那里有说明），
+     input 继承，伪元素照旧用得到。 */
+  /* 用户 m01402 第 6 条：「进度条本体的小篮球也去掉，只要一个细线」——滑块的填充色。
+     `transparent` = 只留 12px 的抓取盒（拖动好按），视觉上一颗球都不画。
+     探针读的就是 input 自己的 computed 值，所以这一条留在 input 上（继承值也是它）。 */
+  --pi-home-thumb-fill: transparent;
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 16px;
+  margin: 0;
+  padding: 0;
+  appearance: none;
+  -webkit-appearance: none;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+}
+.pi-home__progress::-webkit-slider-runnable-track {
+  /* 第十六轮第 5 条：轨道 3 → 6px（与 40px 的停止键成参考图那个约 6.5 : 1 的对比）。 */
+  height: var(--pi-home-track-thick);
+  border-radius: 999px;
+  /* 用户 m04407 第 3 条：这里**只留未播的底色**。原来那层主色渐变（`background-image:
+     linear-gradient(...)` + `background-size: calc(var(--pi-progress) * 100%)`）右端是一圈
+     方角，新的圆头胶囊盖上去之后方角会从圆头两侧露出来，所以整层删掉。 */
+  background-color: var(--pi-divider);
+}
+.pi-home__progress::-webkit-slider-thumb {
+  appearance: none;
+  -webkit-appearance: none;
+  /* 第十六轮第 5 条：滑块 10 → 12px（轨道由 3 粗到 6，滑块要跟着长，`margin-top` 是
+     (轨道 − 滑块) / 2 = (6 − 12) / 2 = −3 —— 不改会让滑块吊在轨道上方）。 */
+  width: var(--pi-home-thumb);
+  height: var(--pi-home-thumb);
+  margin-top: calc((var(--pi-home-track-thick) - var(--pi-home-thumb)) / 2);
+  border: none;
+  border-radius: 50%;
+  /* 用户 m01402 第 6 条：「进度条本体的小篮球也去掉，只要一个细线」——滑块从此只当**抓取盒**
+     （12px 的命中区，拖动照旧好按），视觉上一个像素都不画：不填色、不描边、不投影。
+     注意 `--pi-home-thumb` 这个尺寸别动：冒烟第十六轮⑥ 量的就是它，改了判据会红；
+     填充色另开 `--pi-home-thumb-fill`（见 `.pi-home__progress`），探针据此断言「滑块不可见」。 */
+  background: var(--pi-home-thumb-fill);
+  box-shadow: none;
+}
+/* 用户 m04407 第 3 条（两张图：常态药丸与悬停放大态）：底部进度条「已播」部分的右端在两种
+   状态下都是一条**竖直硬边**，要的是圆润的曲线。硬边来自 UA 轨道上那层渐变的方角，
+   所以「已播」改画在这层绝对定位的兄弟节点上：宽度 = `--pi-progress`、两端 999px 圆角，
+   常态（轨 6px）与悬停（轨 10px）都是一个两端圆头的小胶囊。
+   几个要点：① 它绝对定位、`[data-home-progress]`（input）是静态元素，按绘制顺序画在轨道之上；
+   ② 高度直接复用 `--pi-home-track-thick`，所以悬停加粗时跟着 6 → 10px 一起长；
+   ③ `top: 50%` + `translateY(-50%)` 与 UA 轨道在 input 里的竖直居中重合（轨的高 = 变量值）；
+   ④ `pointer-events: none` 是关键——它盖在 input 上，不吃指针才能照旧按住拖动。 */
+.pi-home__progressfill {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: calc(var(--pi-progress, 0) * 100%);
+  height: var(--pi-home-track-thick);
+  border-radius: 999px;
+  background: var(--pi-primary);
+  pointer-events: none;
+}
+/* 第十八轮第 1 条（用户 m01482）：「进度条本身鼠标悬停时加粗」——轨道 6 → 10px、
+   滑块 12 → 16px（滑块的 `margin-top` 是由这两个变量算出来的，跟着自动对）。
+   行内布局不参与（轨道盒子仍是 16px 高、宽度只由药丸宽度决定），所以药丸宽度、
+   轨道长度一 px 都不动，只是那根线粗了一圈。
+   用户 m04407 第 3 条：覆写目标从 `.pi-home__progress` 改成 `.pi-home__track`——
+   这两个变量挪到父层了（新加的「已播胶囊」要读它），input 继承本层的值，
+   探针在悬停档读 `[data-home-progress]` 的 computed 值仍然是 10px / 16px。 */
+.pi-home__bar:hover .pi-home__track,
+.pi-home__bar:focus-within .pi-home__track {
+  --pi-home-track-thick: 10px;
+  --pi-home-thumb: 16px;
+}
+/* 音量（第九轮第 1 条）：音量键 + 向上弹出的**竖向**音量条。
+   `input[type=range]` 没有竖向的原生形态，所以把 112px 长的横条 `rotate(-90deg)`；
+   转过来之后 track 的左端朝下，主色填充/滑块自然就是「从下往上」。
+   热区是 `.pi-home__volume` 这一层：指针从音量键移到弹出的条上，hover 不会断。 */
+.pi-home__volume {
+  position: relative;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  /* 第十四轮第 1 条：音量键放大到 34px，热区层跟着长高。 */
+  height: 36px;
+}
+.pi-home__volpop {
+  position: absolute;
+  left: 50%;
+  /* 第十一轮第 2 条（用户 m03279）：「音量条要在音量键正上方，就像从音量键伸出去的」
+     ⇒ 不再留 10px 缝，压住键顶 2px。 */
+  bottom: calc(100% - 2px);
+  z-index: 4;
+  display: grid;
+  place-items: center;
+  /* 第十轮第 3 条（用户 m02362）：「音量条不在框里，并且框太宽了，只要和紧贴音量条就可以」。
+     原来是一块 40×136 的玻璃小面板（背景/描边/圆角/落影），现在整块去掉，
+     收成刚好裹住那根 112px 竖滑块的裸容器（20×112）——滑块的 thumb 自己有一点落影，
+     在沉浸式背景上仍然看得见，不需要再垫一层「纸」。 */
+  width: 16px;
+  /* 第十七轮第 6 条（用户 m00006）：「音量条常态要缩短到 70%」——84 → 59（84 × 0.7 = 58.8）。
+     悬停那两档都是相对缩放（`scale(1.3, 1.04)` / `scale(1.3)`），所以三档一起等比变短。 */
+  height: 59px;
+  /* 第十五轮第 9 条（用户 m06435）：「悬停在音量键上时，音量条要比现在短 20%；鼠标移到
+     音量条时，音量条变粗并且变长到现在这样长」——轨道的**粗细**与滑块的**长度**做成变量：
+     停在音量键上是 3px 细条，指针移到条本身时加粗到 6px（见下面的 `:hover` 规则）。
+     这两个值在冒烟里用 `getComputedStyle(弹层).getPropertyValue('--pi-vol-thick')` 直接读。 */
+  --pi-vol-thick: 3px;
+  --pi-vol-thumb: 14px;
+  opacity: 0;
+  pointer-events: none;
+  /* 第十一轮第 2 条：收起态**不再向下挪 10px**。`transform-origin: bottom center` 让缩放
+     以底边为轴 ⇒ 收起态底边就已经压在音量键顶上，浮出时是「从键里往上长出来」。
+     （探针是在**没悬停**的时候量的：留着 translateY(10px) 会让量到的底边比键顶低 12px，
+     与「贴着键顶」的观感/断言都不符。） */
+  /* 第十二轮第 5 条（用户 m04193）：收起态缩得更小、用带回弹的曲线长出来，
+     这样「音量条从音量键里伸出来」更生动。缩放的轴在底边（`transform-origin: bottom center`），
+     底边**不会动** ⇒ 冒烟在没悬停时量到的「贴键」距离仍然是那 2px。 */
+  transform: translateX(-50%) scale(0.82);
+  transform-origin: bottom center;
+  transition:
+    opacity 0.2s ease,
+    transform 0.34s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+/* 用户 m00001 第 2 条：「音量条在互动后并且鼠标已经离开的情况下，可以自己主动自然隐藏」。
+   原来这里带 `:focus-within`：鼠标点/拖过一次滑块之后焦点就留在那根 range 上，指针走开了
+   `:focus-within` 还成立，音量条就赖着不下去——正是用户看到的现象。
+   鼠标这一档现在只认 `:hover`：指针一离开，音量条顺着下面那条 opacity 过渡自然淡出；
+   键盘那一档在文件稍后单独写成 `:has(…:focus-visible)`（Tab 过来才算），
+   两种输入不再混在一个选择器里。 */
+.pi-home__volume:hover .pi-home__volpop {
+  opacity: 1;
+  pointer-events: auto;
+  /* 第十四轮第 1 条（用户 m05281）：「改成鼠标悬停时音量条部件变大一点，方便调节」——
+     悬停态在纵向上撑开（轴仍在底边 ⇒ 「贴着音量键顶」那 2px 不变）。
+     第十四轮第 1 条（用户 m05281）：指针落在音量键上时 y 放到 1.5 —— 常态 59px（第十七轮
+     第 6 条 70%），放大后 88.5px；鼠标再移到条本身长回满档 1.9（≈112px，正是第十四轮那档）。
+     第十八轮第 1 条（用户 m01482）：「音量条放大时多延长 50%」——满档 59 → 112px（×1.9），
+     停在键上那一档按第十五轮第 9 条仍是满档的约 80%（88.5 / 112 ≈ 0.79）。
+     x（横向包围盒）保持 1.3；真正的粗细由 `--pi-vol-thick` 给。 */
+  transform: translateX(-50%) scale(1.3, 1.5);
+}
+/* 第十五轮第 9 条后半句：「鼠标移到音量条时，音量条变粗并且变长到现在这样长」
+   —— 指针落在弹层自己身上时：长度回到满档 `scale(1.3)`（= 第十四轮那个「现在这样长」），
+   轨道从 3px 加粗到 6px、滑块同步加宽（14 → 18px）。
+   写成两个 `:hover`（`.pi-home__volume:hover .pi-home__volpop:hover`）是为了让特异度
+   高于上面那条 `0-3-0`，不被它盖住。 */
+.pi-home__volume:hover .pi-home__volpop:hover {
+  /* 第十八轮第 1 条：「音量条放大时多延长 50%」⇒ 满档 y = 1.9（59 × 1.9 ≈ 112px，
+     正是第十四轮「变大一点、方便调节」那一档长度），比上一版的 1.3（76.7px）长了 50%
+     再往上一点。 */
+  transform: translateX(-50%) scale(1.3, 1.9);
+  --pi-vol-thick: 6px;
+  --pi-vol-thumb: 18px;
+}
+/* 用户 m00001 第 2 条的另一半：键盘那一路仍旧要把音量条撑住。
+   只认 `:focus-visible`（Tab 过来才算），鼠标点/拖之后焦点虽然还在 range 上，这条也不命中——
+   指针一走开，音量条就自然淡出去了。单独成一条规则、不并进上面那两条 `:hover`：
+   万一运行环境还不认识 `:has()`，被丢掉的只有这一条，鼠标那两档一点不受影响。 */
+.pi-home__volume:has(.pi-home__volrange:focus-visible) .pi-home__volpop {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateX(-50%) scale(1.3, 1.5);
+}
+.pi-home__volrange {
+  /* 第十三轮第 5 条（用户 m04663）：「音量条要在音量键的上面，现在是像图 2 一样有错位」。
+     先按原样量了一遍：**弹层盒子本身是居中的**（`getBoundingClientRect` 中心与音量键逐像素
+     相等，|Δx|=0），错位的是弹层里那根**竖条**——冒烟特写逐像素量到滑块中心比键中心偏右 42px
+     （= 84/2）。真因：这根横条是 84×16 转出来的，而弹层只有 16×84 —— 84 > 16 溢出容器时，
+     Chromium 把 grid item 的 `place-items: center` 居中**夹回起始边**（溢出对齐实现成 clamp
+     而不是对称溢出），于是它的中心落在离弹层左边 42px 处，转过来整根条就整体右移半个长度。
+     修法：不再指望 grid 居中，把自身中心直接钉在弹层中心（left/top 50% + 半个自身尺寸的负外边距）。 */
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 59px;
+  height: 16px;
+  /* 半个自身尺寸的负外边距：59 ÷ 2 = 29.5（跟着上面那条 70% 一起缩，中心仍然钉在弹层中心）。 */
+  margin: -8px 0 0 -29.5px;
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  transform: rotate(-90deg);
+  cursor: pointer;
+}
+.pi-home__volrange::-webkit-slider-runnable-track {
+  /* 第十四轮第 1 条（用户 m05281）：「音量条重新设计去掉那个蓝色小球而变成细长一条」。
+     球没了 ⇒ 已调音量不能再靠滑块位置表示，改由轨道自身的主色填充（rotate(-90deg) 之后
+     `left center` 就是底端，填充从下往上长）；轨道也从 4px 收细到 3px。
+     第十五轮第 9 条：粗细改由变量给（停键 3px / 停在条上 6px），所以这里读 `--pi-vol-thick`。 */
+  height: var(--pi-vol-thick, 3px);
+  border-radius: 999px;
+  background-color: color-mix(in srgb, var(--pi-divider) 70%, transparent);
+  background-image: linear-gradient(var(--pi-primary), var(--pi-primary));
+  background-repeat: no-repeat;
+  background-position: left center;
+  background-size: calc(var(--pi-volume, 0) * 100%) 100%;
+}
+.pi-home__volrange::-webkit-slider-thumb {
+  appearance: none;
+  -webkit-appearance: none;
+  /* 「细长一条」：从 10×10 的蓝圆球换成一枚 14×3 的细长胶囊，与轨道同厚，
+     视觉上就是那根线上的一小段（不再是球），hover 时整个部件放大 1.3 倍好抓。
+     第十五轮第 9 条：指针移到条本身时轨道加粗到 6px，滑块跟着一起加粗加宽（14→18px），
+     所以宽/高都读变量。 */
+  width: var(--pi-vol-thumb, 14px);
+  height: var(--pi-vol-thick, 3px);
+  margin-top: 0;
+  border: none;
+  border-radius: 999px;
+  background: var(--pi-primary);
+  box-shadow: none;
+}
+
+/* 第九轮第 2 条：原来「点播放页唤出的那层遮罩 + 四角按钮」已经整块删掉，
+   所以这里不再有按 `data-frame` 收起名片/进度条的规则。 */
+
+/* 窄窗：名片与进度条都要能收窄，不溢出、不互相挤 */
+@media (max-width: 900px) {
+  .pi-home__card {
+    left: 16px;
+    bottom: 16px;
+    max-width: min(240px, calc(100% - 32px));
+  }
+  .pi-home__stage-lyrics {
+    padding: 104px 16px 92px;
+  }
+  /* 窄窗里进度条再让一点给名片，不然会压在名片上（第十轮第 3 条起只有一个宽度变量；
+     第十一轮第 2 条把整条缩到约一半档位） */
+  .pi-home__bar {
+    /* 用户 m00736 第 3 条：这一档也按「常态两颗键不占位」平移 74px（上下限一起平移），
+       所以窄窗下轨道长度同样与改动前逐像素相同，只是药丸外框收窄了 74px。 */
+    --pi-bar-width: clamp(126px, calc(32% - var(--pi-bar-hidden-keys)), 256px);
+  }
+}
+/* 窗口矮的时候给歌词多留点高度 */
+@media (max-height: 680px) {
+  .pi-home__stage-lyrics {
+    padding: 96px 24px 84px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  /* 用户 m08768 第 6 条：这一版不新增动画；顺手把新增的过渡也关掉。
+     第九轮第 1 条加的悬停开合（进度条长宽、按键长出、音量条弹出）也一并关掉，
+     只留瞬时切换——收起态本来就「看得见、不挡事」。
+     （第九轮第 2 条那个「操作框弹出」的 `.pi-actions` 已在第十九轮第 8 条整块删除，
+     这里不再列它。） */
+  /* 后两条是给 `.pi-home__card[data-reveal='true']`（0-2-0）与
+     `…[data-reveal='true'][data-handoff='true']`（0-3-0）那两条更特异的进场动画补的：
+     媒体查询不提高特异度、只靠文件顺序赢，所以选择器得一条条列齐才压得住
+     （用户 m00001 第 6 条顺手补齐）。 */
+  .pi-home__card,
+  .pi-home__card[data-reveal='true'],
+  .pi-home__card[data-reveal='true'][data-handoff='true'],
+  /* 用户 m00736 第 4 条新增的三层内容错峰（封面 / 文字块 / 标题 / 歌手与专辑）也要一并关掉，
+     否则「卡片不动、内容自己在动」比原来的整块弹出更晃眼。 */
+  .pi-home__card[data-reveal='true'][data-handoff='true'] .pi-home__cover,
+  .pi-home__card[data-reveal='true'][data-handoff='true'] .pi-home__meta,
+  .pi-home__card[data-reveal='true'][data-handoff='true'] .pi-home__title,
+  .pi-home__card[data-reveal='true'][data-handoff='true'] .pi-home__artists,
+  .pi-home__card[data-reveal='true'][data-handoff='true'] .pi-home__album,
+  .pi-home__bar,
+  .pi-home__play,
+  .pi-home__volbtn,
+  .pi-home__volpop {
+    transition: none;
+    animation: none;
+  }
+}
+
+/* ---- 歌词 ---------------------------------------------------------- */
+.pi-lyrics {
+  position: relative;
+  align-self: stretch;
+  overflow-y: auto;
+  /* 上下留白：第一句/最后一句也能滚到中间来 */
+  padding: 32% 10px;
+  display: grid;
+  align-content: start;
+  gap: 2px;
+  scrollbar-width: none;
+  mask-image: linear-gradient(to bottom, transparent 0, #000 14%, #000 86%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 14%, #000 86%, transparent 100%);
+}
+.pi-lyrics::-webkit-scrollbar {
+  display: none;
+}
+.pi-lyrics__line {
+  display: grid;
+  gap: 2px;
+  padding: 9px 12px;
+  border-radius: 12px;
+  text-align: left;
+  color: var(--pi-text-tertiary);
+  font-size: 16px;
+  line-height: 1.45;
+  transition:
+    color 0.2s ease,
+    background 0.2s ease,
+    font-size 0.2s ease;
+}
+.pi-lyrics__line:hover {
+  color: var(--pi-text);
+  background: color-mix(in srgb, var(--pi-primary) 8%, transparent);
+}
+.pi-lyrics__line[data-active='true'] {
+  color: var(--pi-text);
+  font-size: 18px;
+  font-weight: 700;
+  background: color-mix(in srgb, var(--pi-primary) 12%, transparent);
+}
+.pi-lyrics__translated {
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--pi-text-tertiary);
+}
+.pi-lyrics__hint {
+  padding: 28px 12px;
+  color: var(--pi-text-tertiary);
+  font-size: 13px;
+}
+.pi-lyrics__hint--error {
+  color: #e5484d;
+}
+
+/* ---- 名片上的四个动作 + 收藏态（第十九轮第 8 条，用户 m02213） --------
+   这里原来躺着 `.pi-actions`：点名片向上伸出的那个竖排操作框（含 `@keyframes pi-actions-in`、
+   `.pi-actions__item` 与 `.pi-actions__toast`）。用户把四项能力搬到了**封面四角**，
+   于是那个框、它的 `.pi-home__card[data-actions='true']` 展开态、以及触发它的状态一起删掉。
+   新版规则（`.pi-home__coverwrap` / `.pi-home__coverbtn` / `.pi-home__footer` / `.pi-home__like`）
+   按本轮的文件归属写在 styles/up-next-card.css 里，这里不再重复。 */
+
+/* 名片里的一行小提示（收藏成功 / 要登录才能收藏 / 链接已复制）。
+   这一条原来给「大名片」用过（`bottom: 66px`），第十九轮第 8 条让 HomeCard 重新用上它，
+   位置改到名片**正上方**，免得盖住封面四角键与歌名——覆盖规则见 styles/up-next-card.css。 */
+.pi-home__toast {
+  position: absolute;
+  left: 50%;
+  bottom: 66px;
+  transform: translateX(-50%);
+  margin: 0;
+  padding: 8px 16px;
+  border-radius: 16px;
+  pointer-events: none;
+  background: color-mix(in srgb, #0b1220 78%, transparent);
+  color: #fff;
+  font-size: 12.5px;
+}
+
+/* ---- 主页右侧滑出面板（评论 / 歌曲信息） -------------------------- */
+.pi-home__drawer {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  z-index: 8;
+  width: min(420px, 92%);
+  display: grid;
+  grid-template-rows: auto 1fr;
+  background: var(--pi-glass-sheen);
+  backdrop-filter: var(--pi-glass-blur-strong);
+  -webkit-backdrop-filter: var(--pi-glass-blur-strong);
+  border-left: 1px solid var(--pi-glass-border);
+  /* 抽屉是贴着右边滑出来的，只圆左边两个角（folia 的面板圆角是 24px） */
+  border-top-left-radius: var(--pi-glass-radius);
+  border-bottom-left-radius: var(--pi-glass-radius);
+  box-shadow: var(--pi-glass-highlight), var(--pi-glass-shadow);
+  animation: pi-drawer-in 0.22s ease both;
+}
+@keyframes pi-drawer-in {
+  from {
+    opacity: 0;
+    transform: translateX(26px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+/* 用户 m02898 第 7 条（参考图）：评论面板原来 `top: 0`，顶边与窗口顶边齐平，
+   正好顶到右上角那三个自绘窗口键（最小化 / 最大化 / 关闭）底下。这里只把**评论**
+   这一档的顶边下移到「三键底边 + 8px 呼吸」处，让它像一张从下方一点开始的面板。
+   `bottom: 0` 一个像素都不动：绝对定位上下都钉住，顶边下移多少、高度就自动少多少，
+   不会从窗口底部溢出去；底部进度条药丸与抽屉的层级（药丸 9 > 抽屉 8）也照旧。
+
+   三键几何的出处（**只读，三键那几段一个字没改**）：
+     · `.pi-windowcontrols`（global.css:168-175）`top: 0`；右侧那一档
+       `.pi-windowcontrols--right`（global.css:199-208）`padding: 2px 8px`、`border: 0`；
+     · `.pi-windowcontrols__btn`（global.css:222-224）`height: 34px`。
+   ⇒ 三键面板高 = 2 + 34 + 2 = 38px，底边落在窗口 y = 38px（冒烟探针同样把尺寸
+   钉在 `size=42x34`，见 apps/desktop/src/main/index.ts:2427）。
+   两档排版（`[data-ui-style='plain'|'avant']`）与亮/暗主题（`[data-theme]`）都走这一条：
+   styles/ 全目录里针对 `.pi-home__drawer` 的 `top` 只有 global.css:3534 一处定义，
+   没有任何 `[data-ui-style]` / `[data-theme]` 的覆盖，所以单条规则两档两主题同时成立。 */
+.pi-home__drawer[data-panel='comments'] {
+  /* 与三键同源的尺寸（三键改大改小时这两行要跟着对；仍然不要去改三键本身的样式）。 */
+  --pi-windowcontrols-btn-height: 34px;
+  --pi-windowcontrols-pad-y: 2px;
+  /* 面板顶边相对窗口顶边的内缩量 = 三键底边 + 8px 呼吸。 */
+  --pi-comments-top-inset: calc(
+    var(--pi-windowcontrols-btn-height) + var(--pi-windowcontrols-pad-y) * 2 + 8px
+  );
+  top: var(--pi-comments-top-inset);
+}
+.pi-home__drawer-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--pi-divider);
+}
+.pi-home__drawer-head h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+.pi-home__drawer-head .pi-iconbtn {
+  margin-left: auto;
+}
+.pi-home__drawer-body {
+  overflow-y: auto;
+  padding: 12px 14px 24px;
+}
+.pi-info__jump {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+.pi-info__tooltip {
+  margin: 10px 0 0;
+  color: var(--pi-text-tertiary);
+  font-size: 12px;
+}
+
+/* 窄窗口：详情页改成上下排（封面在上、歌词在下） */
+@media (max-width: 960px) {
+  .pi-home__body {
+    grid-template-columns: minmax(0, 1fr);
+    overflow-y: auto;
+  }
+  .pi-lyrics {
+    align-self: auto;
+    max-height: 42vh;
+    padding: 24px 6px;
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * 歌单：空白卡片建歌单 + 加歌面板（用户 m06982 第 1 条）
+ * ------------------------------------------------------------------ */
+
+.pi-detail__spacer {
+  flex: 1;
+}
+.pi-btn--small {
+  height: 30px;
+  padding: 0 13px;
+  font-size: 12.5px;
+  border-radius: 9px;
+}
+
+/* 空态卡片：虚线筐 + 一个加号，看着就「可以点」。
+   命名时同一块地方换成输入框（同一屏不跳位置，眼睛不用重新找）。 */
+.pi-newplaylist {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  width: min(420px, 100%);
+  margin: 6vh auto 0;
+  padding: 30px 24px;
+  border: 1.5px dashed color-mix(in srgb, var(--pi-primary) 34%, var(--pi-divider));
+  border-radius: var(--pi-radius-l, 16px);
+  background: color-mix(in srgb, var(--pi-bg-elevated, var(--pi-bg)) 72%, transparent);
+  color: var(--pi-text);
+  cursor: pointer;
+  transition:
+    border-color 0.18s ease,
+    background 0.18s ease,
+    transform 0.18s ease;
+}
+.pi-newplaylist:hover {
+  border-color: color-mix(in srgb, var(--pi-primary) 62%, transparent);
+  background: color-mix(in srgb, var(--pi-primary) 7%, transparent);
+  transform: translateY(-2px);
+}
+.pi-newplaylist__plus {
+  display: grid;
+  place-items: center;
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--pi-primary) 12%, transparent);
+  color: var(--pi-primary);
+}
+.pi-newplaylist strong {
+  font-size: 15px;
+}
+.pi-newplaylist__hint {
+  color: var(--pi-text-tertiary);
+  font-size: 12.5px;
+}
+.pi-newplaylist--naming {
+  cursor: default;
+  justify-items: stretch;
+  border-style: solid;
+  transform: none;
+}
+.pi-newplaylist--naming:hover {
+  transform: none;
+}
+.pi-newplaylist__input {
+  height: 38px;
+  padding: 0 12px;
+  border: 1px solid var(--pi-divider);
+  border-radius: 10px;
+  background: var(--pi-bg-subtle);
+  color: var(--pi-text);
+  font-size: 14px;
+}
+.pi-newplaylist__input:focus {
+  outline: none;
+  border-color: var(--pi-primary);
+}
+.pi-newplaylist__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.pi-newplaylist__error {
+  margin: 0;
+  color: var(--pi-danger, #d9534f);
+  font-size: 12.5px;
+}
+
+/* 加歌面板：贴在歌单详情的顶部区域，搜到哪一首就点哪一首的「加入」。 */
+.pi-addtracks {
+  display: grid;
+  gap: 10px;
+  padding: 12px 14px 14px;
+  border: 1px solid var(--pi-divider);
+  border-radius: var(--pi-radius-l, 16px);
+  background: var(--pi-bg-subtle);
+}
+.pi-addtracks__bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--pi-text-tertiary);
+}
+.pi-addtracks__input {
+  flex: 1;
+  height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--pi-divider);
+  border-radius: 10px;
+  background: var(--pi-bg);
+  color: var(--pi-text);
+  font-size: 13.5px;
+}
+.pi-addtracks__input:focus {
+  outline: none;
+  border-color: var(--pi-primary);
+}
+.pi-addtracks__list {
+  display: grid;
+  gap: 4px;
+  max-height: 46vh;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+.pi-addtracks__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border-radius: 10px;
+}
+.pi-addtracks__row:hover {
+  background: color-mix(in srgb, var(--pi-primary) 6%, transparent);
+}
+.pi-addtracks__cover {
+  width: 38px;
+  height: 38px;
+  flex: none;
+  border-radius: 8px;
+  object-fit: cover;
+  background: var(--pi-bg);
+}
+.pi-addtracks__cover--empty {
+  display: grid;
+  place-items: center;
+  color: var(--pi-text-tertiary);
+}
+.pi-addtracks__text {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+.pi-addtracks__name {
+  overflow: hidden;
+  color: var(--pi-text);
+  font-size: 13.5px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.pi-addtracks__meta {
+  overflow: hidden;
+  color: var(--pi-text-tertiary);
+  font-size: 12px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.pi-addtracks__error {
+  margin: 0;
+}
+
+/* 空歌单卡片（歌单详情里）：点一下直接开加歌面板。 */
+.pi-detail__empty {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  width: min(420px, 100%);
+  margin: 12px auto 0;
+  padding: 34px 24px;
+  border: 1.5px dashed var(--pi-divider);
+  border-radius: var(--pi-radius-l, 16px);
+  background: transparent;
+  color: var(--pi-text);
+  cursor: pointer;
+  transition:
+    border-color 0.18s ease,
+    background 0.18s ease;
+}
+.pi-detail__empty:hover {
+  border-color: color-mix(in srgb, var(--pi-primary) 58%, transparent);
+  background: color-mix(in srgb, var(--pi-primary) 6%, transparent);
+}
+.pi-detail__empty span {
+  color: var(--pi-text-tertiary);
+  font-size: 12.5px;
+}
+
+

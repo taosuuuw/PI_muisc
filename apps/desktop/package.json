@@ -1,0 +1,33 @@
+{
+  "name": "@pi/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "PI 的 Electron 主进程与 preload",
+  "main": "out/main.mjs",
+  "scripts": {
+    "build": "node build.mjs",
+    "dev": "node build.mjs --dev && electron .",
+    "start": "electron .",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@pi/ipc": "workspace:*",
+    "@pi/ncm-client": "workspace:*",
+    "@pi/ncm-server": "workspace:*",
+    "@pi/resolver": "workspace:*",
+    "@pi/source-core": "workspace:*",
+    "@pi/source-lx": "workspace:*",
+    "@pi/source-local": "workspace:*",
+    "@pi/source-official": "workspace:*",
+    "@pi/source-unm": "workspace:*",
+    "@pi/shared": "workspace:*",
+    "@pi/store": "workspace:*",
+    "@unblockneteasemusic/server": "0.28.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.9.0",
+    "electron": "^44.4.5",
+    "esbuild": "^0.28.2"
+  }
+}

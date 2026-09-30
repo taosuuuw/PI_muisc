@@ -1,0 +1,275 @@
+/*
+ * lyric-moods.css — `fume`（浮名）与 `cadenza`（心象）两套歌词主题的样式。
+ *
+ * 这两个主题的动效数值借鉴自 folia-major 的 fume / cadenza（AGPL-3.0），
+ * 但这里是本仓库用 DOM + CSS + requestAnimationFrame 重写的近似实现，没有拷贝 folia 源码。
+ * 逐帧变化的值（位移 / 缩放 / 模糊 / 辉光 / 相机）全部由 JS 写内联 style 或 CSS 变量，
+ * 本文件只负责不随帧变化的静态布局与颜色继承。
+ *
+ * 命名空间：`.pi-lyricmood`（共同）→ `.pi-lyricmood--fume` / `.pi-lyricmood--cadenza`（各自）。
+ * 注意：两套主题的根元素都**不能有固定高度**，调用方把它们放在 `place-items: stretch center`
+ * 的网格单元里，必须靠 `height: 100%` 铺满。
+ */
+
+/* ------------------------------------------------------------------ *
+ * 共同根样式
+ * ------------------------------------------------------------------ */
+
+.pi-lyricmood {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  pointer-events: none;
+  /* 只用 paint 包含，避免 layout / size 包含改变网格单元高度。 */
+  contain: paint;
+  user-select: none;
+}
+
+/* ------------------------------------------------------------------ *
+ * cadenza（心象）
+ * ------------------------------------------------------------------ */
+
+.pi-lyricmood--cadenza {
+  /* 舞台锚点：JS 每帧写 --pi-cad-focus-y（= 高 × 0.42 + 呼吸 3~11px）。 */
+  --pi-cad-focus-y: 42%;
+}
+
+/* 一行词的整体容器：绝对定位到舞台锚点，行级入场 / 出场包络也在这里。 */
+.pi-lyriccadenza__line {
+  position: absolute;
+  left: 50%;
+  top: var(--pi-cad-focus-y);
+  width: 0;
+  height: 0;
+  transform-style: preserve-3d;
+  animation: pi-cad-line-in var(--pi-cad-enter, 0.3s) ease-out both;
+  animation-delay: var(--pi-cad-hold, 0s);
+}
+
+.pi-lyriccadenza__line[data-hint='micro'] {
+  animation: none;
+}
+
+/* 每个词：外层负责舞台偏移 + 逐词 transform，内层负责排版，两个文本层叠在一起。 */
+.pi-lyriccadenza__word {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+  will-change: transform, opacity, filter;
+  opacity: 0;
+}
+
+.pi-lyriccadenza__inner {
+  position: relative;
+  display: block;
+  white-space: nowrap;
+  line-height: 1;
+  font-size: var(--pi-cad-font, 48px);
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  color: var(--pi-cad-primary, var(--pi-primary));
+  font-family: var(--pi-font, inherit);
+}
+
+/* 正文本体。文字本身保持不透明，辉光靠下面的兄弟层描。 */
+.pi-lyriccadenza__body {
+  position: relative;
+  z-index: 1;
+  display: block;
+  white-space: nowrap;
+}
+
+/* 辉光层：透明字 + text-shadow（z-index 0，被正文压住）。 */
+.pi-lyriccadenza__glow {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  display: block;
+  white-space: nowrap;
+  color: transparent;
+  pointer-events: none;
+}
+
+/* 副歌波纹：只有 activeIndex 那一行是副歌时才挂上。 */
+.pi-lyriccadenza__ripple {
+  position: absolute;
+  left: 50%;
+  top: var(--pi-cad-focus-y);
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+
+.pi-lyriccadenza__ripple::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: min(52vw, 420px);
+  height: min(52vw, 420px);
+  margin-left: calc(min(52vw, 420px) / -2);
+  margin-top: calc(min(52vw, 420px) / -2);
+  border: 1.2px solid var(--pi-cad-accent, var(--pi-primary));
+  border-radius: 50%;
+  opacity: 0;
+  animation: pi-cad-ripple 2.4s ease-out infinite;
+}
+
+/* 译文 / 下两句预览：贴底居中。
+ * 主题舞台现在铺满整个播放页（见 lyric-themes.css 里那条 `position: absolute; inset: 0`），
+ * 所以这里不能用固定的 `bottom: 8px`——那会贴到窗口最底下、压住底部悬浮进度条。
+ * `--pi-stage-bleed-bottom` 由主题舞台给出（跟窗口高走的一个安全高度，默认 11vh / 86~132px），
+ * 正好是 `.pi-home__bar`（bottom 22px + height 56px）那一条的占位。 */
+.pi-lyriccadenza__sub {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(var(--pi-stage-bleed-bottom, 92px) + 8px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25em;
+  text-align: center;
+  font-family: var(--pi-font, inherit);
+}
+
+.pi-lyriccadenza__translated {
+  margin: 0;
+  max-width: 92%;
+  font-size: 0.9rem;
+  line-height: 1.4;
+  opacity: 0.6;
+  color: var(--pi-text-sub, #6b7280);
+}
+
+.pi-lyriccadenza__preview {
+  margin: 0;
+  max-width: 88%;
+  font-size: 0.74rem;
+  line-height: 1.35;
+  opacity: 0.38;
+  color: var(--pi-text-tertiary, #9aa3b2);
+}
+
+.pi-lyriccadenza__preview + .pi-lyriccadenza__preview {
+  opacity: 0.22;
+}
+
+@keyframes pi-cad-line-in {
+  from {
+    opacity: 0;
+    transform: scale(0.9);
+    filter: blur(10px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+    filter: blur(0);
+  }
+}
+
+@keyframes pi-cad-ripple {
+  0% {
+    transform: scale(0.34);
+    opacity: 0.45;
+  }
+  100% {
+    transform: scale(1.16);
+    opacity: 0;
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * fume（浮名）
+ * ------------------------------------------------------------------ */
+
+.pi-lyricmood--fume {
+  --pi-fume-paper-width: 1200px;
+  --pi-fume-paper-height: 1600px;
+}
+
+/* 纸面：比视口大得多，由 JS 每帧写 translate3d + scale。 */
+.pi-lyricfume__world {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+  will-change: transform;
+}
+
+/* 一「块」歌词（一行 = 一块）。 */
+.pi-lyricfume__block {
+  position: absolute;
+  display: block;
+  font-family: var(--pi-font, inherit);
+  font-size: var(--pi-fume-font, 20px);
+  line-height: var(--pi-fume-line-height, 22px);
+  font-weight: var(--pi-fume-weight, 640);
+  color: var(--pi-fume-primary, var(--pi-primary));
+  opacity: 0.035;
+  text-align: left;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+.pi-lyricfume__block--hero {
+  opacity: 0.06;
+  letter-spacing: 0.005em;
+}
+
+/* 纯文本容器：不设任何会干扰逐字素 span 的样式。 */
+.pi-lyricfume__text {
+  display: block;
+  white-space: normal;
+}
+
+.pi-lyricfume__word {
+  display: inline;
+  white-space: normal;
+}
+
+.pi-lyricfume__glyph {
+  display: inline;
+  white-space: pre-wrap;
+  color: inherit;
+}
+
+/* 块内译文（任务书样式：更小更淡）。 */
+.pi-lyricfume__translated {
+  display: block;
+  margin-top: 0.3em;
+  font-size: 0.62em;
+  font-weight: 500;
+  line-height: 1.35;
+  letter-spacing: 0;
+  opacity: 0.42;
+  color: var(--pi-text-sub, #6b7280);
+}
+
+/* ------------------------------------------------------------------ *
+ * 减少动效：把所有 CSS 动画 / 过渡关掉（JS 那边也读 usePrefersReducedMotion）
+ * ------------------------------------------------------------------ */
+
+@media (prefers-reduced-motion: reduce) {
+  .pi-lyriccadenza__line,
+  .pi-lyriccadenza__ripple::after {
+    animation: none !important;
+  }
+
+  .pi-lyriccadenza__line,
+  .pi-lyriccadenza__word,
+  .pi-lyriccadenza__ripple,
+  .pi-lyricfume__world,
+  .pi-lyricfume__block {
+    transition: none !important;
+  }
+
+  /* 波动层 / 波纹在静态模式下没有意义，直接藏掉。 */
+  .pi-lyriccadenza__ripple::after {
+    opacity: 0 !important;
+  }
+}

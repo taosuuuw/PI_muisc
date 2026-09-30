@@ -1,0 +1,430 @@
+/*
+ * 播放页沉浸式背景的样式。
+ *
+ * folia-major 是 **AGPL-3.0**：这里只借鉴它的**数值与结构**——模糊半径、`scale()`、
+ * 形状（约 15 个）与粒子（约 20 个）的数量与尺寸/透明度/时长区间、暗角梯度、
+ * 形状自转 30~60s 一半反向、粒子 15~35s 向上飘 100px——**没有拷贝任何 folia 源码文本**，
+ * 选择器、关键帧与算式都是在 PI 里按自己的变量体系写的（AGPL 边界见 docs/CREDITS.md）。
+ *
+ * 用户第 9 轮第 5 条之后是**六层**（自下而上）：
+ * `__blur`（`__cover-soft` 柔焦铺底 + `__cover` 可辨认封面）→ `__wash` 底色洗染
+ * → `__aura` 逐句情绪光晕 → `__shapes` 形状/粒子 → `__lyric-veil` 歌词区遮罩
+ * → `__vignette` 暗角。
+ *
+ * 三条取舍：
+ * 1. **只动画 `transform` / `opacity`**（外加 `background-color`/`opacity` 过渡）。这是播放页
+ *    底层的常驻效果，一旦动画 `filter`/`width` 就会每帧重绘整棵子树、还会被播放页的
+ *    backdrop-filter 反复采样；`transform`/`opacity` 能留在合成层上。
+ * 2. **不给 `will-change`**：这里有 35 个常驻动画元素，全部提升图层反而吃显存/触发提示层爆炸；
+ *    浏览器对正在运行的动画本来就会提升。
+ * 3. **换歌/换主题不做「先清空再画」**：颜色一律走过渡，避免闪白（`__wash` 的 1s 过渡就是为此）。
+ */
+
+.pi-immersive {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  /* 背景只是装饰：不接指针、不进无障碍树（组件上还有 aria-hidden）。 */
+  pointer-events: none;
+  /* 尺寸由父层（播放页的定位容器）决定，把布局/绘制范围锁在这棵子树里，别影响播放页排版。 */
+  contain: strict;
+  /* 内部有 filter/blur，隔离成独立层叠上下文，避免和播放页其它层的混合互相影响。 */
+  isolation: isolate;
+  /* 兜底值：组件本来会在根节点内联这些变量，这里保证没内联时也不会算出非法值
+     （`color-mix()` / `calc()` 吃到非法值会整条声明失效）。 */
+  --pi-immersive-energy: 0.32;
+  --pi-immersive-scale: 1.1;
+  /* 逐句变量（用户第 9 轮第 5 条）：当前这一句歌词的情绪色与姿态。 */
+  --pi-immersive-line: var(--pi-primary, #7aa2ff);
+  --pi-immersive-line-tilt: 0deg;
+  --pi-immersive-line-gain: 1;
+  --pi-immersive-aura: 0.3;
+  --pi-immersive-drift: 1;
+  --pi-immersive-particle-boost: 1;
+  /* 封面漂移（用户第 9 轮第 5 条）：组件按歌曲种子覆盖这三个值（1~2.2% / 0.8~1.8% / 46~64s）。 */
+  --pi-cover-drift-x: 1.4%;
+  --pi-cover-drift-y: 1.1%;
+  --pi-cover-drift-s: 54s;
+}
+
+/* ---- 第 1 层：封面（柔焦铺底 + 可辨认的封面，换歌都 1.5s 交叉淡入淡出） ---- */
+
+.pi-immersive__blur {
+  position: absolute;
+  inset: 0;
+}
+
+/*
+ * 柔焦铺底：模糊 56px、放大 1.8，只提供一层环境色与边缘过渡，不承担「认得出封面」。
+ * 原来这层是 blur(40px) scale(1.5) 且是唯一的封面层，糊得看不出是哪张专辑——
+ * 用户第 9 轮第 5 条要求「背景是这首歌的封面」，所以可辨认交给下面的 `__cover`。
+ */
+.pi-immersive__cover-soft {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  filter: blur(56px) saturate(1.15);
+  /*
+   * 大尺寸、重模糊、缓慢漂移（用户第 9 轮第 5 条）。`--pi-cover-scale` 存在变量里是因为
+   * 漂移关键帧要把「放大」与「位移」叠在同一个 transform 上；负延迟让它与可辨认那层
+   * 错开相位，两层不会像一块布一样同步晃。
+   */
+  --pi-cover-scale: 1.8;
+  animation: pi-immersive-cover-drift var(--pi-cover-drift-s, 54s) ease-in-out -8s infinite;
+  transform: scale(1.8);
+  opacity: 0;
+  transition: opacity 1.5s linear;
+}
+
+/*
+ * 可辨认的封面（用户第 9 轮第 5 条）：只做 3px 的「软化」+ 1.14 倍放大。
+ * 3px 是刻意的——再大就糊成色块、认不出是哪张封面；再小则和前景的玻璃面板抢锐度。
+ * 1.14 倍是为了把 3px 模糊在四边透出的半透明压在画布外（比再加负 inset 省一层）。
+ * 亮度按文档亮/暗档分两档：暗色界面压一点、亮色界面提一点，两种情况都不至于把
+ * 歌词（深/浅文字）压到同色。
+ */
+.pi-immersive__cover {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  /* 与柔焦层同一套漂移关键帧，只是基准放大是 1.14（见关键帧里对「余量」的说明）。 */
+  --pi-cover-scale: 1.14;
+  animation: pi-immersive-cover-drift var(--pi-cover-drift-s, 54s) ease-in-out -26s infinite;
+  transform: scale(1.14);
+  opacity: 0;
+  transition: opacity 1.5s linear;
+}
+
+.pi-immersive[data-scheme='light'] .pi-immersive__cover {
+  filter: blur(3px) saturate(1.04) brightness(1.06);
+}
+
+.pi-immersive[data-scheme='dark'] .pi-immersive__cover {
+  filter: blur(3px) saturate(1.06) brightness(0.9);
+}
+
+/* 只有栈顶那张是可见的；被顶下去的那张停在 0（不卸载），所以过渡期间不会出现空的背景。 */
+.pi-immersive__cover[data-active='true'] {
+  opacity: 1;
+}
+
+/* 柔焦铺底在场时留一点透明度，让两种模糊叠出层次（可辨认那张不吃这条，它必须实）。 */
+.pi-immersive__cover-soft[data-active='true'] {
+  opacity: 0.9;
+}
+
+/*
+ * 只有栈顶那张需要动。被顶下去的那张停在 opacity 0，让它也停帧——少一层全屏图的合成开销，
+ * 换歌频繁时这点开销是白给的（它已经看不见了）。停帧保留当前帧，所以拉回来时不会跳。
+ */
+.pi-immersive__cover:not([data-active='true']),
+.pi-immersive__cover-soft:not([data-active='true']) {
+  animation-play-state: paused;
+}
+
+/* ---- 第 2 层：底色洗染 ---- */
+
+.pi-immersive__wash {
+  position: absolute;
+  inset: 0;
+  background-color: var(--pi-immersive-bg);
+  /* 0.75 → 0.34（用户第 9 轮第 5 条）：原来这个浓度会把封面糊成一整片色块，
+     现在 wash 只负责把封面的色相统一到主题里，可读性交给下面的 `__lyric-veil` 与暗角。 */
+  opacity: 0.34;
+  /* 换歌时颜色 1s 过渡过去（取色是异步的，先中性色后主题色，这一步负责「不闪」）。 */
+  transition: background-color 1s linear;
+}
+
+/* ---- 第 3 层：逐句情绪光晕（用户第 9 轮第 5 条） ---- */
+
+/*
+ * 颜色 = 当前这一句歌词的情绪族落在主题里的那个色槽（`--pi-immersive-line`），
+ * 浓度 = 这一句的情绪强度（`--pi-immersive-aura`，0.12~0.6）。径向渐变本身不能被
+ * transition 插值，所以色相的切换是瞬时的，但浓度是 0.9s 过渡——两句之间眼睛先看到
+ * 「亮度/浓淡」在变，色变的突兀感就被吃掉了。
+ */
+.pi-immersive__aura {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(
+    ellipse 64% 58% at 50% 46%,
+    color-mix(in srgb, var(--pi-immersive-line) 58%, transparent) 0%,
+    color-mix(in srgb, var(--pi-immersive-line) 26%, transparent) 46%,
+    transparent 100%
+  );
+  opacity: var(--pi-immersive-aura);
+  transition: opacity 0.9s linear;
+}
+
+/* ---- 第 4 层：几何浮层（形状 + 粒子） ---- */
+
+.pi-immersive__shapes {
+  position: absolute;
+  inset: 0;
+  /* 缩放 = 能量（folia 的 [10,200] → [0.95,1.45]，见 lib/audio-bands.ts）
+     × **当前这一句**的情绪倍率（`--pi-immersive-line-gain`，0.9~1.16）；
+     再叠一个 ±4° 的整体倾斜（`--pi-immersive-line-tilt`）——换句时整片浮层跟着
+     「呼吸一下」，这是逐句驱动里最容易被看见的一档，而且只碰 transform。 */
+  transform: scale(calc(var(--pi-immersive-scale) * var(--pi-immersive-line-gain)))
+    rotate(var(--pi-immersive-line-tilt));
+  transform-origin: 50% 55%;
+  /* 能量也决定浮层的浓度：安静的歌更淡，热烈的歌更实（0.7~1.0）。 */
+  opacity: calc(0.7 + var(--pi-immersive-energy) * 0.3);
+  transition:
+    transform 0.9s ease-out,
+    opacity 1.2s linear;
+}
+
+/* 副歌行：形状层更亮、略微放大，让画面「更活跃一点」；照样只碰 opacity/transform。 */
+.pi-immersive[data-chorus='true'] .pi-immersive__shapes {
+  opacity: calc(0.85 + var(--pi-immersive-energy) * 0.15);
+  transform: scale(calc(var(--pi-immersive-scale) * var(--pi-immersive-line-gain) * 1.06))
+    rotate(var(--pi-immersive-line-tilt));
+}
+
+.pi-immersive__shape {
+  position: absolute;
+  /* 位置/尺寸/初始角/透明度/时长/延迟/方向全部由组件按歌曲种子写进内联样式，这里只管动画。 */
+  animation-name: pi-immersive-spin;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+}
+
+.pi-immersive__shape-body {
+  position: absolute;
+  inset: 0;
+  box-sizing: border-box;
+  animation-name: pi-immersive-drift;
+  animation-timing-function: ease-in-out;
+  animation-iteration-count: infinite;
+  /* 有延迟的形状在动画开始前保持起始帧，别在换歌瞬间集体「跳」一下。 */
+  animation-fill-mode: backwards;
+}
+
+/* 描边（rand >= 0.3）：1px 实描边 + 透明内部。
+   颜色 = 主题辅色与**当前这一句的情绪色**的混合（用户第 9 轮第 5 条）：换句时形状的
+   色相跟着歌词走，但不会完全变成光晕那一色，形状与光晕还留得出层次。 */
+.pi-immersive__shape-body[data-filled='false'] {
+  border: 1px solid color-mix(in srgb, var(--pi-immersive-secondary) 55%, var(--pi-immersive-line));
+  background-color: transparent;
+  transition: border-color 0.9s linear;
+}
+
+/* 填充（rand < 0.3）。 */
+.pi-immersive__shape-body[data-filled='true'] {
+  border: 0;
+  background-color: color-mix(in srgb, var(--pi-immersive-secondary) 55%, var(--pi-immersive-line));
+  transition: background-color 0.9s linear;
+}
+
+.pi-immersive__shape[data-kind='circle'] .pi-immersive__shape-body {
+  border-radius: 50%;
+}
+
+.pi-immersive__shape[data-kind='square'] .pi-immersive__shape-body {
+  border-radius: 2px;
+}
+
+.pi-immersive__shape[data-kind='triangle'] .pi-immersive__shape-body {
+  clip-path: polygon(50% 0%, 100% 100%, 0% 100%);
+}
+
+.pi-immersive__shape[data-kind='cross'] .pi-immersive__shape-body {
+  clip-path: polygon(
+    35% 0%,
+    65% 0%,
+    65% 35%,
+    100% 35%,
+    100% 65%,
+    65% 65%,
+    65% 100%,
+    35% 100%,
+    35% 65%,
+    0% 65%,
+    0% 35%,
+    35% 35%
+  );
+}
+
+/*
+ * 三角/十字的「描边」：`clip-path` 会把 1px 的 border 连同外框一起裁掉，多边形没法直接描边。
+ * 做法是先把整个多边形填上颜色，再用同形状、内缩 5% 的一层把内部盖回底色
+ * （`clip-path: inherit` 会跟着算更小的多边形），看起来就是一圈轮廓。
+ * 圆/方不受影响，那里用的是真正的 1px border。
+ */
+.pi-immersive__shape[data-kind='triangle'] .pi-immersive__shape-body[data-filled='false'],
+.pi-immersive__shape[data-kind='cross'] .pi-immersive__shape-body[data-filled='false'] {
+  border: 0;
+  background-color: var(--pi-immersive-secondary);
+}
+
+.pi-immersive__shape[data-kind='triangle'] .pi-immersive__shape-body[data-filled='false']::after,
+.pi-immersive__shape[data-kind='cross'] .pi-immersive__shape-body[data-filled='false']::after {
+  content: '';
+  position: absolute;
+  inset: 5%;
+  background-color: var(--pi-immersive-bg);
+  clip-path: inherit;
+}
+
+.pi-immersive__particle {
+  position: absolute;
+  border-radius: 50%;
+  /* 粒子颜色同样跟着当前这一句的情绪色走；峰值透明度由组件按句写进
+     `--pi-particle-opacity`（= 颗粒子固有值 × `--pi-immersive-particle-boost`）。 */
+  background-color: color-mix(in srgb, var(--pi-immersive-primary) 60%, var(--pi-immersive-line));
+  /* 起始透明：`animation-fill-mode: backwards` 让延迟中的粒子也保持隐藏，不会开场齐闪。 */
+  opacity: 0;
+  transition: background-color 0.9s linear;
+  animation-name: pi-immersive-rise;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+  animation-fill-mode: backwards;
+}
+
+/* ---- 第 5 层：歌词区遮罩（用户第 9 轮第 5 条：保证歌词可读性） ---- */
+
+/*
+ * 为什么颜色用 `--pi-immersive-bg`：这正是主题里跟歌词前景色做对比度校准
+ * （`PRIMARY_MIN_CONTRAST 9` / `ACCENT 3.2` / `SECONDARY 4.5`，见 lib/cover-palette.ts）
+ * 的那个底色——把画布中间往它身上压，就是「在歌词区再压一层半透明底」。
+ * 暗色界面它压暗、亮色界面它提亮，两种情况都在把歌词与背景往两端拉开。
+ *
+ * 尺寸用 vmin + min() 上限，不写死像素位置：窗口再大也不会糊掉整张封面，
+ * 窗口很窄时椭圆仍覆盖歌词那一列。浮层（形状/粒子）在这一层之下，所以歌词区里
+ * 不会有点线穿过去干扰阅读。
+ */
+.pi-immersive__lyric-veil {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(
+    ellipse min(42vmin, 620px) min(46vmin, 660px) at 50% 50%,
+    color-mix(in srgb, var(--pi-immersive-bg) 72%, transparent) 0%,
+    color-mix(in srgb, var(--pi-immersive-bg) 44%, transparent) 52%,
+    transparent 100%
+  );
+}
+
+/* ---- 第 6 层：暗角 ---- */
+
+.pi-immersive__vignette {
+  position: absolute;
+  inset: 0;
+  /* 0.6 → 0.5、起始 40% → 42%：封面要「看得见」，四角再压那么重会把它吃掉。 */
+  background: radial-gradient(circle, transparent 42%, rgba(0, 0, 0, 0.5) 100%);
+}
+
+/* ---- 关键帧 ---- */
+
+/* 自转：初始角写在元素的 `rotate` 属性上（独立于 transform），所以这里从 0 转到 360 即可。 */
+@keyframes pi-immersive-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/*
+ * 漂移：x ±(7.5~15)px、y ±(15~30)px 的慢速游走。
+ * folia 把位移和自转叠在同一个动画里；我们拆成内外两层（外层自转、内层位移），
+ * 因为一个元素上只能有一个 `transform` 动画，拆开比在关键帧里手写旋转矩阵可读。
+ * 时长沿用外层自转的 30~60s，两个周期一致，不会互相追赶。
+ */
+@keyframes pi-immersive-drift {
+  0% {
+    transform: translate3d(0, 0, 0);
+  }
+  25% {
+    transform: translate3d(var(--pi-drift-x), calc(var(--pi-drift-y) * -0.5), 0);
+  }
+  50% {
+    transform: translate3d(0, calc(var(--pi-drift-y) * -1), 0);
+  }
+  75% {
+    transform: translate3d(calc(var(--pi-drift-x) * -1), calc(var(--pi-drift-y) * -0.5), 0);
+  }
+  100% {
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+/*
+ * 封面漂移（用户第 9 轮第 5 条：「大尺寸、重模糊、缓慢漂移的封面」）。
+ * 幅度/周期由组件按歌曲种子写进 `--pi-cover-drift-x/y/s`（1~2.2% / 0.8~1.8% / 46~64s），
+ * 首尾都回到原点（0% = 100%），所以不会累积漂移、不会把画面越走越偏。
+ * 位移量必须**小于两层放大的余量**（`__cover` 放大 1.14 倍 → 每边 7% 余量，而漂移 ≤2.2%），
+ * 否则 3px 模糊在四边透出的那圈半透明会被带进画面。
+ * `translate3d` 写在 `scale` 前面：百分比位移按元素自身尺寸算，不会再被放大倍率乘一遍。
+ */
+@keyframes pi-immersive-cover-drift {
+  0% {
+    transform: translate3d(0, 0, 0) scale(var(--pi-cover-scale));
+  }
+  33% {
+    transform: translate3d(var(--pi-cover-drift-x), calc(var(--pi-cover-drift-y) * -0.6), 0)
+      scale(calc(var(--pi-cover-scale) * 1.015));
+  }
+  66% {
+    transform: translate3d(calc(var(--pi-cover-drift-x) * -0.7), var(--pi-cover-drift-y), 0)
+      scale(calc(var(--pi-cover-scale) * 1.01));
+  }
+  100% {
+    transform: translate3d(0, 0, 0) scale(var(--pi-cover-scale));
+  }
+}
+
+/* 粒子：原地向上飘 100px，两端淡出、中间用每颗粒子自己的峰值透明度。 */
+@keyframes pi-immersive-rise {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 0, 0);
+  }
+  15% {
+    opacity: var(--pi-particle-opacity);
+  }
+  85% {
+    opacity: var(--pi-particle-opacity);
+  }
+  100% {
+    opacity: 0;
+    transform: translate3d(0, -100px, 0);
+  }
+}
+
+/* ---- 停帧与降级 ---- */
+
+/*
+ * 窗口隐藏、没有歌、或用户开了 reduced-motion：整棵子树停在当前帧。
+ * `animation-play-state` 不是继承属性，所以要用通配后代选择器。
+ * 为什么不停掉所有动画源（`animation: none`）：停帧能保留当前画面，切回来接着转，
+ * 而 `animation: none` 会把粒子瞬间弹回 opacity 0，看着像闪了一下。
+ */
+.pi-immersive[data-paused='true'] * {
+  animation-play-state: paused;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* 用户要求减少动态：所有循环动画静止（组件同时会把 data-paused 设成 true）。 */
+  .pi-immersive,
+  .pi-immersive * {
+    animation-play-state: paused;
+  }
+
+  /* 颜色/姿态过渡留着（它不是「运动」），但缩短，避免换歌、换句时慢吞吞地 fading。 */
+  .pi-immersive .pi-immersive__wash,
+  .pi-immersive .pi-immersive__cover,
+  .pi-immersive .pi-immersive__cover-soft,
+  .pi-immersive .pi-immersive__aura,
+  .pi-immersive .pi-immersive__shapes,
+  .pi-immersive .pi-immersive__shape-body,
+  .pi-immersive .pi-immersive__particle {
+    transition-duration: 0.2s;
+  }
+}

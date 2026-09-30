@@ -1,0 +1,79 @@
+/**
+ * 第十四轮第 8 条（用户 m05281）：切歌小名片。
+ *
+ * 位置：窗口顶部居中（左上角是品牌浮层、右上角是窗口三键、底部是进度条与名片，
+ * 顶部中间这块一直空着）。出现＝从上往下落一点点 + 淡入；`SHOW_MS` 之后反向淡出。
+ *
+ * **点击没有互动**：整张卡 `pointer-events: none`，它不吃任何指针事件，
+ * 底下的歌词/名片照常能被点到。
+ */
+.pi-songcard {
+  position: absolute;
+  top: 20px;
+  left: 50%;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(320px, calc(100% - 40px));
+  padding: 9px 16px 9px 9px;
+  border-radius: 14px;
+  background: var(--pi-glass-bg-strong);
+  backdrop-filter: var(--pi-glass-blur-light);
+  -webkit-backdrop-filter: var(--pi-glass-blur-light);
+  border: 1px solid var(--pi-glass-border-light);
+  box-shadow: var(--pi-glass-highlight), var(--pi-shadow-slots);
+  pointer-events: none;
+  opacity: 0;
+  transform: translateX(-50%) translateY(-10px) scale(0.96);
+  transition:
+    opacity 0.26s ease,
+    transform 0.34s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.pi-songcard[data-visible='true'] {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0) scale(1);
+}
+.pi-songcard__cover {
+  flex: 0 0 auto;
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+  object-fit: cover;
+}
+.pi-songcard__meta {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+.pi-songcard__label {
+  color: var(--pi-text-tertiary);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+}
+.pi-songcard__title {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--pi-text);
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.pi-songcard__artists {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--pi-text-sub);
+  font-size: 11.5px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+@media (prefers-reduced-motion: reduce) {
+  .pi-songcard {
+    transform: translateX(-50%);
+    transition: opacity 0.2s ease;
+  }
+  .pi-songcard[data-visible='true'] {
+    transform: translateX(-50%);
+  }
+}

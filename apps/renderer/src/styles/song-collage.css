@@ -1,0 +1,624 @@
+/**
+ * 歌曲拼贴墙（`components/SongCollage.tsx`）。
+ *
+ * 材质这一层几乎是 folia 的 `src/components/app/lattice/Lattice.css` 的结论照搬，
+ * 色值全部换成我们自己的 `--pi-*`（**不写死色值**，亮/暗两套主题都要能看）：
+ *   ① 卡片一律**直角**（`border-radius: 0`）——方片墙里圆角会立刻变成「相册」而不是「墙」；
+ *   ② 序号徽章画在**左上角**、等宽数字，**不用 `backdrop-filter`**：folia 注释说每张卡的模糊
+ *      会把海报提升成独立合成层，是那面墙最大的 GPU 开销，一屏几百张直接卡死；
+ *   ③ **不给卡片加 `will-change`**：分数缩放下会出现 1px 未遮罩接缝（folia 注释）；
+ *   ④ 封面只 `object-fit: cover`，不固定宽高比；卡片宽高由模板槽位决定（见同目录 `song-collage-geometry.ts`）；
+ *   ⑤ 底部一道**压暗/提亮纱**保证歌名在任何封面上都可读（folia 的 `--lattice-shade-rgb` 那套：
+ *      暗色主题加黑、亮色主题加白，文字墨色跟着翻）；
+ *   ⑥ 背景两层 radial 辉光（folia 用主题的 accent/secondary，让墙看起来属于这个 app 而不是独立配色），
+ *      再叠一层颗粒与一层暗角。
+ */
+
+.pi-collage {
+  /**
+   * 第十五轮第 1 条：「队列拼贴的显示范围是全屏，去掉现在周围的白边」。
+   * 用 `position: fixed; inset: 0` 把它从 `.pi-main` 的文档流里摘出来，理由有两层：
+   *   ① `global.css` 里的 `.pi-main` 是 `overflow-y: auto` 的滚动容器，内边距
+   *      `padding: 20px 24px 132px`（那 132px 是给底部悬浮条留的）。任何**在流内**够到窗口
+   *      底部的子元素都会多出 132px 的可滚动区——负外边距也抵消不掉：滚动区的下界是先按
+   *      子元素自己的边框盒算完再加上容器的下内边距，所以「贴到窗口底」必然换来一条滚动条，
+   *      而 `height: calc(100vh - 220px)`（旧值）正好停在滚动区里、四周留出一圈页面底色。
+   *   ② fixed 元素完全脱离滚动容器：既不产生溢出，也能连左右那 24px 内边距一起绕开，
+   *      于是整面墙真的是一屏画面（folia 的 `.lattice-field` 就是整屏 + `overflow: clip`）。
+   * 代价（真机冒烟才看得到）：这一页的 `<h1>我的喜欢</h1>`、副标题、「共 N 首」都还在 DOM 里
+   * （探针的 textContent 照样读得到），但会被这面整屏的墙盖住——对齐 folia 的整屏观感；
+   * 如果要让它们浮在墙上，做法是给它们 `position: relative; z-index: 1` 并另给一层可读底衬。
+   * `z-index: 0` 是故意的：底部播放条（z 8）、PiOrb（z 40）、抽屉/设置弹层都比它高，
+   * 这面墙只在页面内容之上、所有悬浮件之下。
+   */
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  /* 方片墙是「一整屏画面」：不留圆角、不滚动，越界一律裁掉（folia 的 `.lattice-field` 同款）。 */
+  border-radius: 0;
+  overflow: clip;
+  overscroll-behavior: none;
+  isolation: isolate;
+  /**
+   * folia 的两层辉光：圆心 14% 12% / 86% 82%，半径 29% / 32%，混色 16% / 20%。
+   * 第二层用 `--pi-np-accent`（主进程从当前封面取的主色，默认就是 `--pi-primary`）——
+   * 它本来就是「这一首歌的颜色」，正好当 folia 那个 `--text-secondary` 用。
+   * `isolation: isolate` 把下面颗粒的 `mix-blend-mode` 关在这棵子树里，不影响页面其它部分。
+   */
+  background:
+    radial-gradient(
+      circle at 14% 12%,
+      color-mix(in srgb, var(--pi-primary) 16%, transparent),
+      transparent 29%
+    ),
+    radial-gradient(
+      circle at 86% 82%,
+      color-mix(in srgb, var(--pi-np-accent, var(--pi-primary)) 20%, transparent),
+      transparent 32%
+    ),
+    var(--pi-bg-subtle);
+  /* 方片墙的「压暗方向」与文字墨色：亮色主题加白 + 深字，暗色主题加黑 + 亮字。 */
+  --pi-collage-ink: var(--pi-text);
+  --pi-collage-shade-rgb: 255 255 255;
+  --pi-collage-elevation: 0 42px 110px rgb(0 0 0 / 25%);
+  /* 触摸端把平移手势交给 pointer 事件，不要触发浏览器自身的滚动/缩放。 */
+  touch-action: none;
+  cursor: grab;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/**
+ * 用户 m00001 第 3 条(A)：先锋歌单页在「歌曲还没拉完」时先铺的骨架
+ * （`PlaylistDetail.tsx` 里 `collageReady === false` 那一支）。
+ *
+ * 背景与 `.pi-collage` 逐字一致（同样三层），所以从骨架切到真墙时不会闪一下；
+ * 这一层**不渲染任何 tile**（DOM 里一个 `data-collage-cell` 都没有），
+ * 于是不会出现「拼贴已经在、里面的歌还在不停换」。
+ * `pointer-events: none` 是故意的：加载期间点空白处收回浮层的手势照旧能穿过去。
+ */
+.pi-collage-skeleton {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  display: grid;
+  place-items: center;
+  overflow: clip;
+  border-radius: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(
+      circle at 14% 12%,
+      color-mix(in srgb, var(--pi-primary) 16%, transparent),
+      transparent 29%
+    ),
+    radial-gradient(
+      circle at 86% 82%,
+      color-mix(in srgb, var(--pi-np-accent, var(--pi-primary)) 20%, transparent),
+      transparent 32%
+    ),
+    var(--pi-bg-subtle);
+}
+
+.pi-collage-skeleton__text {
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  color: var(--pi-text);
+  opacity: 0.72;
+}
+
+[data-theme='dark'] .pi-collage {
+  --pi-collage-ink: #f7f4ee;
+  --pi-collage-shade-rgb: 0 0 0;
+  --pi-collage-elevation: 0 42px 110px rgb(0 0 0 / 74%);
+}
+
+.pi-collage:active {
+  cursor: grabbing;
+}
+
+/* 焦点环：这一屏整个是「一张可操作画布」，用 box-shadow 描边（不吃布局）。 */
+.pi-collage:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--pi-primary);
+}
+
+/**
+ * ① 暗角（folia `has-vignette`）：只压边缘、中间完全不碰，压在方片之上、放大块之下，
+ *    所以画面四周衰减但中心的放大块仍然亮。亮色主题浅得多（0.16 vs 0.52）。
+ */
+.pi-collage::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+  background: radial-gradient(ellipse at center, rgb(0 0 0 / 0%) 78%, rgb(0 0 0 / 16%) 100%);
+}
+
+[data-theme='dark'] .pi-collage::before {
+  background: radial-gradient(ellipse at center, rgb(0 0 0 / 0%) 78%, rgb(0 0 0 / 52%) 100%);
+}
+
+/**
+ * ② 颗粒（folia `.lattice-root::after`）：复用 tokens 里已经有的 `--pi-noise`
+ *    （同一份 `feTurbulence baseFrequency='.92' numOctaves='2' stitchTiles='stitch'`），
+ *    乘 0.55 是因为 folia 的 rect 自带 `opacity='.55'`，我们那份没有，直接叠会偏重。
+ *    `soft-light` 不会糊掉封面，只是给整面墙加一层「纸/胶片」的质感。
+ */
+.pi-collage::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  opacity: calc(var(--pi-grain-opacity) * 0.55);
+  background-image: var(--pi-noise);
+  background-repeat: repeat;
+  mix-blend-mode: soft-light;
+}
+
+/**
+ * ③ 3D 姿态层（第十五轮第 1 条）。`perspective: 1400px` 挂在 `.pi-collage` 上，
+ *    这一层只负责 `rotateX(3.4deg) rotateY(-2.6deg)`（内联写在组件里，数值理由见
+ *    `song-collage-geometry.ts` 顶部说明④），旋转原点与透视原点都是**视口中心**（`50% 50%`）。
+ *    为什么不绕世界原点转：世界有几十万分之几千米，绕原点转会把远端甩到屏幕外，
+ *    剔除边界也得跟着重算；绕视口中心转，屏幕上的姿态完全一样，代价只是「离中心越远、
+ *    透视缩放越明显」。
+ *    它铺满 `.pi-collage`，世界层仍然在它内部按 `left/top + translate3d/scale` 定位——
+ *    也就是说**相机语义没有被 3D 改动**（冒烟探针读的 `.pi-collage__world` transform 不变）。
+ *    层级：世界层本来就带 `will-change: transform`（自成层叠上下文），所以这层加进来
+ *    不会改变「暗角/颗粒压在卡片之上」的既有关系。
+ */
+.pi-collage__tilt {
+  position: absolute;
+  inset: 0;
+  transform-origin: 50% 50%;
+}
+
+/**
+ * 世界层。相机（平移 + 定档缩放）就是这一个 `translate3d(...) scale(...)`，
+ * 由 React **不进 state**、直接写 style，拖动时每帧一次。
+ * `transform-origin: 0 0` 是「视口→世界坐标」换算的前提（folia 同款）。
+ */
+.pi-collage__world {
+  position: absolute;
+  left: 0;
+  top: 0;
+  /* 世界层是 JS 量出来的，初始给个 1 格，免得首帧塌成 0 导致 ResizeObserver 抖动。 */
+  width: 136px;
+  height: 136px;
+  transform-origin: 0 0;
+  will-change: transform;
+}
+
+/**
+ * 卡片。定位是「世界坐标的中心 + `translate(-50%, -50%)`」，
+ * 所以宽高变化（换中心时放大）是自己向四周长的，松手时不会和相机打架；
+ * 入场动画也只动 `transform` 的 Y 与 `opacity`（**不动 `scale`**）。
+ */
+.pi-collage__item {
+  position: absolute;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0; /* ① 直角 */
+  overflow: hidden;
+  contain: layout paint;
+  background: var(--pi-bg-subtle);
+  font: inherit;
+  color: var(--pi-collage-ink);
+  text-align: left;
+  cursor: pointer;
+  /**
+   * 定位 = `left/top`（格子的**中心**世界坐标）+ 这个 `translate(-50%, -50%)`。
+   * 它在入场动画的 `to` 帧里也有，`animation-fill-mode: both` 本来会一直替我们保留，
+   * 但显式写出来有两个必须的理由：
+   *   ① 文件末尾的 `prefers-reduced-motion` 会把 animation 关掉，那时布局仍然要成立（原来会塌到左上角）；
+   *   ② 第十六轮第 4 条(b) 的 `.pi-collage__item--exiting` 要 `animation: none`，好让**组件自己**写的
+   *      内联 `transform: translate(-50%, -50%) translate(...) scale(...)` 生效 —— CSS 动画填充态的
+   *      优先级**高于内联样式**，不关动画的话「放大填满屏幕」根本不会动。
+   */
+  transform: translate(-50%, -50%);
+  /* ③ 不给 `will-change`/`transform: translateZ(0)`：分数缩放下会出现 1px 未遮罩接缝。 */
+  transition: box-shadow 600ms ease, filter 600ms ease;
+  /**
+   * folia 的入场是「Metro 磁贴对角波」：起点在视口左上角，按曼哈顿格数延迟 0.03s/格、
+   * 封顶 0.34s，从上方 90px 落下并淡入。它原本是 framer-motion 的弹簧
+   * （`stiffness 360 / damping 24`），这里用一条带轻微回弹的贝塞尔近似，
+   * 不引入动画库；延迟由几何层算好放在 `--pi-collage-delay` 上。
+   */
+  animation: pi-collage-land 520ms cubic-bezier(0.22, 1.12, 0.36, 1) both;
+  animation-delay: var(--pi-collage-delay, 0s);
+}
+
+@keyframes pi-collage-land {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -50%) translateY(calc(-1 * var(--pi-collage-lift, 90px)));
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%);
+  }
+}
+
+/**
+ * 「换中心」时的宽高过渡：**首帧落定之后才开**。入场那一帧中心块就已经是放大尺寸，
+ * 若一上来就带过渡，冒烟探针会量到它还在长的中间态（`SETTLE_MS` 见组件）。
+ */
+.pi-collage--settled .pi-collage__item {
+  /**
+   * `left/top` 也必须过渡：第十五轮第 1 条的块内重排会让同一块里的邻居**换位置**，
+   * 只过渡宽高的话点击时会先读成「变小了」、再一跳平移，两段感很明显。
+   */
+  transition:
+    left 260ms ease,
+    top 260ms ease,
+    width 260ms ease,
+    height 260ms ease,
+    box-shadow 600ms ease,
+    filter 600ms ease;
+}
+
+/* 键盘可达：Tab 落到某一格时给「发丝线 / 亮环 / 发丝线」三层，在亮暗两种底上都看得清。 */
+.pi-collage__item:focus-visible {
+  outline: none;
+  z-index: 4;
+  box-shadow:
+    0 0 0 1px rgb(0 0 0 / 62%),
+    0 0 0 4px var(--pi-primary),
+    0 0 0 5px rgb(0 0 0 / 38%);
+}
+
+/* ④ 封面：绝对铺满，`img` 只 cover，不固定宽高比。 */
+.pi-collage__cover {
+  position: absolute;
+  inset: 0;
+  display: block;
+  background: var(--pi-bg-subtle);
+}
+
+.pi-collage__cover img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  /* 拖动时别让浏览器把图片也拖走。 */
+  -webkit-user-drag: none;
+}
+
+/* 没有封面：给一块淡蓝斜纹，别留纯白洞（纱 + 墨色仍压在上面保证文字可读）。 */
+.pi-collage__nocover {
+  position: absolute;
+  inset: 0;
+  background:
+    repeating-linear-gradient(135deg, var(--pi-primary-weak) 0 8px, transparent 8px 16px),
+    var(--pi-bg-subtle);
+}
+
+/**
+ * ⑤ 纱：folia 的 `.lattice-poster-shade`。底色由 `--pi-collage-shade-rgb` 决定，
+ * 只在底部四成里逐渐加重（5% → 24% → 92%），给左下角的歌名让出一块可读区，
+ * 上半张封面基本不受影响。
+ */
+.pi-collage__shade {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    180deg,
+    rgb(var(--pi-collage-shade-rgb) / 0%) 20%,
+    rgb(var(--pi-collage-shade-rgb) / 24%) 56%,
+    rgb(var(--pi-collage-shade-rgb) / 92%) 100%
+  );
+}
+
+/**
+ * ② 序号徽章：左上角，等宽数字，**不用 `backdrop-filter`**。
+ * `--pi-collage-inset` 由组件按卡片尺寸给（小片 8px、大片 32px），
+ * 所以 264px 的小片与 808px 的放大块上，徽章的相对位置看起来是一样的。
+ */
+.pi-collage__badge {
+  position: absolute;
+  top: var(--pi-collage-inset, 12px);
+  left: var(--pi-collage-inset, 12px);
+  z-index: 2;
+  padding: 5px 8px;
+  border: 0;
+  background: rgb(var(--pi-collage-shade-rgb) / 62%);
+  color: var(--pi-collage-ink);
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.12em;
+  pointer-events: none;
+}
+
+/**
+ * 卡片文字（folia 的 `.lattice-poster-copy`）：左下角贴边、标题在上歌手在下。
+ * 字号由组件按卡片宽度给到 `--pi-collage-copy`（folia 的 `LatticeTitle` 也是按卡片宽度缩字号）；
+ * 票面最紧的那条线是 13px，再小的卡只看得到封面也不会糊成一片。
+ */
+.pi-collage__copy {
+  position: absolute;
+  right: var(--pi-collage-inset, 12px);
+  bottom: var(--pi-collage-inset, 12px);
+  left: var(--pi-collage-inset, 12px);
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  pointer-events: none;
+}
+
+.pi-collage__name {
+  /* folia 用 `margin-block: -0.14em; padding-block: 0.14em` 给 `line-clamp` 留出行高，
+     否则 `overflow: hidden` 会把上下伸出的字切掉一截。 */
+  margin-block: -0.14em;
+  padding-block: 0.14em;
+  font-size: var(--pi-collage-copy, 15px);
+  font-weight: 700;
+  line-height: 0.98;
+  letter-spacing: -0.02em;
+  text-wrap: balance;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.pi-collage__meta {
+  font-size: clamp(10px, calc(var(--pi-collage-copy, 15px) * 0.46), 17px);
+  font-weight: 650;
+  opacity: 0.82;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/**
+ * 第十六轮第 4 条(a)：**悬停互动动画**（用户 m00001 第 4 条「鼠标悬停在拼贴上会有对应的互动动画」）。
+ *
+ * 三条纪律：
+ *   ① **不动格子自己的 `transform`**。格子的定位 `translate(-50%, -50%)` 是入场动画 `both`
+ *      填充态留下的，动画填充态优先级高于 `:hover` 与内联样式，改它会被吃掉（表现就是 hover 毫无反应）。
+ *      所以缩放/上浮全部挂在**内层**（封面、文字、序号），格子自己只改不吃 transform 的属性。
+ *   ② **零成本静置**：不写 `will-change`、不给非悬停的卡建层。扫光用「只在 `:hover` 时生成
+ *      `::after` + 一次性 keyframes」，所以没被指到的卡连那个伪元素都不存在（folia 反复警告过
+ *      「每张卡一个滤镜/合成层」是这面墙最大的开销）。
+ *   ③ **只动 transform / opacity / filter / box-shadow**：都是合成友好属性，同一时刻只有一张卡吃到，
+ *      和第十五轮第 1 条「拖拽期间尺寸不变」也不冲突。
+ *
+ * 观感与中心块放大（808 正方形 + 主色内描边 + 大落影）一致：悬停是那件事的**轻量预演**——
+ * 封面推近 1.055、文字序号抬起 2–3px、一圈主色描边 + 落影、再加一道斜向扫光。
+ */
+.pi-collage__item:hover {
+  z-index: 5;
+  filter: saturate(1.08) brightness(1.05);
+  box-shadow:
+    0 18px 40px rgb(0 0 0 / 26%),
+    0 0 0 2px color-mix(in srgb, var(--pi-primary) 78%, transparent);
+}
+
+/* 封面推近：`overflow: hidden` 之内放大，读起来是「镜头凑近了一点」。 */
+.pi-collage__cover img,
+.pi-collage__nocover {
+  transition: transform 320ms cubic-bezier(0.22, 0.9, 0.24, 1);
+}
+
+.pi-collage__item:hover .pi-collage__cover img,
+.pi-collage__item:hover .pi-collage__nocover {
+  transform: scale(1.055);
+}
+
+/* 文字与序号上浮：和封面推近同一条缓动，整张卡读起来是「被拿起来了」。 */
+.pi-collage__copy,
+.pi-collage__badge {
+  transition:
+    transform 320ms cubic-bezier(0.22, 0.9, 0.24, 1),
+    background-color 320ms ease;
+}
+
+.pi-collage__item:hover .pi-collage__copy {
+  transform: translateY(-3px);
+}
+
+.pi-collage__item:hover .pi-collage__badge {
+  transform: translateY(-2px) scale(1.06);
+  background: rgb(var(--pi-collage-shade-rgb) / 78%);
+}
+
+/**
+ * 斜向扫光：**只在悬停时生成伪元素**，所以静置的卡不带任何额外盒子/层。
+ * `::after` 在卡片上确实没人用（`::before` 只有放大块拿来做内描边），不会打架。
+ * 一次扫完就淡出（`to { opacity: 0 }`），移出时伪元素直接消失，不会留下半张白片。
+ */
+.pi-collage__item:hover::after {
+  content: '';
+  position: absolute;
+  inset: -20%;
+  z-index: 3;
+  pointer-events: none;
+  background: linear-gradient(
+    105deg,
+    rgb(255 255 255 / 0%) 38%,
+    rgb(255 255 255 / 30%) 50%,
+    rgb(255 255 255 / 0%) 62%
+  );
+  animation: pi-collage-sheen 620ms cubic-bezier(0.22, 0.9, 0.24, 1) both;
+}
+
+@keyframes pi-collage-sheen {
+  from {
+    opacity: 0;
+    transform: translateX(-62%);
+  }
+  18% {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+    transform: translateX(62%);
+  }
+}
+
+/**
+ * 放大块（第十五轮第 1 条：它现在是「被**点击**的那一格」）。
+ * 尺寸恒为 6×6 格的正方形 808px（几何层的 `EXPANSION_SIZE`），位置由 `blockLayoutOf`
+ * 锚在离它最近的块角；同块其余 11 张被挤进「6×8 + 6×2」两条带里让位，宽高与 left/top
+ * 一起过渡（见上面的 `.pi-collage--settled` 规则），所以读起来是「挤开」而不是「盖住」。
+ *  + 内描边 + 内辉光（folia 的 `.is-current::before`：卡片自己 `overflow: hidden`，
+ *    外描边会被裁掉，所以这圈光必须向内画）
+ *  + `--pi-collage-elevation` 的大落影（folia 展开态 `0 42px 110px`）。
+ *  + z-index 20 只是保险：邻居这时已经被挤到别的槽位，不会和它叠在一起。
+ *
+ * 被挤小的邻居同时带 `data-collage-reflow="true"` 与 `.pi-collage__item--reflowed`，
+ * 这两个都**只作标记**（给探针/调试定位用），故意不配任何材质/滤镜规则——
+ * folia 注释里明确警告过「每张卡一个滤镜」是那面墙最大的 GPU 开销，
+ * 「被挤压」这件事由几何本身（尺寸 + 位置过渡）表达就够了。
+ */
+.pi-collage__item--center {
+  z-index: 20;
+  filter: none;
+  box-shadow: var(--pi-collage-elevation);
+}
+
+.pi-collage__item--center::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  border: 2px solid var(--pi-primary);
+  box-shadow:
+    inset 0 0 0 1px rgb(var(--pi-collage-shade-rgb) / 52%),
+    inset 0 0 15px -7px color-mix(in srgb, var(--pi-primary) 46%, transparent);
+  pointer-events: none;
+}
+
+/* 「正在播放」但**不在**中心的那一块：一圈细主色边（和中心块的内描边区分开）。 */
+.pi-collage__item[data-playing='true']:not(.pi-collage__item--center) {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--pi-primary) 72%, transparent);
+}
+
+/**
+ * 上面那条 `[data-playing]` 选择器的特权重（0,3,0），会盖掉 `.pi-collage__item:hover`（0,2,0）
+ * 的落影，所以「正在播放但没放大」的那一张要单独补一条悬停态，否则它悬停时没有描边变化。
+ */
+.pi-collage__item[data-playing='true']:not(.pi-collage__item--center):hover {
+  box-shadow:
+    0 18px 40px rgb(0 0 0 / 26%),
+    0 0 0 2px color-mix(in srgb, var(--pi-primary) 78%, transparent);
+}
+
+/* 放大块悬停：它本来就有内描边 + 大落影，这里只把内描边加亮一档，不再叠第二层外描边。 */
+.pi-collage__item--center:hover {
+  box-shadow:
+    var(--pi-collage-elevation),
+    inset 0 0 0 2px color-mix(in srgb, var(--pi-primary) 58%, transparent);
+}
+
+/**
+ * 第十六轮第 4 条(b) + 用户 m00736 第 6 条：**进播放页的放大退场钩子**。
+ *
+ * 触发条件（组件里）：点的那一格「既在播放、又是当前放大聚焦的那一格」——宿主给了
+ * `onEnterPlaying` 就走回调，没给（歌单详情浮层）则由组件自己等这条过渡播完后
+ * `closePlaylist()` + `closeSongs()` + `navigate('home')` 收尾，同样是 `COLLAGE_FILL_MS`。
+ * 组件负责打这个 class / `data-collage-exiting="true"`，**并且自己把动画演完**：下一帧读那一格的
+ * `getBoundingClientRect()`，用 `collageCellExitTransform(rect, viewport, parentScale)` 算出目标
+ * transform（`parentScale` 取根节点 `data-collage-scale`）写进它自己的内联 `style.transform`；
+ * 给了回调的宿主只需要在 `COLLAGE_FILL_MS` 之后切播放页。两个纯函数也照样导出给宿主备用：
+ *   `viewportFillTransform(rect, viewport)`（克隆/覆盖层，最准）或
+ *   `collageCellExitTransform(rect, viewport, geometry.scale)`（直接写回这一格）。
+ *
+ * 这条规则做三件事：
+ *   ① `animation: none` —— 关掉入场动画的 `both` 填充态，否则它会盖住宿主写的内联 `transform`
+ *      （CSS 动画填充态优先级高于内联样式）；关掉之后格子的定位 transform 由上面基础规则里的
+ *      `translate(-50%, -50%)` 顶着，不会跑位。
+ *   ② `transition: transform 480ms`（= `COLLAGE_FILL_MS`，两边各写一遍、常量注释里互相点名）——
+ *      于是宿主**只写目标 transform**，放大过程自带缓动，不用自己跑 rAF。
+ *   ③ `z-index: 60` —— 长到整屏时压在别的卡之上。它在 `.pi-collage` 的层叠上下文里
+ *      （根节点 `isolation: isolate` + `z-index: 0`），所以永远高不过底栏（z 8）/ PiOrb（z 40）。
+ */
+.pi-collage__item--exiting,
+.pi-collage--settled .pi-collage__item--exiting {
+  animation: none;
+  z-index: 60;
+  transition:
+    transform 480ms cubic-bezier(0.22, 0.9, 0.24, 1),
+    opacity 480ms ease;
+}
+
+/**
+ * 父任务补充（第 6 条后半段 / 头部契约 (e)）：`focusSong(keyword)` 命中的那一格。
+ *
+ * 描边脉冲 = 「就是它」的视觉答案。用 `outline` 而不是 `box-shadow`：格子的 box-shadow 是
+ * 基础规则 / `--center` / `:hover` 三处共用的属性，一条动画盖上去会把落影与内描边整体换掉、
+ * 出现跳变；`outline` 没人用，加一层环不影响任何既有观感。
+ *
+ * 动画只在带这个 class 时生成（搜索命中才发生），静止时零成本；`@keyframes` 的 100% 特意
+ * **留着不透明的环**（`both` 填充态会一直停在末帧），动画播完描边仍然在，用户回头看还能认出这一格。
+ * 它和入场动画 `pi-collage-land` 是同一个 `animation` 属性、这条规则在后面 → 命中时以它为准
+ * （命中必然发生在墙已经落位之后，丢掉入场动画无所谓）。
+ * `prefers-reduced-motion` 下由下面那条公共规则统一 `animation: none`（媒体查询不加特异性、
+ * 源码顺序在后面），脉冲没了但静态的环留着。
+ */
+@keyframes pi-collage-hit-ring {
+  0% {
+    outline-color: transparent;
+    outline-offset: 18px;
+  }
+
+  45% {
+    outline-color: var(--pi-primary);
+    outline-offset: 4px;
+  }
+
+  100% {
+    outline-color: color-mix(in srgb, var(--pi-primary) 82%, transparent);
+    outline-offset: 4px;
+  }
+}
+
+.pi-collage__item--hit {
+  z-index: 6;
+  outline: 2px solid color-mix(in srgb, var(--pi-primary) 82%, transparent);
+  outline-offset: 4px;
+  animation: pi-collage-hit-ring 700ms cubic-bezier(0.22, 0.9, 0.24, 1) 2 both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pi-collage__item,
+  .pi-collage--settled .pi-collage__item {
+    animation: none;
+    transition: none;
+  }
+
+  /* 第十六轮第 4 条(a)：悬停的推近/上浮/扫光一律关掉，只留描边与滤镜这类「不动」的反馈。 */
+  .pi-collage__cover img,
+  .pi-collage__nocover,
+  .pi-collage__copy,
+  .pi-collage__badge {
+    transition: none;
+  }
+
+  .pi-collage__item:hover .pi-collage__cover img,
+  .pi-collage__item:hover .pi-collage__nocover,
+  .pi-collage__item:hover .pi-collage__copy,
+  .pi-collage__item:hover .pi-collage__badge {
+    transform: none;
+  }
+
+  /* 扫光是「只在 hover 时生成 + 一次性动画」的，`animation: none` 会让它**一直亮着**，
+      所以这里直接不生成这个伪元素。 */
+  .pi-collage__item:hover::after {
+    content: none;
+  }
+
+  /* 放大退场同样不做缓动（宿主仍会把那一格放大到整屏，只是瞬间到位）。 */
+  .pi-collage__item--exiting,
+  .pi-collage--settled .pi-collage__item--exiting {
+    transition: none;
+  }
+}

@@ -1,0 +1,39 @@
+{
+  "name": "pi",
+  "version": "0.1.0",
+  "private": true,
+  "description": "PI —— 桌面音乐应用（网易云音乐数据 + 多源音源解析链）",
+  "packageManager": "pnpm@10.34.5",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "start": "pnpm -F @pi/desktop start",
+    "launch": "pnpm build && pnpm -F @pi/desktop start",
+    "icon": "node scripts/make-icon.mjs",
+    "clean": "node scripts/clean.mjs",
+    "dist": "node scripts/make-dist.mjs",
+    "installer": "node scripts/make-csharp-installer.mjs",
+    "installer:nsis": "node scripts/make-installer.mjs",
+    "release": "pnpm build && pnpm dist && pnpm installer",
+    "shortcut": "node scripts/make-dist.mjs --shortcut-only",
+    "electron:install": "install-electron",
+    "build": "turbo run build",
+    "build:desktop": "pnpm -F @pi/desktop build",
+    "build:renderer": "pnpm -F @pi/renderer build",
+    "typecheck": "turbo run typecheck",
+    "test": "vitest run",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "@types/node": "^24.9.0",
+    "electron-builder": "^26.15.3",
+    "prettier": "^3.4.2",
+    "resedit": "^3.1.0",
+    "turbo": "^2.11.3",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.1"
+  }
+}

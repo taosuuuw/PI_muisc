@@ -1,0 +1,137 @@
+/* ------------------------------------------------------------------ *
+ * 「已切换 ⨯⨯ 风格」的提示（用户 m02213 第 5 条 → 用户 m04183 第 2 条）
+ *
+ * 老样子（m02213）：「从顶框下滑一个提示『已切换xx风格』，显示 2s，就上升到顶框内消失」，
+ * 所以它原先是一块**贴着窗口最上沿**的深色胶囊（`top: 0`，上边角不圆，靠
+ * `translateY(-100%)` 藏在顶框外）。
+ *
+ * 这一轮（用户 m04183 第 2 条）：「切换风格的提示改成灵动岛通知形式」——不再贴边，
+ * 改成**漂浮在窗口顶部中央的灵动岛药丸**：
+ *   · 与顶边留 `--pi-island-top`（8px）的缝，四角全圆（`border-radius: 999px`）；
+ *   · 尺寸小而精致：高 32px、左右内边距 14px（比原来那块扁胶囊矮一截、窄一点）；
+ *   · 材质按「灵动岛」的辨识度来——**恒为近黑玻璃**（`rgba(11, 15, 22, 0.86)` +
+ *     `blur(14px) saturate(1.25)`），白字、`--pi-primary`（#1f9bff）圆点，
+ *     再加一道极细的内高光 + 一圈发丝边 + 一层柔和落影，让它像玻璃而不是一块死黑。
+ *
+ * 为什么**不跟主题走**（这里是全仓唯一一处故意不用 `--pi-glass-*` 的地方）：
+ * iPhone 的岛在浅色界面里也是黑的，恒定深色正是它的辨识特征。亮档下它是
+ * 「白底上一颗黑药丸」（对比 ~13:1），暗档下靠 `[data-theme='dark']` 里那圈更亮的
+ * 发丝边 + 更深的外落影把自己从深背景里「抬」出来，两档都读得清。
+ *
+ * 四条纪律：
+ *   ① `pointer-events: none`：它浮在顶框拖拽区（`global.css` 的
+ *      `.pi-windowcontrols__dragstrip`）上面，绝不能把拖窗口的那一带吃成死区；
+ *   ② `-webkit-app-region: no-drag`：自身也不能被当成拖拽区；
+ *   ③ 只有圆点跟主题（`--pi-primary`），药丸本身恒定深色，见上；
+ *   ④ 尺寸/位置随便调都没关系——`apps/desktop/src/main/index.ts:8120-8172` 的冒烟探针
+ *      只读 `data-style-toast*` 那几个属性，不读几何；但它读**时间**：出场动画时长
+ *      必须等于 `StyleToast.tsx` 的 `EXIT_MS`（0.24s），别动。
+ * ------------------------------------------------------------------ */
+
+.pi-style-toast {
+  /* 灵动岛自己的那一套料，就近定义：改了不影响全仓别处，也表明「故意不跟主题」。 */
+  --pi-island-top: 8px;
+  --pi-island-h: 32px;
+  --pi-island-pad-x: 14px;
+  --pi-island-bg: rgba(11, 15, 22, 0.86);
+  --pi-island-fg: #ffffff;
+  --pi-island-blur: blur(14px) saturate(1.25);
+  /* 内高光（上缘一道极细白线）+ 发丝边（1px 白 7%，比 border 更贴边、不会把药丸撑大）
+     + 两层落影（近处一层紧贴，远处一层柔散）。 */
+  --pi-island-ring: rgba(255, 255, 255, 0.07);
+  --pi-island-gloss: rgba(255, 255, 255, 0.16);
+  --pi-island-shadow:
+    inset 0 1px 0 var(--pi-island-gloss), inset 0 0 0 1px var(--pi-island-ring),
+    0 2px 6px rgba(6, 10, 16, 0.24), 0 10px 26px rgba(6, 10, 16, 0.28);
+
+  position: fixed;
+  /* 不贴边：`top: 0` → 8px，浮在顶框拖拽带下面一点点，像「挂在顶上的岛」。 */
+  top: var(--pi-island-top);
+  left: 50%;
+  z-index: 58;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+  -webkit-app-region: no-drag;
+  /* 从小核朝下展开：缩放原点钉在**上缘中点**，所以长出来的是「往下撑开」的岛，
+     而不是从中心向四周涨开的一个圆。 */
+  transform-origin: top center;
+  /* 入场/出场各自一条关键帧（`both` 兜住首尾帧）；不用 transition 是因为元素一挂载
+     就带 `leaving=false`，没有「先高后低」的那一拍，转场不会触发。 */
+  animation: pi-style-toast-in 0.3s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* 出场：收拢 + 微微上浮（时长对齐 `StyleToast.tsx` 的 `EXIT_MS = 240`）。 */
+.pi-style-toast[data-style-toast-leaving='true'] {
+  animation: pi-style-toast-out 0.24s cubic-bezier(0.4, 0, 0.72, 1) both;
+}
+
+.pi-style-toast__text {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  /* 高 32px（要求 30~34px）由固定高度 + 居中吃住；左右各 14px 内边距。 */
+  height: var(--pi-island-h);
+  padding: 0 var(--pi-island-pad-x);
+  border-radius: 999px;
+  background: var(--pi-island-bg);
+  -webkit-backdrop-filter: var(--pi-island-blur);
+  backdrop-filter: var(--pi-island-blur);
+  box-shadow: var(--pi-island-shadow);
+  color: var(--pi-island-fg);
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+
+.pi-style-toast__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--pi-primary);
+  /* 一点点自发光，让这颗点在近黑药丸上「亮」起来（而不是一颗贴上去的色块）。 */
+  box-shadow: 0 0 6px rgba(31, 155, 255, 0.55);
+}
+
+/* 暗档：药丸还是那颗黑药丸（灵动岛的规矩），只把「轮廓」提亮——发丝边与近处落影
+   各加一档，免得它糊进深背景里；圆点自动换成暗档的浅蓝 `--pi-primary`。 */
+[data-theme='dark'] .pi-style-toast {
+  --pi-island-ring: rgba(255, 255, 255, 0.12);
+  --pi-island-gloss: rgba(255, 255, 255, 0.18);
+  --pi-island-shadow:
+    inset 0 1px 0 var(--pi-island-gloss), inset 0 0 0 1px var(--pi-island-ring),
+    0 2px 6px rgba(0, 0, 0, 0.5), 0 12px 30px rgba(0, 0, 0, 0.62);
+}
+
+@keyframes pi-style-toast-in {
+  from {
+    /* 0.72 的小核 + 4px 上提：读起来像「岛从顶边里撑出来」，落点就是 top: 8px。 */
+    transform: translate(-50%, -4px) scale(0.72);
+    opacity: 0;
+  }
+  to {
+    transform: translate(-50%, 0) scale(1);
+    opacity: 1;
+  }
+}
+
+@keyframes pi-style-toast-out {
+  from {
+    transform: translate(-50%, 0) scale(1);
+    opacity: 1;
+  }
+  to {
+    /* 收拢到 0.88 并上浮 7px 淡出——和入场同一条路（从上缘中点收回去）。 */
+    transform: translate(-50%, -7px) scale(0.88);
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pi-style-toast,
+  .pi-style-toast[data-style-toast-leaving='true'] {
+    animation-duration: 0.01s;
+  }
+}

@@ -1,0 +1,449 @@
+/*
+ * 歌单卡片（用户第十五轮第 2 条：「删掉环形歌单展示，歌单用歌曲卡片的那个卡片展示」）。
+ *
+ * 两块内容：
+ * 1. `.pi-plcard` —— 歌单卡的**外观**，与 `song-cards.css` 的 `.pi-songcard` 对齐：
+ *    1:1 封面 + 16px 圆角 + 玻璃底/描边/浮影，14px/600 的两行歌单名，11px 等宽副标题，
+ *    hover 换成 `--pi-shadow-slots-hover` 那圈更亮的影。「我的歌单 / 收藏」页
+ *    （`PlaylistGrid.tsx` 渲染的 `.pi-grid`）与悬浮球里的歌单面板（`.pi-plgrid`）共用它。
+ * 2. `.pi-orb__plcards` —— 悬浮球「我的歌单 / 收藏歌单 / 推荐」这一页的卡片面板，
+ *    替掉了原来的歌单封面环（`.pi-orb__cover` 那套样式还留在 `global.css` 里，没删）。
+ *
+ * 覆盖 `.pi-plcard*` 的规则都带上了父级网格类（`.pi-grid` / `.pi-plgrid`），
+ * 特异性高于 `global.css` 里同名的单类规则，因此不依赖本文件的加载顺序；
+ * 同时在 `main.tsx` 里它排在 `overlays.css` 之后（最后一条），顺序上也是安全的。
+ */
+
+/* ---- 1. 歌单卡（对齐 song-cards.css 的 .pi-songcard）---------------- */
+
+.pi-grid .pi-plcard,
+.pi-plgrid .pi-plcard {
+  /* 卡片本身不加底/内边距：封面自己带玻璃底，多一层底会吃掉封面那圈描边。 */
+  gap: 8px;
+  padding: 0;
+  border-radius: 16px;
+}
+/* 焦点环与 `.pi-songcard:focus-visible` 同值，键盘走查时看得见。 */
+.pi-grid .pi-plcard:focus-visible,
+.pi-plgrid .pi-plcard:focus-visible {
+  outline: 2px solid var(--pi-primary);
+  outline-offset: 3px;
+}
+.pi-grid .pi-plcard__cover,
+.pi-plgrid .pi-plcard__cover {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  border-radius: 16px;
+  overflow: hidden;
+  object-fit: cover;
+  background: var(--pi-glass-sheen);
+  border: 1px solid var(--pi-glass-border);
+  box-shadow: var(--pi-shadow-float);
+  transition:
+    transform 180ms ease,
+    box-shadow 220ms ease;
+}
+.pi-grid .pi-plcard__cover--empty,
+.pi-plgrid .pi-plcard__cover--empty {
+  display: grid;
+  place-items: center;
+  color: var(--pi-text-tertiary);
+}
+.pi-grid .pi-plcard:hover .pi-plcard__cover,
+.pi-grid .pi-plcard:focus-visible .pi-plcard__cover,
+.pi-plgrid .pi-plcard:hover .pi-plcard__cover,
+.pi-plgrid .pi-plcard:focus-visible .pi-plcard__cover {
+  /* 「抬一下 + 更亮的那圈影」：抬 2px 沿用旧歌单卡的反馈，影对齐 SongCards 的 hover。 */
+  transform: translateY(-2px);
+  box-shadow: var(--pi-shadow-slots-hover);
+}
+.pi-grid .pi-plcard__name,
+.pi-plgrid .pi-plcard__name {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: var(--pi-sc-name-size, 14px);
+  font-weight: 600;
+  line-height: 1.25;
+  color: var(--pi-text);
+  opacity: 0.72;
+  transition: opacity 180ms ease;
+}
+.pi-grid .pi-plcard:hover .pi-plcard__name,
+.pi-grid .pi-plcard:focus-visible .pi-plcard__name,
+.pi-plgrid .pi-plcard:hover .pi-plcard__name,
+.pi-plgrid .pi-plcard:focus-visible .pi-plcard__name {
+  opacity: 1;
+}
+.pi-grid .pi-plcard__meta,
+.pi-plgrid .pi-plcard__meta {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: var(--pi-sc-meta-size, 11px);
+  font-variant-numeric: tabular-nums;
+  color: var(--pi-text-tertiary);
+  opacity: 0.55;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---- 2. 悬浮球里的歌单卡片面板 -------------------------------------- */
+
+/*
+ * 面板是 `.pi-orb` 的绝对定位子元素（球是 `position: fixed`，它就是这里的包含块）。
+ * `left/top/width/height` 由 PiOrb.tsx 按窗口算好写进内联样式：优先贴在球的右边，
+ * 右边放不下就翻到左边，两个方向都按 12px 边距夹回窗口内。
+ * z-index 6 压过 `.pi-orb__item`(3) / `.pi-orb__ball`(2)：点卡片不能先被球吃掉。
+ */
+.pi-orb__plcards {
+  position: absolute;
+  z-index: 6;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border-radius: 18px;
+  border: 1px solid var(--pi-glass-border);
+  background: var(--pi-glass-bg-strong);
+  backdrop-filter: var(--pi-glass-blur);
+  -webkit-backdrop-filter: var(--pi-glass-blur);
+  box-shadow: var(--pi-glass-highlight), var(--pi-glass-edge), var(--pi-glass-shadow);
+  /* 复用环形菜单的进出场关键帧：面板从球那一侧长大、收球时缩回球里。 */
+  animation: pi-orb-pop 0.3s cubic-bezier(0.2, 0.9, 0.25, 1) backwards;
+}
+.pi-orb__plcards[data-side='right'] {
+  transform-origin: left center;
+}
+.pi-orb__plcards[data-side='left'] {
+  transform-origin: right center;
+}
+.pi-orb[data-phase='out'] .pi-orb__plcards {
+  pointer-events: none;
+  animation: pi-orb-dive 0.23s cubic-bezier(0.5, 0, 0.9, 0.6) both;
+}
+/* 进场这一小段（`data-transiting`）里面板也在位移+缩放，模糊层每帧重采样太贵，摘掉。 */
+.pi-orb[data-transiting='true'] .pi-orb__plcards {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.pi-plcards__bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 2px;
+  color: var(--pi-text-sub);
+}
+.pi-plcards__title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--pi-text);
+}
+.pi-plcards__count {
+  margin-left: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--pi-text-tertiary);
+}
+.pi-plcards__hint,
+.pi-plcards__note {
+  margin: 0;
+  font-size: 12px;
+  color: var(--pi-text-tertiary);
+}
+.pi-plcards__hint {
+  padding: 0 2px;
+  color: var(--pi-text-sub);
+}
+.pi-plcards__note {
+  padding: 16px 2px;
+  text-align: center;
+}
+.pi-plcards__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  /* 滚动条占位会挤到卡片宽度，留一点内边距给它。 */
+  padding-right: 4px;
+}
+.pi-plcards__body::-webkit-scrollbar {
+  width: 6px;
+}
+.pi-plcards__body::-webkit-scrollbar-thumb {
+  border-radius: 3px;
+  background: var(--pi-divider);
+}
+/* 面板里的网格比整页的 `.pi-grid`（150px 起）小一号：面板宽 240~560px，
+   132px 起能稳定铺 1~3 列，卡片不至于被压得太扁。 */
+.pi-plgrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  gap: 16px 14px;
+}
+
+/* ---- 3. 先锋歌单列表浮层（第十八轮第 ③ 条：复刻搜索那套卡片流） ------- */
+
+/*
+ * 用户 m01402 第 1 条（「歌单卡片页底部多出了一条白边」）的根因与修法：
+ *
+ * 这一层（`.pi-pllist`）自己并不画底，它只是 10% 白底 + `backdrop-filter: blur(18px)`
+ * 地**透出底下那一页**；底下那一页是 App 塞进主区的播放页（`App.tsx:121` 把 `PAGES.home`
+ * 渲染进 `.pi-main`，`App.tsx:120` 同时下发 `data-avant-list`）。问题出在 `.pi-main`：
+ * 它带着 `padding: 20px 24px 132px`（`global.css:413`，给歌单网格留的滚动内边距），
+ * 而 `.pi-home` 是 `position: relative; height: 100%`（`global.css:1575`）——
+ * `100%` 量的是主区的**内容盒**，于是播放页只占 `100vh − 152px`：上 20px、左右 24px、
+ * 下 132px 空出来的内边距区露的是 `.pi-app::before`（`global.css:390-401`，底部那一停
+ * 是 `#f5faff`）。播放页自己（`data-page='home'`）有 `padding: 0`（`global.css:416-419`），
+ * 所以这条白边**只在这页出现**：用户截图里 y≈833px 往下那条 132px 的平色带实测就是
+ * `rgb(245,250,255)`，与 `#f5faff` 逐位相同。
+ *
+ * 修法是补上与播放页同一条重置，而不是在本层糊一层假背板 —— 这样底下透出来的始终是
+ * **完整铺满整窗的播放页**，本层的模糊才是干净的。`data-avant-list` 的条件
+ * （`uiStyle === 'avant' && isPlaylistNav(nav)`）与本层的挂载条件完全一致，所以：
+ * ① 打开这页的整段时间里白边不存在；② 退场那 260ms 里 nav 仍是歌单页、本规则仍在生效，
+ * 直到 nav 翻成 `home` 时改由 `[data-page='home']` 接管（两条规则的 `padding`/`overflow`
+ * 取值相同），**任何一帧都不会露出白底，退场也不会再出现「等白边消失」的跳变**。
+ *
+ * （等价改法也可以落在 `global.css:416` 那条选择器上，宿主若愿意在源头收口，
+ *   把 `.pi-main[data-avant-list='true']` 并进那条规则即可，这里是等价的就地覆盖。）
+ */
+.pi-main[data-avant-list='true'] {
+  padding: 0;
+  overflow: hidden;
+}
+
+/*
+ * 外壳从原 `.pi-coverflow` 搬过来（那份连同 `playlist-coverflow.css` 一起删了）：
+ * 铺满整窗 + 模糊底，点它（`target === currentTarget`）等于退回播放页；
+ * 左上角只有非交互标签。里面的卡片流换成搜索 / 歌单详情用的同一个 `SongCards`，
+ * 所以这里只管「把它摆到整屏中央」与命中测试 —— 卡片外观与手势全归 `song-cards.css`。
+ *
+ * pointer-events 的三段分工（少一段就会坏一件事）：
+ * - 根 `auto`：接住模糊空白处的点击；
+ * - `.pi-songcards` `none`：它整块铺满整屏，若吃事件就把空白点击全挡在自己身上，永远退不出去；
+ * - 舞台 `auto`：卡片流自己的拖动 / 点击都在舞台这一层（`SongCards` 的 pointer 处理挂在它上面）。
+ * 舞台之外的纵向空白于是落回根节点，卡片上/舞台内的点击仍归卡片流。
+ */
+.pi-pllist {
+  position: fixed;
+  inset: 0;
+  z-index: 18;
+  overflow: clip;
+  isolation: isolate;
+  background: color-mix(in srgb, var(--pi-bg) 10%, transparent);
+  backdrop-filter: blur(18px) saturate(1.12);
+  animation: pi-pllist-in 0.28s ease;
+  touch-action: none;
+  -webkit-app-region: no-drag;
+}
+
+.pi-pllist__head {
+  position: absolute;
+  left: 28px;
+  top: 24px;
+  z-index: 2;
+  /* 左上角只有标签，没有退出键（第十七轮第 ⑤ 条）：交给 CSS 关掉命中，点它等于点空白。 */
+  pointer-events: none;
+  color: var(--pi-text);
+  font-size: 13.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.pi-pllist__label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border: 1px solid var(--pi-glass-border-light);
+  border-radius: 999px;
+  background: var(--pi-glass-bg-light);
+  backdrop-filter: var(--pi-glass-blur-light);
+  box-shadow: var(--pi-glass-highlight);
+}
+
+/* 整条卡片流摆到整屏中央；舞台自己带高度 / 透视 / 裁切（song-cards.css），这里只给宽度与命中。 */
+.pi-pllist .pi-songcards {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.pi-pllist .pi-songcards__stage {
+  width: 100%;
+  pointer-events: auto;
+}
+
+/* 空态（读取失败 / 正在读 / 真的没有）：居中的一句话，形状对齐原 `.pi-coverflow__empty`。 */
+.pi-pllist .pi-placeholder {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  margin: 0;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  padding: 0;
+  color: var(--pi-text-sub);
+  font-size: 13.5px;
+  text-align: center;
+}
+
+@keyframes pi-pllist-in {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+/* ---- 4. 收场动画（用户 m00736 第 7 条 b） --------------------------- */
+
+/*
+ * 这一层由 `App` 按 `nav` 挂 / 卸（nav 一变整棵消失），没有「先播完再卸载」的余地 ——
+ * 所以「动画放完再卸载」是 `PlaylistCoverflowOverlay.tsx` 里 `leave()` 的活：它先给根节点
+ * 挂 `data-leaving="true"`（下面这两条），等 `EXIT_MS`(260ms) 到点才真正跳转。
+ * 两个关键帧都取 240ms —— 比 JS 那 260ms 短 20ms，保证最后一帧落定之后才卸载。
+ *
+ * 收场期间**指针不穿透**：根节点保持吃事件（`pointer-events` 一个字都不改 —— 一关就从这层
+ * 漏到下面的播放页去了），只把卡片流自己关掉。必须连 `.pi-songcards__stage` 一起关：
+ * `.pi-pllist .pi-songcards__stage` 自己声明了 `pointer-events: auto`，祖先写 none 拦不住它
+ * （`pointer-events` 可继承，但后代重新声明 auto 就又能命中）。
+ * 键盘另说：由组件在模块作用域注册的捕获阶段监听吞掉（`exiting` 那 260ms），这里管不着。
+ */
+.pi-pllist[data-leaving='true'] {
+  /* 整层淡出：底下就是播放页，淡出即交叉溶掉，不是「啪」地一下没了。 */
+  animation: pi-pllist-out 240ms cubic-bezier(0.4, 0, 0.9, 0.6) both;
+}
+
+.pi-pllist[data-leaving='true'] .pi-songcards__stage {
+  pointer-events: none;
+  /* 卡片流朝中心收拢并回缩：缩放原点就是舞台中心，所以中心卡原地缩小、两侧往中间收。 */
+  animation: pi-pllist-fold 240ms cubic-bezier(0.4, 0, 0.9, 0.6) both;
+}
+
+@keyframes pi-pllist-out {
+  from {
+    opacity: 1;
+  }
+
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes pi-pllist-fold {
+  from {
+    transform: none;
+  }
+
+  to {
+    transform: scale(0.86) translateY(-4px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pi-pllist,
+  /* 收场这两条关掉之后，`EXIT_MS` 那 260ms 里这一层是「原样停住再消失」——不引入新的动效，
+     也不改 JS 时序（探针要等的那 260ms 照样等）。 */
+  .pi-pllist[data-leaving='true'],
+  .pi-pllist[data-leaving='true'] .pi-songcards__stage {
+    animation: none;
+  }
+}
+
+/* ---- 5. 先锋歌单详情浮层：拼贴贴满整窗（用户 m02213 第 2 条） ---------- */
+
+/*
+ * 用户 m02213 第 2 条：「歌单拼贴界面…是在窗口的窗口中显示，我希望他是 app 中全屏显示」。
+ *
+ * 那层「框」是谁给的（三条都在 `styles/overlays.css`，本文件排在它之后，
+ * 所以这里的覆盖只要特异性不低于它即可，不必跟它比长度）：
+ *   - `overlays.css:236` `.pi-listoverlay { padding: 44px }` —— 第十轮第 4 条（用户 m02362）
+ *     故意留的一圈空白，同处 `:232-235` 的注释写了理由：那一圈是「点玻璃空白退出」时
+ *     唯一能点到 `.pi-listoverlay` 本身的地方；
+ *   - `overlays.css:258-259`
+ *     `.pi-listoverlay__sheet { width: min(1080px, 100%); height: min(760px, 100%) }`
+ *     —— 这才是用户截图里「窗口里的窗口」：拼贴只占这张 1080×760 的纸里的一格；
+ *   - `overlays.css:282` `.pi-listoverlay .pi-detail { grid-template-rows: 48px 1fr }`
+ *     —— 顶栏再从纸上切走 48px（`:294-305` 的注释写明了当初为什么要这样：不切的话
+ *     拼贴画布会盖住顶栏，「歌单」那行字与退出用的空白都点不着）。
+ * 三条叠起来 = 居中一块 1080×712 的板子 + 四周糊掉的播放页，这就是「框」。
+ *
+ * 只对**先锋歌单详情**这一档收口：`--collage` 与 `data-playlist` 两个标记都由
+ * `components/SongListOverlay.tsx:59-61` 下发；歌手/专辑/队列那一档（`data-songs`）
+ * 和 `.pi-songpage-overlay__box`（歌手/专辑独立页，`overlays.css:407-422`）没有
+ * `data-playlist`，一个字都不受影响。改的是三件事：
+ *   ① 外层留白清零、纸铺满整窗 → `.pi-detail__body` 就是整个窗口；
+ *   ② 顶栏那一行**根本不占网格行**（它是绝对定位的，见下），网格只留正文那一行
+ *      （`grid-template-rows: 1fr` —— 用户 m02898 第 6 条(a) 修的就是这里，老写法
+ *      `0 1fr` 会把正文塞进那 0px 的第一行、把拼贴压成 104px 高），拼贴的定位基准
+ *      因此拿到整窗高度；
+ *   ③ 顶栏改成**浮在拼贴之上**的一条（绝对定位 + 自上而下渐隐的衬底），
+ *      「歌单 / 添加歌曲」照旧可读可点 —— 用户要的是「拼贴铺满」，不是「把工具藏起来」。
+ *
+ * 拼贴的几何不用动：`SongCollage` 用 ResizeObserver 量**根节点**的矩形再算格子
+ * （`components/SongCollage.tsx:874-894`），画布从「窗口减 48px」变成整窗之后它会自己重算。
+ * 底栏（`BottomBar` → `.pi-collage-bar`，`global.css:2952`，z-index 6）与它上面的进度条
+ * 本来就在拼贴（z-index 0）之上，这轮没碰；`overlays.css:326-328` 那条
+ * `padding-bottom: 104px` 也只影响内容盒，绝对定位的拼贴照旧铺满，所以底栏那条不用改。
+ *
+ * 代价说清楚：「点玻璃空白退出」在这一档没有了 —— 那圈空白正是用户要去掉的「框」，
+ * 不能既要铺满又要留一圈空白。退出路径还剩两条：Esc（`PlaylistDetail` 自己注册的那条）
+ * 与顶栏右侧的「添加歌曲」旁边的收起/关闭（以及播放页底栏那条药丸）。
+ */
+.pi-listoverlay--collage[data-playlist] {
+  padding: 0;
+}
+
+.pi-listoverlay--collage[data-playlist] .pi-listoverlay__sheet {
+  width: 100%;
+  height: 100%;
+}
+
+.pi-listoverlay--collage[data-playlist] .pi-detail {
+  /* 用户 m02898 第 6 条(a)：**这里只能有「一行」**。
+     原来写的是 `0 1fr`（给顶栏留 0px 行、正文占 1fr），但下面一条把 `.pi-detail__bar`
+     改成了 `position: absolute` —— 顶栏一旦出流，`.pi-detail__body` 就成了**第一个在流内的
+     网格项**、被自动放进第 1 条轨道（那 0px），高度只剩它自己的 `padding-bottom: 104px`
+     （`overlays.css:322-328`）。于是绝对定位的 `.pi-collage`（inset:0，基准是 body 的
+     padding box）也只有 104px 高：屏顶只剩一条拼贴方格，下面整片透出浮层自己的
+     `backdrop-filter: blur(16px)` + 8% 底色（`overlays.css:241-243`）糊过的播放页 ——
+     就是用户图 4 与 `docs/m3r25-playlist-fullscreen.png` 里那片「模糊遮罩」。
+     修法：只声明真实存在的那一行，正文自己占满整窗（拼贴因此拿到整窗高度）。 */
+  grid-template-rows: 1fr;
+}
+
+.pi-listoverlay--collage[data-playlist] .pi-detail__bar {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  z-index: 2;
+  height: 48px;
+  /* 一条自上而下渐隐的衬底：拼贴从这条底下穿过去，字与按钮仍然清楚，
+     又不会在顶部重新长出一道「框」的硬边。 */
+  background: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--pi-bg) 82%, transparent),
+    color-mix(in srgb, var(--pi-bg) 40%, transparent) 60%,
+    transparent
+  );
+  /* 这一条底下就是画布：只有按钮自己接指针，别把整条 48px 变成「拖不动的天花板」。 */
+  pointer-events: none;
+}
+
+.pi-listoverlay--collage[data-playlist] .pi-detail__bar button {
+  pointer-events: auto;
+}

@@ -1,0 +1,236 @@
+/*
+ * 「收藏到歌单」选歌单浮窗（用户 m02898 第 3 条）。
+ * 组件：`components/PlaylistPickerOverlay.tsx`；挂载点在 `pages/HomePage.tsx` 的
+ * `<HomePage>` 返回的 JSX 里（和 `<QuickDock />` 并排），所以这一层是**窗口居中**的固定定位浮层。
+ *
+ * 颜色一律走 tokens.css 的 `--pi-*`（与 `styles/quick-panels.css` 同一套取值），不写死色值。
+ *
+ * ## 为什么不会跟既有规则打架
+ * 1. 类名全新且带 `pi-picker` 前缀：本仓既有样式里没有任何 `.pi-picker*` 规则
+ *    （`grep -rn "pi-picker" apps/renderer/src` 只有本文件与那个组件自己）。
+ * 2. 唯一刻意「覆盖」既有规则的是下面 `.pi-home__toast.pi-picker-toast` 那一条：它用**两个**
+ *    类名（特异性 0-2-0）去压 `styles/global.css:3516` 的 `.pi-home__toast`（0-1-0），
+ *    所以无论 `main.tsx` 的 import 顺序怎么排都赢，不依赖「谁在后面」。
+ * 3. 层叠上下文：`.pi-picker` 的 `z-index: 62` 高于快捷卡片的 46（`quick-panels.css:19`）、
+ *    登录浮层的 40（`global.css:796`）与右侧抽屉的 8（`global.css:3536`），
+ *    因为它是「从名片里点出来」的浮窗，必须压在卡片之上；`pointer-events: none` 只用来让这一层
+ *    不挡指针，真正的命中区是背板与卡片自己。
+ * 4. `position: fixed` 在 `.pi-home`（`global.css:1580`，`position: relative; overflow: hidden`，
+ *    无 transform/filter）下面不会被收成局部定位——现成的 `.pi-quick-layer`（同样是 fixed 且挂在
+ *    `.pi-home` 里）就是这么居中的，这里照抄同一套约定。
+ */
+
+.pi-picker {
+  position: fixed;
+  inset: 0;
+  z-index: 62;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  /* 定位容器自己不吃指针；背板与卡片各自 auto。 */
+  pointer-events: none;
+}
+
+.pi-picker__backdrop {
+  position: absolute;
+  inset: 0;
+  pointer-events: auto;
+  background: color-mix(in srgb, var(--pi-text) 26%, transparent);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+  animation: pi-picker-fade-in 0.16s ease;
+}
+
+@keyframes pi-picker-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.pi-picker__card {
+  position: relative;
+  pointer-events: auto;
+  display: grid;
+  gap: 10px;
+  width: min(340px, 92vw);
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+  padding: 16px;
+  border: 1px solid var(--pi-divider);
+  border-radius: 18px;
+  background: var(--pi-surface);
+  box-shadow: var(--pi-glass-edge), var(--pi-shadow-float);
+  animation: pi-picker-card-in 0.22s cubic-bezier(0.34, 1.4, 0.64, 1);
+}
+
+@keyframes pi-picker-card-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.pi-picker__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pi-picker__title {
+  flex: 1;
+  margin: 0;
+  color: var(--pi-text);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.pi-picker__close {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--pi-divider);
+  border-radius: 50%;
+  background: var(--pi-bg-subtle);
+  color: var(--pi-text-sub);
+  cursor: pointer;
+  transition:
+    color 0.16s ease,
+    background 0.16s ease;
+}
+
+.pi-picker__close:hover {
+  color: var(--pi-text);
+  background: var(--pi-primary-weak);
+}
+
+/* 我的歌单列表：一行一个，整行可点。 */
+.pi-picker__list {
+  display: grid;
+  gap: 6px;
+}
+
+.pi-picker__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  background: var(--pi-bg-subtle);
+  color: var(--pi-text);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background 0.16s ease,
+    border-color 0.16s ease;
+}
+
+.pi-picker__row:hover:not(:disabled) {
+  border-color: var(--pi-primary);
+  background: var(--pi-primary-weak);
+}
+
+.pi-picker__row:disabled {
+  cursor: default;
+  opacity: 0.72;
+}
+
+/* 正在提交的那一行：和快捷卡片的选中态（`.pi-quick-chip[data-active='true']`）同一套语义。 */
+.pi-picker__row[data-active='true'] {
+  border-color: var(--pi-primary);
+  background: var(--pi-primary-weak);
+}
+
+.pi-picker__cover {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border-radius: 9px;
+  object-fit: cover;
+  background: var(--pi-surface);
+  box-shadow: var(--pi-glass-edge);
+}
+
+.pi-picker__cover--empty {
+  display: grid;
+  place-items: center;
+  color: var(--pi-primary-deep);
+}
+
+.pi-picker__meta {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.pi-picker__name {
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pi-picker__count {
+  color: var(--pi-text-tertiary);
+  font-size: 11px;
+}
+
+.pi-picker__busy {
+  margin-left: auto;
+  color: var(--pi-primary-deep);
+  font-size: 11.5px;
+}
+
+.pi-picker__empty {
+  margin: 0;
+  padding: 18px 0;
+  color: var(--pi-text-sub);
+  font-size: 12.5px;
+  text-align: center;
+}
+
+.pi-picker__error {
+  margin: 0;
+  padding: 9px 12px;
+  border: 1px solid var(--pi-divider);
+  border-radius: 12px;
+  background: var(--pi-bg-subtle);
+  color: var(--pi-text);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/*
+ * 加歌成功的轻提示。
+ *
+ * 元素在 `pages/HomePage.tsx` 里带两个类名：`pi-home__toast pi-picker-toast`——
+ * 长相（底/字色/内边距/圆角/字号）继续吃 `global.css:3516` 的 `.pi-home__toast`，
+ * 这里只把它从「名片正上方」挪到**窗口底部居中**（`.pi-home__toast` 是 `position: absolute`，
+ * 挂在这一层时参照物不定，所以改成 fixed 才稳稳贴着窗口底）。
+ * 用两个类名（0-2-0）压一个类名（0-1-0），import 顺序怎么变都赢。
+ */
+.pi-home__toast.pi-picker-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 46px;
+  z-index: 63;
+  transform: translateX(-50%);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pi-picker__card,
+  .pi-picker__backdrop {
+    animation: none;
+  }
+}

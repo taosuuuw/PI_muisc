@@ -1,0 +1,475 @@
+/* ==========================================================================
+   我的下载（M5 渲染层）
+   --------------------------------------------------------------------------
+   只用仓库既有的设计令牌（`--pi-*`，见 styles/tokens.css），不新引入颜色常量：
+   亮/暗主题各有一份同名变量，这里写的每一处都跟着主题走。
+   两种排版都照顾到：平凡风格是「扁平面板 + 分隔线」，先锋风格换成玻璃卡片
+   （`[data-ui-style='avant']`，根节点在 App.tsx:117）。
+
+   行内的进度条宽度由组件内联写死（`style={{width:'<pct>%'}}`），因为那是十几毫秒
+   一次的数据；这里只负责它的外观与不确定态动画。
+   ========================================================================== */
+
+.pi-dl {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+}
+
+/* ------------------------------------------------------------------ 工具栏 */
+
+.pi-dl__bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.pi-dl__add {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.pi-dl__add:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* 「会用哪档音质」的小药丸：不给设置还没到手的时候编一个假档位。 */
+.pi-dl__quality-hint {
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--pi-primary-deep);
+  background: color-mix(in srgb, var(--pi-primary) 12%, transparent);
+}
+
+.pi-dl__summary {
+  font-size: 12.5px;
+  color: var(--pi-text-sub);
+}
+
+.pi-dl__failure {
+  margin: 0;
+  padding: 9px 12px;
+  border-radius: var(--pi-radius-card);
+  font-size: 12.5px;
+  color: var(--pi-danger, #d9534f);
+  background: color-mix(in srgb, var(--pi-danger, #d9534f) 9%, transparent);
+}
+
+.pi-dl__empty {
+  /* 空态沿用全站的 `.pi-card .pi-placeholder` 外观，只补一点呼吸感。 */
+  padding-top: 22px;
+  padding-bottom: 22px;
+}
+
+/* ------------------------------------------------------------------- 列表 */
+
+.pi-dl__list {
+  list-style: none;
+  margin: 0;
+  padding: 0 4px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  /* 行数多的时候列表自己滚，不把整页撑长（下载几百首是常态）。 */
+  max-height: min(62vh, 620px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.pi-dl__item {
+  animation: pi-dl-in 220ms ease both;
+}
+
+.pi-dl__row {
+  display: grid;
+  grid-template-columns: 46px minmax(0, 1fr) auto auto auto auto max-content;
+  grid-template-areas:
+    'cover main quality bytes status local actions'
+    'track track track track track track track'
+    'err err err err err err err'
+    'warn warn warn warn warn warn warn';
+  align-items: center;
+  gap: 4px 12px;
+  padding: 10px 14px;
+  border-radius: var(--pi-radius-card);
+  background: var(--pi-surface);
+  box-shadow: var(--pi-shadow-card);
+}
+
+/* 每行只有前两行（信息 + 进度）是常驻的，后面两块按需出现；
+   没有内容时它们不占空间，行高自然收窄。 */
+.pi-dl__row > .pi-dl__track {
+  margin-top: 6px;
+}
+
+.pi-dl__cover {
+  grid-area: cover;
+  width: 46px;
+  height: 46px;
+  border-radius: var(--pi-radius-cover);
+  overflow: hidden;
+  background: var(--pi-bg-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.pi-dl__cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.pi-dl__cover-empty {
+  color: var(--pi-text-tertiary);
+  display: flex;
+}
+
+.pi-dl__main {
+  grid-area: main;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0; /* 没有它，长歌名不会省略号而是把整行撑宽 */
+}
+
+.pi-dl__name {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--pi-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pi-dl__sub {
+  font-size: 12px;
+  color: var(--pi-text-sub);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pi-dl__quality {
+  grid-area: quality;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 16px;
+  white-space: nowrap;
+  color: var(--pi-text-sub);
+  background: var(--pi-bg-subtle);
+  box-shadow: var(--pi-glass-edge);
+}
+
+.pi-dl__bytes {
+  grid-area: bytes;
+  font-size: 12px;
+  white-space: nowrap;
+  color: var(--pi-text-tertiary);
+  font-variant-numeric: tabular-nums; /* 字节数跳动时数字不左右晃 */
+}
+
+.pi-dl__status {
+  grid-area: status;
+  font-size: 12px;
+  white-space: nowrap;
+  color: var(--pi-text-sub);
+}
+
+.pi-dl__row[data-download-status='downloading'] .pi-dl__status,
+.pi-dl__row[data-download-status='done'] .pi-dl__status {
+  color: var(--pi-primary-deep);
+}
+
+.pi-dl__row[data-download-status='error'] .pi-dl__status,
+.pi-dl__row[data-download-status='missing'] .pi-dl__status {
+  color: var(--pi-danger, #d9534f);
+}
+
+/* 「离线也能播」的显式标记。 */
+.pi-dl__local {
+  grid-area: local;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 16px;
+  white-space: nowrap;
+  color: var(--pi-primary-deep);
+  background: color-mix(in srgb, var(--pi-primary) 14%, transparent);
+}
+
+.pi-dl__actions {
+  grid-area: actions;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  justify-self: end;
+}
+
+.pi-dl__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 999px;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  color: var(--pi-text-sub);
+  background: var(--pi-bg-subtle);
+  box-shadow: var(--pi-glass-edge);
+  transition: color 140ms ease, background 140ms ease;
+}
+
+.pi-dl__btn:hover {
+  color: var(--pi-primary-deep);
+  background: color-mix(in srgb, var(--pi-primary) 12%, transparent);
+}
+
+.pi-dl__btn--play {
+  color: var(--pi-primary-deep);
+  background: color-mix(in srgb, var(--pi-primary) 12%, transparent);
+}
+
+.pi-dl__btn--danger {
+  color: var(--pi-danger, #d9534f);
+  background: color-mix(in srgb, var(--pi-danger, #d9534f) 10%, transparent);
+}
+
+.pi-dl__btn--danger:hover {
+  color: #fff;
+  background: var(--pi-danger, #d9534f);
+}
+
+/* ----------------------------------------------------------------- 进度条 */
+
+.pi-dl__track {
+  grid-area: track;
+  display: block;
+  height: 4px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--pi-text) 10%, transparent);
+}
+
+.pi-dl__progress {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--pi-primary), var(--pi-primary-deep));
+  transition: width 260ms ease;
+}
+
+/*
+ * 总量未知（服务端没给 content-length）时，组件内联写的是 `width: 0%`；
+ * 这里用 !important 把它换成一条来回扫的滑块 —— 内联样式优先级最高，
+ * 不加 !important 是压不住的（也就不会有这条不确定态动画）。
+ */
+.pi-dl__progress[data-download-indeterminate='true'] {
+  width: 38% !important;
+  animation: pi-dl-scan 1.15s ease-in-out infinite;
+}
+
+@keyframes pi-dl-scan {
+  from {
+    transform: translateX(-110%);
+  }
+  to {
+    transform: translateX(300%);
+  }
+}
+
+/* --------------------------------------------------------------- 错误提示 */
+
+.pi-dl__error {
+  grid-area: err;
+  font-size: 12px;
+  line-height: 1.5;
+  word-break: break-word;
+  color: var(--pi-danger, #d9534f);
+}
+
+.pi-dl__warn {
+  grid-area: warn;
+  margin-top: 2px;
+  padding: 6px 9px;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--pi-danger, #d9534f);
+  background: color-mix(in srgb, var(--pi-danger, #d9534f) 9%, transparent);
+}
+
+@keyframes pi-dl-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ------------------------------------------------- 先锋风格（[data-ui-style]） */
+
+[data-ui-style='avant'] .pi-dl__row {
+  border-radius: 18px;
+  background: var(--pi-glass-bg);
+  backdrop-filter: var(--pi-glass-blur);
+  -webkit-backdrop-filter: var(--pi-glass-blur);
+  box-shadow: var(--pi-glass-edge), var(--pi-glass-highlight), var(--pi-shadow-slots);
+}
+
+[data-ui-style='avant'] .pi-dl__btn {
+  background: var(--pi-glass-bg-light);
+  box-shadow: var(--pi-glass-edge);
+}
+
+[data-ui-style='avant'] .pi-dl__quality {
+  background: var(--pi-glass-bg-light);
+}
+
+/* --------------------------------------------------- 本地库（只读清单） */
+
+.pi-lib {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  margin-top: 4px;
+}
+
+.pi-lib__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.pi-lib__title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--pi-text);
+}
+
+.pi-lib__rescan {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pi-lib__rescan:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* 绝对路径可能很长：给它整行折行，不撑破页面。 */
+.pi-lib__dir {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--pi-text-tertiary);
+  overflow-wrap: anywhere;
+}
+
+.pi-lib__list {
+  list-style: none;
+  margin: 0;
+  padding: 0 4px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: min(38vh, 360px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.pi-lib__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 12px;
+  border-radius: 10px;
+  background: var(--pi-bg-subtle);
+}
+
+.pi-lib__name {
+  font-size: 13px;
+  color: var(--pi-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pi-lib__artists {
+  font-size: 12px;
+  color: var(--pi-text-sub);
+  max-width: 32ch;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pi-lib__ext {
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 16px;
+  text-transform: uppercase;
+  color: var(--pi-text-sub);
+  background: color-mix(in srgb, var(--pi-text) 7%, transparent);
+}
+
+.pi-lib__size {
+  font-size: 12px;
+  white-space: nowrap;
+  color: var(--pi-text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+[data-ui-style='avant'] .pi-lib__row {
+  border-radius: 14px;
+  background: var(--pi-glass-bg);
+  backdrop-filter: var(--pi-glass-blur);
+  -webkit-backdrop-filter: var(--pi-glass-blur);
+  box-shadow: var(--pi-glass-edge), var(--pi-glass-highlight);
+}
+
+[data-ui-style='avant'] .pi-lib__ext {
+  background: var(--pi-glass-bg-light);
+}
+
+/* --------------------------------------------------------------- 动效开关 */
+
+/* 跟仓库其它样式文件同一套写法：reduced-motion 下把动画关掉、把位移清掉。 */
+@media (prefers-reduced-motion: reduce) {
+  .pi-dl__item,
+  .pi-dl__progress[data-download-indeterminate='true'] {
+    animation: none;
+  }
+
+  .pi-dl__progress {
+    transition: none;
+  }
+
+  .pi-dl__item {
+    transform: none;
+  }
+
+  .pi-dl__btn {
+    transition: none;
+  }
+}

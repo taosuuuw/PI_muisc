@@ -1,0 +1,20 @@
+# 行尾统一为 LF —— 与 .prettierrc.json 的 "endOfLine": "lf" 保持一致。
+# 否则在 Windows 上 core.autocrlf 会把检出改成 CRLF，导致同一文件反复整篇 diff。
+* text=auto eol=lf
+
+# 二进制资源：禁止任何行尾/编码转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.gif binary
+*.ico binary
+*.exe binary
+*.dll binary
+*.node binary
+
+# 锁文件按文本处理（便于 review diff），但 merge 冲突时不要逐行合并
+pnpm-lock.yaml text eol=lf -merge
+
+# Git 自动生成的合并/差异文件不参与统计
+docs/**/*.png linguist-documentation

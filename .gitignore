@@ -1,0 +1,82 @@
+node_modules/
+dist/
+out/
+release/
+.turbo/
+*.tsbuildinfo
+
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+.env
+.env.local
+.DS_Store
+Thumbs.db
+
+# 本地运行数据（正常情况下在 userData，不放仓库）
+.tmp/
+
+# 冒烟/调试时 Electron 的临时 profile（必须放仓库内，理由见 README「音源冒烟」一节）
+.smoke-profile/
+
+# 冒烟时伪造的本地曲库目录（L4 本地源验收用，跑完会自己删掉）
+.smoke-local/
+
+# 界面冒烟用的 profile（从 %APPDATA%\@pi\desktop 复制出来，保留登录态才能验评论区）
+.ui-profile/
+
+# ---------------------------------------------------------------------------
+# 构建产物与「跑一次就能重建」的临时文件。
+# 上面已有的 `dist/` `out/` `release/` `.turbo/` `*.log` 都是宽匹配，这里再显式列一遍：
+# 免得以后有人清理宽匹配时把它们漏掉，让几十 MB 产物混进提交。
+# `scripts/clean.mjs` 删的就是下面这批（默认 dry-run，`--apply` 才真删）。
+# ---------------------------------------------------------------------------
+apps/*/dist/
+apps/desktop/out/
+.turbo/
+release/
+
+# 门禁 / 冒烟 / 临时探针产物（根目录）
+.gate-*
+.tmp-*
+*.log
+
+# ---------------------------------------------------------------------------
+# 根目录的「一次性诊断输出」。这些是 tsc / vitest / electron 冒烟跑一遍就会重写的
+# 中间产物（日志、错误转录、探针脚本输出、对比截图），属于工程临时文件，不进仓库。
+# 它们是 `.` 开头，但**不能**用 `.*` 宽匹配——`.gitignore` `.npmrc` `.editorconfig`
+# `.prettierrc.json` `.prettierignore` 都是必须提交的，所以这里逐个列。
+# ---------------------------------------------------------------------------
+.b614*.txt
+.build-*.err
+.build-*.out
+.d-build.*
+.d-tsc.*
+.r-build.*
+.r-tsc.*
+.tsc-*.err
+.tsc-*.out
+.tsc-*.txt
+.vitest.err
+.vitest.out
+.gs-*.txt
+.smoke-*.txt
+.smoke*.txt
+.smokelog*.txt
+.[klmn]-u8.txt
+.t1.txt
+
+# Mnemon 本地记忆数据（本机运行态，不是源码）
+.mnemon/
+
+# ---------------------------------------------------------------------------
+# 【合规】folia-major 复刻速查（本地研究资料，**不随公开仓库分发**）
+# 该文件含约 100 个从 chthollyphile/folia-major（AGPL-3.0）**逐字复制**的源码片段
+# （tailwind.config、.css、.tsx，部分还带着原文的 GBK 乱码注释）。
+# 本仓库是公开库且没有 LICENSE，分发这些片段等于在无授权情况下再分发 AGPL 代码，
+# 也与 docs/CREDITS.md 自己「未复制任何源码 / 未对外分发」的声明矛盾。
+# 因此文件保留在本地磁盘（未删除），只是不入库；相关数值结论已由 docs/CREDITS.md 转述。
+# 详见 docs/CREDITS.md §4「合规注意」与 §1。
+# ---------------------------------------------------------------------------
+folia-major-复刻速查.md

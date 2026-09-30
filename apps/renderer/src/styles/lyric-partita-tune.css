@@ -1,0 +1,36 @@
+/**
+ * 云阶（partita）**行级微调补丁**——用户第十四轮第 6 条（m05281，参考图 3 / 图 4）。
+ *
+ * 只放两件事；字号 / 横向偏移 / 行距 / 当前行的颜色全部在 `PartitaTheme.tsx` 里算成
+ * **行内变量**（行内声明的优先级最高，不用跟 `lyric-themes.css` 抢先后）：
+ *
+ *  1. `.pi-lyricpartita__col` 的 `transform` 过渡：当前进度落到另一块时，那一块会变大、
+ *     相邻的行距会重新收紧，整段楼梯要**平滑滑到新位置**而不是硬跳。
+ *     （React 的 key 稳定，所以同一行的同一个块会复用元素，过渡真的会跑。）
+ *
+ *  2. 当前进度那一块的**辉光**：两层 `text-shadow`（近核 + 远晕）。
+ *     半径与颜色由行内 `--pi-partita-glow-*` 给，JS 那边已经乘过 `glowIntensity`；
+ *     `glowIntensity = 0` 时半径是 `0px`、颜色是 `transparent`，等于不画。
+ *
+ * **不要**在这个文件里写 `transition` 简写去覆盖 `.pi-lyricpartita__word`：
+ * `lyric-themes.css` 把「三态（waiting / active / passed）」的 opacity / transform / filter
+ * 三条过渡写在同一个简写里，覆盖会把进场 / 出场动效一起抹掉。字素自己的过渡一概不动。
+ */
+
+.pi-lyricpartita__col {
+  transition: transform 0.42s cubic-bezier(0.34, 1.25, 0.5, 1);
+}
+
+.pi-lyricpartita__col[data-current='true'] .pi-lyricpartita__word {
+  text-shadow:
+    0 0 var(--pi-partita-glow-core, 0px) var(--pi-partita-glow-color, transparent),
+    0 0 var(--pi-partita-glow-blur, 0px) var(--pi-partita-glow-color, transparent);
+}
+
+/* 减少动效：跟 `lyric-themes.css` 尾部那条 `@media (prefers-reduced-motion: reduce)` 一个态度，
+   位置变化也不再补间（否则「减少动效」下还会看到一段滑动）。 */
+@media (prefers-reduced-motion: reduce) {
+  .pi-lyricpartita__col {
+    transition: none !important;
+  }
+}
