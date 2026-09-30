@@ -1,7 +1,7 @@
 # 鸣谢与借鉴来源
 
 > 这份文件回答两件事：**PI 在界面/动效上借鉴了谁、具体借了什么**，以及**被借鉴项目的授权状况**。
-> 与 [PLAN.md](./PLAN.md)（计划与验收）、[README.md](../README.md)（怎么跑起来）分工不同：这里是「来源账本」。
+> 与 [PLAN.md](./PLAN.md)（计划与验收）、[DEVELOPMENT.md](./DEVELOPMENT.md)（怎么跑起来）分工不同：这里是「来源账本」。
 > 最后更新：2026-09-27（用户 m08768 第七轮：五套歌词主题、沉浸式情绪背景、封面流与设置边框页；
 > 并在 §5 记下我们在它的源码里发现的**提示注入式注释**）。
 
@@ -104,7 +104,7 @@ folia 的 README 原文有一节 `## 致谢`，点名了下面这些项目；我
 | 项目 | 它是什么 | 与 PI 的关系 |
 |---|---|---|
 | [`chenmozhijin/LDDC`](https://github.com/chenmozhijin/LDDC) | 简单易用的精准歌词（逐字歌词/卡拉 OK）下载匹配工具 | **仅登记，未使用**。我们的逐字时间轴是自己按行时长均分的（数据层没有逐字时间戳） |
-| [`NeteaseCloudMusicApiEnhanced/api-enhanced`](https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced) | 网易云音乐 API 服务端（社区增强分支） | 同一技术路线。PI 的音源体系走的是「网易云官方接口 + UNM 第三方聚合 + 本地文件 + LX 插件自定义源」，见 [README.md](../README.md) 的「音源体系」 |
+| [`NeteaseCloudMusicApiEnhanced/api-enhanced`](https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced) | 网易云音乐 API 服务端（社区增强分支） | 同一技术路线。PI 的音源体系走的是「网易云官方接口 + UNM 第三方聚合 + 本地文件 + LX 插件自定义源」，见 [DEVELOPMENT.md](./DEVELOPMENT.md) 的「音源体系（M2.5）」 |
 | [`chenglou/pretext`](https://github.com/chenglou/pretext) | 快速、精确、全面的**文本测量与排版**库 | **仅登记**。folia 用它做歌词排版；我们的歌词舞台靠 CSS 断行 + `Intl.Segmenter` 切字素 |
 | [`MakcRe/KuGouMusicApi`](https://github.com/MakcRe/KuGouMusicApi) | 酷狗音乐 API 服务 | **仅登记**。PI 目前没有接酷狗音源 |
 | [`paper-design/shaders`](https://github.com/paper-design/shaders) | 着色器库（folia 的 GPU 视觉用到） | **仅登记**。PI 没有 GPU 着色器视觉（未进一步核对该仓库用途） |
