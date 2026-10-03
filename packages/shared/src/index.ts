@@ -15,14 +15,7 @@
  * - `flac` / `flac24bit`：LX Music 自定义音源协议使用的等级
  */
 export type Quality =
-  | 'standard'
-  | 'higher'
-  | 'exhigh'
-  | 'lossless'
-  | 'hires'
-  | 'jymaster'
-  | 'flac'
-  | 'flac24bit';
+  'standard' | 'higher' | 'exhigh' | 'lossless' | 'hires' | 'jymaster' | 'flac' | 'flac24bit';
 
 /** 由低到高。用于「取不超过账号上限的最高可用音质」这类比较。 */
 export const QUALITY_ORDER: readonly Quality[] = [
@@ -394,7 +387,7 @@ export interface LyricTuning {
   fontScale: number;
   /** 动效幅度 0.4~1.6；缩放「随机错落 / 飘移幅值」，`1` = 改造前的观感。 */
   motionAmount: number;
-  /** 辉光强度 0~1.6；缩放 text-shadow 的模糊半径与透明度，`1` = 改造前的观感。 */
+  /** 辉光强度 0~1.6；缩放 text-shadow 的模糊半径与透明度，默认 1.5（见下面默认值处的说明）。 */
   glowIntensity: number;
   /** 逐帧主题（fume / cadenza / pendolo / tilt）的帧率上限。 */
   fpsCap: LyricFpsCap;
@@ -436,12 +429,20 @@ export const DEFAULT_LYRIC_TUNING: LyricTuning = {
   themeOpacity: 1,
   fontScale: 1,
   motionAmount: 1,
-  glowIntensity: 1,
+  /*
+   * 辉光强度默认 `1.5`（用户第二十五轮第 1 条：「辉光的默认强度调到如图 1 所示」）。
+   *
+   * 那张图里的辉光又宽又亮（晕散半径约等于字高的三成、alpha 也高），比改造前的观感明显重，
+   * 所以默认不再等于「改造前的 1」，而是取滑杆高位 1.5（上限是 1.6，留一档余量）。
+   * 注意：**已经存过盘的 profile 不受影响** —— 默认值只在没存过 / 复位后才生效，
+   * 想看这一档的效果要在设置里点一下复位键（或把滑杆拉过去）。
+   */
+  glowIntensity: 1.5,
   fpsCap: 'off',
   randomThemePerSong: false,
   fumeCameraFollow: 'smooth',
   fumeCameraSpeed: 1,
-  classicWordSpin: false,
+  classicWordSpin: true,
   partitaGuides: true,
   // 参考图 4 的读数就是 20px / 100px，也是改造前错落幅度的上下界。
   partitaStaggerMin: 20,

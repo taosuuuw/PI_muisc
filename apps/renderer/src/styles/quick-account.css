@@ -101,7 +101,7 @@
 
 /*
  * 右侧那颗按键：做成真按钮（描边 + 圆角药丸 + hover 填色），
- * 尺寸与 `.pi-quick-chip` 同档，但用主色描边把它从「一行文字」里拎出来。
+ * 尺寸与 `.pi-quick-choice`（分页里的方形选项键）同档，但用主色描边把它从「一行文字」里拎出来。
  */
 .pi-quick-account__action {
   flex: none;
@@ -121,7 +121,8 @@
 
 .pi-quick-account__action:hover {
   background: var(--pi-primary);
-  color: #fff;
+  /* 主色底上的字读 `--pi-on-primary`（用户第二十一轮第 5 条：主色可换成黑白/自定义）。 */
+  color: var(--pi-on-primary, #fff);
 }
 
 .pi-quick-account__action:focus-visible {

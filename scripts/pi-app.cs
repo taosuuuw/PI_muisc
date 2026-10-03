@@ -53,9 +53,9 @@ using Microsoft.Win32;
 [assembly: AssemblyProduct("PI")]
 [assembly: AssemblyCompany("PI")]
 [assembly: AssemblyCopyright("© 2026 PI")]
-[assembly: AssemblyFileVersion("0.1.0.0")]
-[assembly: AssemblyInformationalVersion("0.1.0")]
-[assembly: AssemblyVersion("0.1.0.0")]
+[assembly: AssemblyFileVersion("0.8.0.0")]
+[assembly: AssemblyInformationalVersion("0.8.0")]
+[assembly: AssemblyVersion("0.8.0.0")]
 
 namespace PiSetup
 {
@@ -67,7 +67,7 @@ namespace PiSetup
         internal const string AppName = "PI";
         internal const string AppExeName = "pi.exe";
         internal const string UninstExeName = "卸载 PI.exe";
-        internal const string ProductVersion = "0.1.0";
+        internal const string ProductVersion = "0.8.0";
         internal const string PublisherName = "PI";
         internal const string AppDescription = "PI —— 桌面音乐应用";
 

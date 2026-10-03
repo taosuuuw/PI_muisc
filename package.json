@@ -1,6 +1,6 @@
 {
   "name": "pi",
-  "version": "0.1.0",
+  "version": "0.8.0",
   "private": true,
   "description": "PI —— 桌面音乐应用（网易云音乐数据 + 多源音源解析链）",
   "packageManager": "pnpm@10.34.5",

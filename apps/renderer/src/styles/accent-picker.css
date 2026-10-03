@@ -1,0 +1,170 @@
+/*
+ * 自定义主题色的取色面板（用户第二十二轮第 2 条，`components/AccentPicker.tsx`）。
+ *
+ * 结构照图 2 + 图 3：一块**选色方块**（白→纯色 横向渐变 叠 透明→黑 纵向渐变，里面一个圆环手柄）
+ * + 一条**色相彩虹条**（同样圆环手柄）+ **当前选色**（色块 + 十六进制输入）
+ * + **推荐色**（12 枚圆角方块，四列三行）。
+ *
+ * 颜色一律走 tokens.css 的 `--pi-*`（深/浅档自动跟着变）；唯独方块与彩虹条本身是
+ * 「这一块的意义就是显示颜色」，所以用内联的渐变（组件里算好）。
+ * 这一张表独立成文件：设置页与快捷设置卡都会用到它（quick-panels.css 不该长成第二个设置页）。
+ */
+
+.pi-accent-picker {
+  display: grid;
+  gap: 10px;
+  width: 100%;
+  /*
+   * 限宽：设置面板本身有 800+ px，若让方块铺满整宽，它会长成 800×750、把色相条与推荐色
+   * 全顶到可视区外面（第二十二轮实拍就是这样）。图 2 那块取色器是**中等方块**，而且四条内容
+   * （方块 / 色相条 / 当前选色 / 推荐色）在参考图里是一屏看全的 —— 380px 方块（380×356）
+   * 加上后面三条约 170px，正好落在设置框可视高度里，不用滚动。
+   */
+  max-width: 380px;
+  /* 面板内部这一圈用同一套圆角，视觉上是一块整体（图 2 里那块取色器就是圆角面板里的方块）。 */
+  --pi-accent-radius: 12px;
+}
+
+/* ---- 选色方块 ---- */
+
+.pi-accent-picker__sv {
+  position: relative;
+  width: 100%;
+  /* 图 2 那块是偏方的（宽高比约 1.06:1）；这里略扁一点，好在设置框可视高度里
+     把色相条 / 当前选色 / 推荐色三行一起露出来。 */
+  aspect-ratio: 16 / 13;
+  border-radius: var(--pi-accent-radius);
+  box-shadow: var(--pi-glass-edge);
+  cursor: crosshair;
+  touch-action: none;
+  /* 方块自己的底色由组件算好写在内联样式上（两个方向叠起来的渐变）。 */
+}
+
+.pi-accent-picker__ring {
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  margin: -9px 0 0 -9px;
+  border: 2px solid #ffffff;
+  border-radius: 50%;
+  /* 白环在浅色区会看不见：外面再套一圈暗影，和参考图里那枚手柄一致。 */
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.35),
+    0 2px 6px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+}
+
+/* ---- 色相彩虹条 ---- */
+
+.pi-accent-picker__hue {
+  position: relative;
+  height: 20px;
+  border-radius: 999px;
+  box-shadow: var(--pi-glass-edge);
+  cursor: pointer;
+  touch-action: none;
+  background: linear-gradient(
+    to right,
+    #ff0000 0%,
+    #ffff00 17%,
+    #00ff00 33%,
+    #00ffff 50%,
+    #0000ff 67%,
+    #ff00ff 83%,
+    #ff0000 100%
+  );
+}
+
+.pi-accent-picker__ring--hue {
+  top: 50%;
+  width: 20px;
+  height: 20px;
+  margin: -10px 0 0 -10px;
+  border-width: 3px;
+}
+
+/* ---- 当前选色 ---- */
+
+.pi-accent-picker__now {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.pi-accent-picker__label {
+  flex: none;
+  color: var(--pi-text-sub);
+  font-size: 12px;
+}
+
+.pi-accent-picker__chip {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  box-shadow:
+    var(--pi-glass-edge),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.18);
+}
+
+.pi-accent-picker__hex {
+  width: 108px;
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  text-transform: lowercase;
+}
+
+/* ---- 推荐色 ---- */
+
+.pi-accent-picker__rec {
+  display: grid;
+  gap: 8px;
+}
+
+.pi-accent-picker__swatches {
+  display: grid;
+  /* 图 3 那 12 枚是**小方块**（约 55px），四列三行；不写死尺寸的话在 380px 宽的面板里
+     每格会被拉到 89px、三行下来 283px 高，把整块面板顶得老高。 */
+  grid-template-columns: repeat(4, minmax(0, 56px));
+  gap: 8px;
+  justify-content: start;
+}
+
+.pi-accent-picker__swatch {
+  padding: 0;
+  /* 图 3 那 12 枚是「圆角方块」，不是圆点。 */
+  aspect-ratio: 1;
+  border: 0;
+  border-radius: 10px;
+  box-shadow: var(--pi-glass-edge);
+  cursor: pointer;
+  transition:
+    transform 0.14s ease,
+    box-shadow 0.14s ease;
+}
+
+.pi-accent-picker__swatch:hover {
+  transform: translateY(-1px);
+}
+
+.pi-accent-picker__swatch[data-active='true'] {
+  /* 选中那枚：外面套一圈主色描边（深浅档都看得见）。 */
+  box-shadow:
+    var(--pi-glass-edge),
+    0 0 0 2px var(--pi-surface),
+    0 0 0 4px var(--pi-primary);
+}
+
+/* 紧凑档（快捷设置卡里）：推荐色小一号、方块稍微压扁，好塞进卡片。 */
+.pi-accent-picker--compact {
+  /* 卡片自己只有 340px 宽，别再限宽。 */
+  max-width: 100%;
+}
+
+.pi-accent-picker--compact .pi-accent-picker__sv {
+  aspect-ratio: 16 / 9;
+}
+
+.pi-accent-picker--compact .pi-accent-picker__swatch {
+  border-radius: 8px;
+}

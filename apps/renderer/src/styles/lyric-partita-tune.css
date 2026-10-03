@@ -21,7 +21,14 @@
   transition: transform 0.42s cubic-bezier(0.34, 1.25, 0.5, 1);
 }
 
-.pi-lyricpartita__col[data-current='true'] .pi-lyricpartita__word {
+/*
+ * 高光的**辉光**（用户第 6 轮第 2 条：高光的载体是一个字素，不是一整块）。
+ *
+ * 原来选的是 `[data-current='true']` 下的**每一个**字素 ⇒ 整块都带光晕；现在再收一层到
+ * `[data-word-state='active']`（正在唱的那一个字）—— 与 `--pw-color` 的取法同源
+ *（`PartitaTheme.tsx` 里 `hot = current && state === 'active'`，预读窗口已收成 0 ⇒ 全行至多一个）。
+ */
+.pi-lyricpartita__col[data-current='true'] .pi-lyricpartita__word[data-word-state='active'] {
   text-shadow:
     0 0 var(--pi-partita-glow-core, 0px) var(--pi-partita-glow-color, transparent),
     0 0 var(--pi-partita-glow-blur, 0px) var(--pi-partita-glow-color, transparent);

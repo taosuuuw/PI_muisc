@@ -12,6 +12,7 @@ import {
   type ThemeMode,
 } from '@pi/shared';
 import { Icon } from '../components/Icons';
+import { AccentPicker } from '../components/AccentPicker';
 import { AccountCard } from '../components/AccountCard';
 import { SettingsFrame, type SettingsTabId } from '../components/SettingsFrame';
 import { QualityLogPanel } from '../components/QualityLogPanel';
@@ -29,6 +30,8 @@ import {
 } from '../lib/queries';
 import { usePlayer } from '../state/player';
 import { useShortcuts } from '../state/shortcuts';
+import { useUi } from '../state/ui';
+import type { AccentMode } from '../lib/accent';
 
 /**
  * 设置页（用户 m08768 第 8 条重做）。
@@ -304,7 +307,8 @@ function AudioTab(): ReactNode {
                 <li>接口随时可能失效，届时会自动跳过它并尝试下一个音源。</li>
                 <li>匹配到的音质以本地实测字节为准，标称无损不等于真的无损。</li>
                 <li>
-                  <strong>你的网易云 cookie 不会交给第三方</strong>，它们只能拿到歌名歌手这类公开信息。
+                  <strong>你的网易云 cookie 不会交给第三方</strong>
+                  ，它们只能拿到歌名歌手这类公开信息。
                 </li>
               </ul>
             </div>
@@ -487,10 +491,29 @@ const LOCALE_OPTIONS: readonly {
   { value: 'en', label: 'English' },
 ];
 
+/**
+ * 应用主题色的三档（用户第二十一轮第 5 条：「将黑白/天蓝设为默认色，并且有自定义选项」）。
+ * 值就是 `state/ui.ts` 里 `accentMode` 的字面量，别另造 id。
+ */
+const ACCENT_OPTIONS: readonly { readonly value: AccentMode; readonly label: string }[] = [
+  { value: 'sky', label: '天蓝' },
+  { value: 'mono', label: '黑白' },
+  { value: 'custom', label: '自定义' },
+];
+
 /** 界面：主题明暗与界面语言。都是 `Settings` 里现成的字段。 */
 function UiTab(): ReactNode {
   const settings = useSettings();
   const patch = usePatchSettings();
+  /*
+   * 应用主题色（用户第二十一轮第 5 条）：它和 `uiStyle` 一样只存本机
+   * （`state/ui.ts` 的 `pi.accent`），所以不走 `patch.mutate`，直接读 zustand。
+   * 真正把它变成 CSS 变量的是 `App.tsx` 的 `useAccent`。
+   */
+  const accentMode = useUi((state) => state.accentMode);
+  const accentColor = useUi((state) => state.accentColor);
+  const setAccentMode = useUi((state) => state.setAccentMode);
+  const setAccentColor = useUi((state) => state.setAccentColor);
 
   const value = settings.data;
   if (!value) return null;
@@ -500,10 +523,7 @@ function UiTab(): ReactNode {
       <section className="pi-card">
         <div className="pi-setting">
           <span>
-            <span
-              className="pi-setting__title"
-              title="跟随系统时会实时响应系统的深色模式切换。"
-            >
+            <span className="pi-setting__title" title="跟随系统时会实时响应系统的深色模式切换。">
               外观
             </span>
             <span className="pi-setting__hint">跟随系统会实时响应深色切换</span>
@@ -516,6 +536,48 @@ function UiTab(): ReactNode {
             onChange={(next) => patch.mutate({ theme: next })}
           />
         </div>
+
+        <div className="pi-setting" data-accent-setting="true">
+          <span>
+            <span
+              className="pi-setting__title"
+              title="改的是界面主色（按钮、进度条、选中态那套）。天蓝是原来的默认；黑白在亮档用近黑、暗档用近白；自定义按挑的颜色现算悬停/淡底/前景色。"
+            >
+              应用主题色
+            </span>
+            <span className="pi-setting__hint">
+              {accentMode === 'mono'
+                ? '亮档近黑 / 暗档近白，按钮跟着走'
+                : accentMode === 'custom'
+                  ? '主色 / 悬停 / 淡底都按这枚颜色现算'
+                  : '默认天蓝，按钮与选中态都吃它'}
+            </span>
+          </span>
+          <Segmented
+            ariaLabel="应用主题色"
+            value={accentMode}
+            disabled={false}
+            options={ACCENT_OPTIONS}
+            onChange={(next) => setAccentMode(next)}
+          />
+        </div>
+
+        {/*
+          用户第二十二轮第 2 条：自定义主题色不再用一个原生取色块，而是整块**取色面板**
+          （选色方块 + 色相条 + 当前选色 + 推荐色，见 `components/AccentPicker.tsx`）。
+          这一栏因此改成竖排（`.pi-setting--stack`）：面板要整宽才好拖手柄。
+        */}
+        {accentMode === 'custom' ? (
+          <div className="pi-setting pi-setting--stack" data-accent-custom="true">
+            <span>
+              <span className="pi-setting__title">自定义主色</span>
+              <span className="pi-setting__hint">
+                方块选饱和度与明度、彩虹条选色相，或点下面的推荐色 / 直接填十六进制
+              </span>
+            </span>
+            <AccentPicker value={accentColor} onChange={setAccentColor} />
+          </div>
+        ) : null}
 
         <div className="pi-setting">
           <span>
@@ -836,9 +898,7 @@ function LyricTab(): ReactNode {
           ))}
         </div>
 
-        {patch.error ? (
-          <p className="pi-dialog__error">{errorMessage(patch.error)}</p>
-        ) : null}
+        {patch.error ? <p className="pi-dialog__error">{errorMessage(patch.error)}</p> : null}
       </section>
 
       <section className="pi-card">
@@ -1007,7 +1067,9 @@ function LyricTab(): ReactNode {
             value={tuning.fumeCameraFollow}
             disabled={patch.isPending}
             onChange={(event) =>
-              writeTuning({ fumeCameraFollow: event.target.value as LyricTuning['fumeCameraFollow'] })
+              writeTuning({
+                fumeCameraFollow: event.target.value as LyricTuning['fumeCameraFollow'],
+              })
             }
           >
             <option value="smooth">平滑</option>
@@ -1373,10 +1435,7 @@ function LocalLibrarySection(): ReactNode {
           className="pi-btn"
           disabled={patch.isPending || !dirty}
           onClick={() =>
-            patch.mutate(
-              { localLibraryDir: value.trim() },
-              { onSuccess: () => setDraft(null) },
-            )
+            patch.mutate({ localLibraryDir: value.trim() }, { onSuccess: () => setDraft(null) })
           }
         >
           保存
@@ -1439,9 +1498,7 @@ function PluginSection(): ReactNode {
               {plugin.version ? <span className="pi-srcrow__tier">v{plugin.version}</span> : null}
             </span>
             <span className="pi-srcrow__state">
-              {plugin.sources.length > 0
-                ? `支持 ${plugin.sources.join('/')}`
-                : '未声明任何平台'}
+              {plugin.sources.length > 0 ? `支持 ${plugin.sources.join('/')}` : '未声明任何平台'}
               {plugin.author ? ` · ${plugin.author}` : ''}
             </span>
             <input
@@ -1450,9 +1507,7 @@ function PluginSection(): ReactNode {
               checked={plugin.enabled}
               disabled={busy}
               aria-label={`启用 ${plugin.name}`}
-              onChange={(event) =>
-                toggle.mutate({ id: plugin.id, enabled: event.target.checked })
-              }
+              onChange={(event) => toggle.mutate({ id: plugin.id, enabled: event.target.checked })}
             />
             <button
               type="button"

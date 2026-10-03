@@ -313,51 +313,54 @@
 /*
  * 这一层由 `App` 按 `nav` 挂 / 卸（nav 一变整棵消失），没有「先播完再卸载」的余地 ——
  * 所以「动画放完再卸载」是 `PlaylistCoverflowOverlay.tsx` 里 `leave()` 的活：它先给根节点
- * 挂 `data-leaving="true"`（下面这两条），等 `EXIT_MS`(260ms) 到点才真正跳转。
- * 两个关键帧都取 240ms —— 比 JS 那 260ms 短 20ms，保证最后一帧落定之后才卸载。
+ * 挂 `data-leaving="true"`（下面这条，走 `overlays.css` 的 `pi-listoverlay-crossfade-out` 300ms），
+ * 等 `EXIT_MS`(**320ms**) 到点才真正跳转 —— 比动画宽 20ms，保证最后一帧落定之后才卸载。
  *
  * 收场期间**指针不穿透**：根节点保持吃事件（`pointer-events` 一个字都不改 —— 一关就从这层
  * 漏到下面的播放页去了），只把卡片流自己关掉。必须连 `.pi-songcards__stage` 一起关：
  * `.pi-pllist .pi-songcards__stage` 自己声明了 `pointer-events: auto`，祖先写 none 拦不住它
  * （`pointer-events` 可继承，但后代重新声明 auto 就又能命中）。
- * 键盘另说：由组件在模块作用域注册的捕获阶段监听吞掉（`exiting` 那 260ms），这里管不着。
+ * 键盘另说：由组件在模块作用域注册的捕获阶段监听吞掉（收场那 320ms），这里管不着。
  */
 .pi-pllist[data-leaving='true'] {
-  /* 整层淡出：底下就是播放页，淡出即交叉溶掉，不是「啪」地一下没了。 */
-  animation: pi-pllist-out 240ms cubic-bezier(0.4, 0, 0.9, 0.6) both;
+  /*
+   * **与歌单歌曲页浮层同一条淡出**（用户第二十六轮：「直接套用歌单歌曲页退回歌曲播放页的
+   * 动画就可以了吧，都是淡出」）。
+   *
+   * 原来这里是自造的 `pi-pllist-out`（240ms）+ 卡片流朝中心收拢回缩（`pi-pllist-fold`）。
+   * 现在换成 `overlays.css` 那条**同一个** `pi-listoverlay-crossfade-out`（300ms ease-out）：
+   * 两边都是「整层淡出、播放页在底下一直渲染着」。卡片收拢那一档一并去掉 ——
+   * 用户要的就是纯淡出，多一个「收拢」动作反而不一致。
+   */
+  animation: pi-listoverlay-crossfade-out 300ms ease-out both;
 }
 
 .pi-pllist[data-leaving='true'] .pi-songcards__stage {
   pointer-events: none;
-  /* 卡片流朝中心收拢并回缩：缩放原点就是舞台中心，所以中心卡原地缩小、两侧往中间收。 */
-  animation: pi-pllist-fold 240ms cubic-bezier(0.4, 0, 0.9, 0.6) both;
 }
 
-@keyframes pi-pllist-out {
-  from {
-    opacity: 1;
-  }
-
-  to {
-    opacity: 0;
-  }
-}
-
-@keyframes pi-pllist-fold {
-  from {
-    transform: none;
-  }
-
-  to {
-    transform: scale(0.86) translateY(-4px);
-  }
+/*
+ * **点底栏那条路（`App` 指名收场）—— 直接套用歌单歌曲页浮层那一条**（用户第二十六轮：
+ * 「先锋模式下歌单选择页退回到歌曲播放页的过渡动画，直接套用歌单歌曲页退回歌曲播放页的
+ * 动画就可以了吧，都是淡出」）。
+ *
+ * 所以这里不再自造 `pi-pllist-out` + 卡片收拢，而是**同一个 keyframes**
+ * （`overlays.css` 的 `pi-listoverlay-crossfade-out`，300ms ease-out）——
+ * 两边都是「整层淡出、播放页在底下一直渲染着」。`pointer-events: none` 同样必须：
+ * 退场这 300ms 里它不该再拦任何点击。
+ * 组件自己那条「点空白 / Esc」的收场不带 `data-closing`，行为一个字不变。
+ */
+.pi-pllist[data-closing='true'] {
+  animation: pi-listoverlay-crossfade-out 300ms ease-out both;
+  pointer-events: none;
 }
 
 @media (prefers-reduced-motion: reduce) {
   .pi-pllist,
-  /* 收场这两条关掉之后，`EXIT_MS` 那 260ms 里这一层是「原样停住再消失」——不引入新的动效，
-     也不改 JS 时序（探针要等的那 260ms 照样等）。 */
+  /* 收场这两条关掉之后，`EXIT_MS` 那 320ms 里这一层是「原样停住再消失」——不引入新的动效，
+     也不改 JS 时序（探针要等的那 320ms 照样等）。 */
   .pi-pllist[data-leaving='true'],
+  .pi-pllist[data-closing='true'],
   .pi-pllist[data-leaving='true'] .pi-songcards__stage {
     animation: none;
   }

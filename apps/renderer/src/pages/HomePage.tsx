@@ -10,6 +10,7 @@ import { LyricStage } from '../components/LyricStage';
 import { PiQuickOrb, QUICK_ORB_LEAVE_MS } from '../components/PiQuickOrb';
 import { PlaylistPickerOverlay } from '../components/PlaylistPickerOverlay';
 import { UpNextCard } from '../components/UpNextCard';
+import { VolumeSlider } from '../components/VolumeSlider';
 import type { QuickSwipeDirection } from '../components/PiQuickOrb';
 import { PiQuickPlaylistCard, PiQuickSettingsCard } from '../components/PiQuickPanels';
 import type { QuickPlaylistItem } from '../components/PiQuickPanels';
@@ -637,6 +638,14 @@ export function HomeBar({ song }: { song: Song }): ReactNode {
   const goPrev = usePlayer((s) => s.prev);
   const goNext = usePlayer((s) => s.next);
   const [scrubMs, setScrubMs] = useState<number | null>(null);
+  /*
+   * 音量条拖动中（用户第二十二轮第 3 条：「音量条不能用鼠标线性调节」）：
+   * 音量弹层只有 16px 宽，指针稍一偏就滑出它的 `:hover`，`pointer-events` 立刻变回 none
+   * ⇒ 拖到一半就把滑块「甩掉」，读起来就是「调不动/不成线性」。
+   * 所以按下到抬手之间把弹层**锁在浮出态**（`data-dragging` → CSS 里那一条），
+   * 拖到哪儿都跟手；松手立刻恢复「指针离开就淡出」的原有行为。
+   */
+  const [volDragging, setVolDragging] = useState(false);
 
   // 解析出来的时长比接口给的更准，但解析前 store 里装的就是 `song.durationMs`
   // （`state/player.ts` 的 `restoreLast` / `loadCurrent` 都这么写），这里再兜一次底。
@@ -737,7 +746,14 @@ export function HomeBar({ song }: { song: Song }): ReactNode {
         <span className="pi-home__time">{formatDuration(total)}</span>
         {/* 音量：`data-home-volume` 这一层是 hover 的热区，鼠标停在音量键（或其弹出的竖条）上
             都算「还在里面」，所以竖条不会刚滑出来就消失。 */}
-        <div className="pi-home__volume" data-home-volume="true">
+        <div
+          className="pi-home__volume"
+          data-home-volume="true"
+          data-dragging={volDragging ? 'true' : 'false'}
+          onPointerDown={() => setVolDragging(true)}
+          onPointerUp={() => setVolDragging(false)}
+          onPointerCancel={() => setVolDragging(false)}
+        >
           <button
             type="button"
             className="pi-home__volbtn"
@@ -750,25 +766,22 @@ export function HomeBar({ song }: { song: Song }): ReactNode {
             <Icon name={muted ? 'mute' : 'volume'} size={18} />
           </button>
           <div className="pi-home__volpop" data-home-volpop="true">
-            <input
-              className="pi-home__volrange"
-              type="range"
-              min={0}
-              max={100}
-              step={1}
-              // 静音时滑块显示 0，但不动 store 里的 volume：取消静音之后要能回到原来的响度。
-              value={Math.round((muted ? 0 : volume) * 100)}
-              // 第十四轮第 1 条（用户 m05281）：「音量条重新设计去掉那个蓝色小球而变成细长一条」
-              // —— 没有圆球之后，已调音量靠轨道自身的主色填充表达（rotate(-90deg) 之后
-              // `left center` 就是底端），所以百分比要写到元素上。
-              style={{ '--pi-volume': (muted ? 0 : volume).toFixed(4) } as CSSProperties}
-              onChange={(event) => {
-                const next = Number(event.target.value) / 100;
+            {/*
+              用户第二十二轮第 3 条：从原生 `<input type=range rotated>` 换成自己接指针的
+              `components/VolumeSlider.tsx` —— 原来那根条「落点 → 值」非线性（实测四分之一处
+              点下去读到 0.00、顶到最上面只有 0.87），而且合成输入驱动不了它的「按住拖」。
+              组件内部自己算值、自己锁指针，判据（`data-silent` / `--pi-volume` / 布局盒 59×16）
+              与原来逐字一致，所以冒烟抓手不用改。
+              静音时显示 0，但不动 store 里的 volume：取消静音之后要能回到原来的响度。
+            */}
+            <VolumeSlider
+              value={muted ? 0 : volume}
+              silent={muted || Math.round(volume * 100) === 0}
+              onDraggingChange={setVolDragging}
+              onChange={(next) => {
                 setVolume(next);
                 if (next > 0 && muted) setMuted(false);
               }}
-              aria-label="音量"
-              data-home-volrange="true"
             />
           </div>
         </div>
@@ -886,11 +899,10 @@ function QuickDock(): ReactNode {
     }
   };
 
-  const go = (id: NavId) =>
-    (): void => {
-      dismiss();
-      navigate(id);
-    };
+  const go = (id: NavId) => (): void => {
+    dismiss();
+    navigate(id);
+  };
 
   const items: readonly QuickPlaylistItem[] = [
     {
@@ -1035,7 +1047,11 @@ function StageMood({ song }: { song: Song }): ReactNode {
   return <ImmersiveBackground song={song} lines={lines} activeIndex={activeIndex} />;
 }
 
-/** 播放状态那一行：解析中/报错/一次性提示，都得有地方说。 */function StatusLine({ song }: { song: Song }): ReactNode {
+/** 播放状态那一行：解析中/报错/一次性提示，都得有地方说。 */ function StatusLine({
+  song,
+}: {
+  song: Song;
+}): ReactNode {
   const status = usePlayer((s) => s.status);
   const notice = usePlayer((s) => s.notice);
   const error = usePlayer((s) => s.error);
@@ -1112,6 +1128,12 @@ function Lyrics({
 }): ReactNode {
   const query = useLyric(songId);
   const positionMs = usePlayer((s) => s.positionMs);
+  /**
+   * **用户第 5 轮第 2 条**：把「播放器是不是在出声」交给舞台 —— 两条平滑时钟（classic 自己的
+   * 与主题层的 `usePositionClock`）都靠它区分「暂停」与「只是还没收到下一个 timeupdate」，
+   * 否则暂停后歌词会先往前多走几步再猛地弹回暂停位置。
+   */
+  const playing = usePlayer((s) => s.status === 'playing');
   // 用户 m01402 第 3 条（M4 剩余项）：浮名曲尾的「剩余 N 秒」要整首时长（小于等于 0 就是不知道）。
   const totalMs = usePlayer((s) => s.durationMs);
   const settings = useSettings().data;
@@ -1143,7 +1165,8 @@ function Lyrics({
   // 每次都换新 palette，CadenzaTheme 的 plan memo + rAF effect 会跟着反复重启（见上）。
   const tuning = settings?.lyricTuning;
   const stagePalette = useMemo(
-    () => (palette === null ? null : { ...palette, animationIntensity: 'chaotic' as const, tuning }),
+    () =>
+      palette === null ? null : { ...palette, animationIntensity: 'chaotic' as const, tuning },
     [palette, tuning],
   );
 
@@ -1154,6 +1177,7 @@ function Lyrics({
         translated={translated}
         positionMs={positionMs}
         {...(totalMs > 0 ? { durationMs: totalMs } : {})}
+        playing={playing}
         theme={theme}
         // `animationIntensity` 是配色契约的一部分（folia 用它调动效密度）。这里固定
         // `chaotic`，与改造前 `LyricStage` 的 `DEFAULT_PALETTE` 一致：本次只换颜色，动画强弱不动。
@@ -1167,7 +1191,11 @@ function Lyrics({
   if (query.isPending) {
     body = <p className="pi-lyrics__hint">正在读取歌词…</p>;
   } else if (query.isError) {
-    body = <p className="pi-lyrics__hint pi-lyrics__hint--error">歌词读取失败：{errorMessage(query.error)}</p>;
+    body = (
+      <p className="pi-lyrics__hint pi-lyrics__hint--error">
+        歌词读取失败：{errorMessage(query.error)}
+      </p>
+    );
   } else {
     body = <p className="pi-lyrics__hint">这首歌没有歌词（纯音乐，或者上游没收录）。</p>;
   }
@@ -1198,7 +1226,11 @@ function Panel({ song }: { song: Song }): ReactNode {
         </button>
       </header>
       <div className="pi-home__drawer-body">
-        {panel === 'comments' ? <CommentPanel key={song.id} songId={song.id} /> : <SongInfo key={song.id} song={song} />}
+        {panel === 'comments' ? (
+          <CommentPanel key={song.id} songId={song.id} />
+        ) : (
+          <SongInfo key={song.id} song={song} />
+        )}
       </div>
     </aside>
   );

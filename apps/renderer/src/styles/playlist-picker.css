@@ -145,7 +145,7 @@
   opacity: 0.72;
 }
 
-/* 正在提交的那一行：和快捷卡片的选中态（`.pi-quick-chip[data-active='true']`）同一套语义。 */
+/* 正在提交的那一行：和快捷卡片的选中态（`.pi-quick-choice[data-active='true']`）同一套语义。 */
 .pi-picker__row[data-active='true'] {
   border-color: var(--pi-primary);
   background: var(--pi-primary-weak);

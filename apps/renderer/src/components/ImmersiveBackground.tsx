@@ -36,7 +36,9 @@ import {
  * 5. `__lyric-veil` 歌词区半透明遮罩：椭圆渐变，颜色取自**主题底色**
  *    （`--pi-immersive-bg`，和歌词配色做对比度校准时用的就是它），压在浮层之上、
  *    只罩住歌词那一列，保证正文对比度；
- * 6. `__vignette` 暗角（`radial-gradient(circle, transparent 42%, rgba(0,0,0,.5) 100%)`）。
+ * 6. `__vignette` 暗角（`radial-gradient(circle, transparent 42%, rgba(0,0,0,.5) 100%)`）；
+ * 7. `__sidelight` 侧光（**用户第二十一轮第 4 条**：暗档左侧一道侧光打入、往右渐暗；
+ *    亮档这一层不给背景色，数值见 `styles/immersive-background.css`）。
  *
  * 用户第 9 轮第 5 条：背景 = **这首歌的封面** + 配合情绪与歌词内容生成的沉浸层。所以
  * ①封面必须看得见（见第 1 层与 CSS 里的数值）**并且缓慢漂移**（`--pi-cover-drift-*`：幅度与
@@ -152,13 +154,62 @@ interface LineVisual {
 }
 
 const LINE_VISUALS: Readonly<Record<MoodFamily | 'neutral', LineVisual>> = {
-  tender: { colorSlot: 'primaryColor', tiltDeg: -2.4, gain: 0.96, auraOpacity: 0.3, driftFactor: 0.7, particleBoost: 0.85 },
-  passionate: { colorSlot: 'accentColor', tiltDeg: 2.6, gain: 1.12, auraOpacity: 0.44, driftFactor: 1.25, particleBoost: 1.3 },
-  lonely: { colorSlot: 'secondaryColor', tiltDeg: -3.2, gain: 0.93, auraOpacity: 0.22, driftFactor: 0.55, particleBoost: 0.6 },
-  positive: { colorSlot: 'primaryColor', tiltDeg: 1.6, gain: 1.06, auraOpacity: 0.38, driftFactor: 1, particleBoost: 1.05 },
-  negative: { colorSlot: 'secondaryColor', tiltDeg: -4, gain: 0.9, auraOpacity: 0.26, driftFactor: 0.6, particleBoost: 0.7 },
-  energetic: { colorSlot: 'accentColor', tiltDeg: 3.4, gain: 1.16, auraOpacity: 0.42, driftFactor: 1.35, particleBoost: 1.35 },
-  neutral: { colorSlot: 'primaryColor', tiltDeg: 0, gain: 1, auraOpacity: 0.28, driftFactor: 0.85, particleBoost: 1 },
+  tender: {
+    colorSlot: 'primaryColor',
+    tiltDeg: -2.4,
+    gain: 0.96,
+    auraOpacity: 0.3,
+    driftFactor: 0.7,
+    particleBoost: 0.85,
+  },
+  passionate: {
+    colorSlot: 'accentColor',
+    tiltDeg: 2.6,
+    gain: 1.12,
+    auraOpacity: 0.44,
+    driftFactor: 1.25,
+    particleBoost: 1.3,
+  },
+  lonely: {
+    colorSlot: 'secondaryColor',
+    tiltDeg: -3.2,
+    gain: 0.93,
+    auraOpacity: 0.22,
+    driftFactor: 0.55,
+    particleBoost: 0.6,
+  },
+  positive: {
+    colorSlot: 'primaryColor',
+    tiltDeg: 1.6,
+    gain: 1.06,
+    auraOpacity: 0.38,
+    driftFactor: 1,
+    particleBoost: 1.05,
+  },
+  negative: {
+    colorSlot: 'secondaryColor',
+    tiltDeg: -4,
+    gain: 0.9,
+    auraOpacity: 0.26,
+    driftFactor: 0.6,
+    particleBoost: 0.7,
+  },
+  energetic: {
+    colorSlot: 'accentColor',
+    tiltDeg: 3.4,
+    gain: 1.16,
+    auraOpacity: 0.42,
+    driftFactor: 1.35,
+    particleBoost: 1.35,
+  },
+  neutral: {
+    colorSlot: 'primaryColor',
+    tiltDeg: 0,
+    gain: 1,
+    auraOpacity: 0.28,
+    driftFactor: 0.85,
+    particleBoost: 1,
+  },
 };
 
 /** 光晕浓度的上下界：再淡看不见「这一句在变」，再浓就把封面与歌词都糊了。 */
@@ -373,7 +424,10 @@ function useDocumentDark(): boolean {
   const [dark, setDark] = useState(readDocumentDark);
   useEffect(() => {
     const observer = new MutationObserver(() => setDark(readDocumentDark()));
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['data-theme'],
+    });
     return () => observer.disconnect();
   }, []);
   return dark;
@@ -493,9 +547,10 @@ export function ImmersiveBackground({
   // 取色是异步的：先给中性色（首帧一定有色，不会白/不会空），取到再让 `__wash` 的
   // `background-color 1s` 过渡过去。**换歌时不重置成中性色**——上一首的颜色留着，
   // 新的分析结果到了直接过渡，比中间闪一下灰舒服；失败才回退中性色。
-  const [palette, setPalette] = useState<{ readonly source: 'cover' | 'neutral'; readonly colors: ThemeColors }>(
-    () => ({ source: 'neutral', colors: neutralThemeColors(readDocumentDark()) }),
-  );
+  const [palette, setPalette] = useState<{
+    readonly source: 'cover' | 'neutral';
+    readonly colors: ThemeColors;
+  }>(() => ({ source: 'neutral', colors: neutralThemeColors(readDocumentDark()) }));
 
   const coverUrl = coverSrc ?? coverAt(song.album?.coverUrl, 640);
 
@@ -522,7 +577,9 @@ export function ImmersiveBackground({
 
   // 封面交叉淡入：只留最近两张。旧的那张永远停在 opacity 0，等下一次换歌时才被替换——
   // 这样不需要定时器，也不会在过渡中间把 DOM 掀掉。
-  const [coverStack, setCoverStack] = useState<readonly string[]>(() => (coverUrl ? [coverUrl] : []));
+  const [coverStack, setCoverStack] = useState<readonly string[]>(() =>
+    coverUrl ? [coverUrl] : [],
+  );
   useEffect(() => {
     if (!coverUrl) {
       setCoverStack([]);
@@ -615,13 +672,23 @@ export function ImmersiveBackground({
           </div>
         ))}
         {particles.map((particle) => (
-          <div key={particle.id} className="pi-immersive__particle" style={particleStyle(particle)} />
+          <div
+            key={particle.id}
+            className="pi-immersive__particle"
+            style={particleStyle(particle)}
+          />
         ))}
       </div>
       {/* 歌词区遮罩：压在浮层之上，只罩住歌词那一列，颜色取自主题底色
           （歌词配色的对比度就是对着它校准的），保证正文可读。 */}
       <div className="pi-immersive__lyric-veil" />
       <div className="pi-immersive__vignette" />
+      {/*
+        用户第二十一轮第 4 条：「暗色模式下背景光照要左侧一道侧光打入、往右渐暗」。
+        压在暗角之上（暗角会把四角一起压暗，包括左边那道光的落点），只在暗档有背景色，
+        数值与理由见 `styles/immersive-background.css` 的 `.pi-immersive__sidelight`。
+      */}
+      <div className="pi-immersive__sidelight" />
     </div>
   );
 }

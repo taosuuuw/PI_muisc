@@ -253,6 +253,50 @@
     backdrop-filter: blur(16px) saturate(1.12);
   }
 }
+
+/*
+ * **用户第 7 轮第 1 条**（原话：「铺满之后切播放页需要**交叠淡入**」）。
+ *
+ * 先锋拼贴第二下点击的收尾本来是硬的：那一格用 `COLLAGE_FILL_MS`(480ms) 长到铺满整窗，
+ * 480ms 一到，宿主那层浮层被卸载、播放页同时出现在下面 —— 一帧之间整块换掉，看着就是「切」。
+ * 现在收尾分两步：`SongCollage.enterPlayer()` 先给这层浮层（和浮层外面那条底栏）打上
+ * `data-collage-fading="true"` 并**立刻** `navigate('home')`，于是播放页此时已经挂在这层下面，
+ * 而这一层开始淡出 ⇒「旧的一层淡出」与「新的一页渐显」同时发生（交叠），
+ * `COLLAGE_CROSSFADE_MS`(340ms，与 `SongCollage.tsx` 同值) 之后才真的收掉浮层。
+ *
+ * 为什么用 `animation` 而不是 `transition`：这一层自己带着 `pi-listoverlay-in … both`（上面那条），
+ * `both` 的填充态会一直把 `opacity` 钉在 1，`transition` 起不来。这里用**同一个** `animation`
+ * 属性换一条 keyframes 覆盖它，1 → 0 是确定的，不依赖「动画结束后过渡会不会接管」这种实现细节。
+ */
+.pi-listoverlay[data-collage-fading='true'],
+.pi-songpage-overlay[data-collage-fading='true'] {
+  animation: pi-listoverlay-crossfade-out 340ms ease-out both;
+  pointer-events: none;
+}
+
+/*
+ * **用户第二十三轮第 2 条**（原话：「从歌曲页薄幕淡出回到歌曲播放页……表现都像闪了一下」）。
+ *
+ * 上面那条是拼贴收尾专用的；这一条给**所有**「关掉浮层回播放页」的路径：`SongListOverlay`
+ * 关掉之后不立刻卸载，先挂 `data-closing` 让整层按同一条 keyframes 淡出（`OVERLAY_EXIT_MS`）。
+ * 播放页一直在浮层底下渲染着，所以这一下是真正的交叉淡出 —— 而不是「浮层一帧消失 + 一层
+ * 近乎不透明的薄幕盖上来」那种两次硬切拼出来的「闪」。
+ * `pointer-events: none` 很重要：退场期间那 300ms 里它已经不该再拦任何点击。
+ */
+.pi-listoverlay[data-closing='true'],
+.pi-songpage-overlay[data-closing='true'] {
+  animation: pi-listoverlay-crossfade-out 300ms ease-out both;
+  pointer-events: none;
+}
+
+@keyframes pi-listoverlay-crossfade-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
 .pi-listoverlay__sheet {
   position: relative;
   width: min(1080px, 100%);
@@ -354,6 +398,21 @@
  * 代价与歌单那一档一样：「点玻璃空白退出」在这档没有了 —— 那圈空白正是用户要去掉的「框」；
  * 退出路径仍是浮层根节点上的 Esc（`components/SongListOverlay.tsx:47-54`）与点一首歌。
  */
+/* 用户 m00597 第 2 条（平凡档每日推荐歌单页只有左下角一条「♪ 每日推荐」、歌全不见）的根因，
+ * 与「点玻璃空白退出」这条需求是同一个坑：
+ * 浮层根是 `display: grid; place-items: center`，**它那一行是 auto 行**，而纸的高度写的是
+ * `height: min(760px, 100%)`（`overlays.css:259`）。百分比在这一趟解不出来（行高正由内容决定，
+ * 循环依赖）⇒ Chromium 按纸的 **max-content** 定行高：32 首的那张表把这一行撑成 **2128px**
+ * （冒烟实测 `浮层盒=0,0 1182x772 … rows=2128px ai=center`），随后 `align-items: center`
+ * 把 760 高的纸居中到 2128 高的行里 ⇒ 纸顶 = 44 + (2128 − 760) / 2 = **728**，
+ * 而窗口只有 772 高 ⇒ 纸整个沉到窗口底边之外，只露顶栏那 24px。
+ * 纸本身没坏（行数、滚动高、歌名色都正常，见冒烟），纯粹是被定位甩出去了。
+ * 先锋拼贴档早就绕过了这一坑（那一档纸高是 `100%`，`grid-template-rows: 1fr`，见下），
+ * 这里把普通档补齐：把浮层的行**定死**成内容盒高度，百分比才有得可解。 */
+.pi-listoverlay[data-songs]:not(.pi-listoverlay--collage) {
+  grid-template-rows: minmax(0, 1fr);
+}
+
 .pi-listoverlay--collage[data-songs] {
   padding: 0;
 }
@@ -394,6 +453,14 @@
    那 104px 一个口径（`.pi-detail__body` 的 padding 只影响内容盒，
    绝对定位的拼贴仍按 padding 盒铺满，所以先锋那一档的 `padding: 0` 不受影响）。 */
 .pi-listoverlay[data-playlist] .pi-detail__body {
+  padding-bottom: 104px;
+}
+
+/* **用户 m00341 第 2 条**：`--songs` 这一档（当前播放 / 每日推荐）也补上了同一个 `BottomBar`
+   （`components/SongListOverlay.tsx`），所以平凡档的竖排列表同样要给它垫出高度，
+   免得最后几行被药丸压住。先锋档不走这条（`:not(--collage)`）：那一档的正文 `padding: 0`、
+   拼贴绝对定位铺满整窗，与歌单档同一个道理。 */
+.pi-listoverlay[data-songs]:not(.pi-listoverlay--collage) .pi-songslist__body {
   padding-bottom: 104px;
 }
 

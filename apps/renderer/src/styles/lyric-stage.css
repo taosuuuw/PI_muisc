@@ -117,6 +117,31 @@
   /* 底部悬浮进度条的安全高度（`.pi-home__bar`：bottom 22px + 56px = 78px），跟着窗口高走；
    * 与 lyric-themes.css 给三套铺满主题用的是同一个量法。 */
   --pi-stage-bleed-bottom: clamp(86px, 11vh, 132px);
+  /* 第十六轮第 2 条（用户原话「歌词高光以及辉光要如图 1 所示的效果」）：
+   * 高亮字与它的辉光**共用这一支色**。图 1 那两个字是暖红（逐像素取样字身 #e54f53、
+   * 紧贴字缘的晕 #e9a3a2 偏粉、往外约 30~40px 淡进背景），但红色不是写死的：
+   * 播放页会把这一首封面色推导出来的三支色注入成 `--pi-th-primary` / `--pi-th-accent` /
+   * `--pi-th-surface`（HomePage.tsx:149-151）。**优先取 accent**（用户 m05660 第 2 条）：
+   * `deriveThemeColors` 里的 primary 走 `PRIMARY_LIGHTNESS_LIGHT` 只保证与背景的对比度
+   * （cover-palette.ts:581-589），亮底封面推出来的 primary 会暗到跟常态墨色几乎一样
+   * （实测高亮 rgb(44,37,28) vs 常态 rgb(26,29,36)，辉光肉眼看不见）；accent 走的是
+   * `ACCENT_LIGHTNESS_LIGHT` + 高饱和（cover-palette.ts:590-598），才是图 1 那种「封面的招牌色」。
+   * 没注入时**逐位等于**改造前的 `--pi-primary-deep`
+   * （那个是 tokens.css 的全局令牌 #0d7bd0 / 暗档 #8ccbff，不随歌变）。 */
+  --pi-lyric-hot: var(--pi-th-accent, var(--pi-th-primary, var(--pi-primary-deep)));
+  /* 图 1 的辉光是「贴着字缘一层很亮的 + 往外一层更宽更淡的」（影色取同一支 `--pi-lyric-hot`）。 */
+  /* 用户 m05660 第 2 条：辉光要「符合封面主题颜色的辉光」并且**看得出来**。
+   * 参考 folia（mods/visualizer52hz/stage.mjs 的高光精灵：一层画布阴影 `shadowBlur = 字号 × 0.45`
+   * 直接当辉光）⇒ 这里再补一层**按字号缩放**的外扩（121px 字号下 0.3em ≈ 36px）。
+   * 用户 m00597 第 3 条（附图三：单个假名，只有一圈很柔很淡的雾）说「辉光太重」：
+   * 四层一起收 —— 贴缘 92%→30%（只留一圈能看出边界的亮边）、
+   * 中段 82%→42%、外扩 52%→20%、最外 38%→10%，
+   * 并把最外层半径 0.45em→0.3em。四层一个都不能删：图三那种「雾」需要
+   * 「小半径实心 + 大半径虚化」并存，只留一层不是糊成一团就是一圈硬边。 */
+  --pi-word-glow-rim: 40%;
+  --pi-word-glow-strong: 56%;
+  --pi-word-glow-soft: 28%;
+  --pi-word-glow-bloom: 16%;
 }
 
 /* 舞台那 300px / 200px（窄屏断点）的下限是「一列」时代的产物，整窗铺满后不再需要。 */
@@ -134,31 +159,25 @@
  * 旧值 `clamp(1.6rem, 4.6cqi, 3.1rem)` 在 560px 的列里最多 49.6px（3.1rem 封顶）＝整窗宽的 3.3%，
  * 这就是「只占窗口中间一块」的字号来源。
  * 上下限：36px（2.25rem，folia 原式 `clamp(2.25rem * s, 6vw * s, 4.5rem * s)` 的地板）
- * ~ 192px（12rem，2560px 窗封顶，再宽也不变形）。中间跟着窗宽线性缩放。 */
+ * ~ 72px（4.5rem，与 folia 同上限）。中间 `6cqi` 跟着窗宽线性缩放 —— 见下面那条自身的注释。 */
 .pi-lyricstage[data-theme='classic'] .pi-lyricstage__line {
-  font-size: clamp(2.25rem, 8cqi, 12rem);
+  /*
+   * **用户（本轮）第 1 条**：回到 folia 的原式 `clamp(2.25rem × s, 6vw × s, 4.5rem × s)`。
+   *
+   * 上一版是 `clamp(2.25rem, 8cqi, 12rem)`（按早先那支参考视频量出来的 ≈121px@1518 窗）——
+   * 用户本轮给的两张对照图里，folia 那侧的字明显小一档：长句「早该对症下药对症下药」在我们这儿
+   * 94.6px、撑满整行只剩一点点缝（用户原话「字大小太大显得很挤」），folia 那侧约 71px、
+   * 字间还留着余量。6cqi 在 1182 宽的窗口上正好 ≈70.9px，与 folia 同量级；上限 4.5rem(72px)
+   * 与 folia 一致；下限仍是 folia 的地板 2.25rem。字号小一档之后长句自然不挤，
+   * 短句则靠字距拉开（见 `CJK_GAP_EM`）。
+   */
+  font-size: clamp(2.25rem, 6cqi, 4.5rem);
 }
 
-/* 底部字幕层：从「网格第二行」改成**绝对贴底**，舞台那一行才能吃满整窗、大字才落在正中。
- * DOM / 类名 / 层级一个字没变（译文 + 下两句预览照旧），只是不再参与网格的高度分配；
- * 位置仍是贴底 + 让开底部进度条（--pi-stage-bleed-bottom）。 */
-.pi-lyricstage[data-theme='classic'] .pi-lyricstage__sub {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  padding: 0 12px var(--pi-stage-bleed-bottom, 14px);
-}
-
-/* 译文 / 下两句预览按参考图的同一比例重标：参考图里中文译文墨迹 24px 高（≈26~28px 字号），
- * 约是那行大字的 1/4.5。旧值 `clamp(1.125rem, 2.6vw, 1.25rem)`（18~20px）的 2.6vw 是
- * 「列宽 420~560px」时代写的，而且被 1.25rem 封顶，相对 121px 的大字就明显偏小。 */
+/* 底部字幕层的位置不再在这里写第二遍（第 8 轮：六套主题共用基类那一条绝对贴底规则），
+ * 这里只保留 classic 的字号重标。 */
 .pi-lyricstage[data-theme='classic'] .pi-lyricstage__translated {
   font-size: clamp(1.125rem, 1.75cqi, 2rem);
-}
-
-.pi-lyricstage[data-theme='classic'] .pi-lyricstage__preview {
-  font-size: clamp(0.875rem, 1.3cqi, 1.5rem);
 }
 
 /* ---------------------------------------------------------------------------
@@ -227,7 +246,12 @@
   border-radius: 6px;
 }
 
-/* 逐字素容器：行内换行（folia 的 flex-wrap），整体水平居中。 */
+/* 逐字素容器：`flex-wrap`（folia 原版）—— 一句放不下时**换行**。
+ *
+ * **用户（本轮）第 1 条**：上一版为了「一句一行」把它改成 `nowrap` + 整行缩字号，
+ * 结果长句变成一行挤在一起（字距被压没、字号却被撑大），用户给的对照图（folia）
+ * 恰恰是**换行排两行**。所以退回 folia 的原口径：`wrap` + 逐行居中，
+ * 只在**字与字之间**补上 folia 那条最小间隙（见 `buildStageAtoms` 的 `CJK_GAP_EM`）。 */
 .pi-lyricstage__words {
   display: flex;
   flex-wrap: wrap;
@@ -236,15 +260,64 @@
   row-gap: 0.12em;
 }
 
+/* 每个词都不许被 flex 压缩：测「内容有多宽」必须靠它们的自然宽度。 */
+.pi-lyricstage__words > * {
+  flex-shrink: 0;
+}
+
+/**
+ * **用户（本轮）第 1 条**：中文相邻两字之间的窄间隙（`--pi-word-gap` = 0.3em，写在原子上）。
+ *
+ * 中文歌词没有空格字素，一个字素就是一个原子，两个字贴在一起只剩字形自身的 side bearing，
+ * 字号一大就糊成一片（用户给的「太挤了」）。这一条只给 `classic` 的原子加，西文原子恒为 0
+ *（空格由 `.pi-lyricstage__space` 那个 spacer 原子撑），其它主题的 `.pi-lyricstage__word`
+ * 上压根没有这支变量 ⇒ `margin-right: 0`，逐位不变。
+ *
+ * **用户第 9 轮第 2 条**（「比较短的歌词，字与字应该有足够大的空隙」）：`--pi-line-gap` 排在前一级
+ * ——它由 `layOutClassicLines()` 在布局阶段按**这一行剩下的余量**算成 px 写在「带中文间隙的原子」上
+ * （见 `LyricStage.classicJustifyGapPx`）。没有它时（主题分支 / 长句夹回下界）退回 `--pi-word-gap`，
+ * 也就是改造前那条 0.3em，逐位不变。
+ *
+ * **用户第二十三轮第 3 条**（图 3：几个字挤在一起）：左右再各留一份 `--pi-word-pad`
+ * ——正在唱的那个字放大 1.4 倍是 `transform`，不参与排版，邻居不会自己让位，所以由
+ * `layOutClassicLines()` 按 `(k−1)·w/2` 给它左右各写一份占位（左右等量 ⇒ 它的中心不动、
+ * 整行仍居中）。其余状态恒为 0px，行为与改造前逐位相同。
+ * 这一条**不限定** `data-gap`：图 3 那一行是英文，图 2 拆出来的音节也是英文。
+ */
+.pi-lyricstage[data-theme='classic'] .pi-lyricstage__word {
+  margin-left: var(--pi-word-pad, 0px);
+  margin-right: calc(var(--pi-line-gap, var(--pi-word-gap, 0em)) + var(--pi-word-pad, 0px));
+}
+
+/* 第十六轮第 1 条：词间空白**自己**是一个原子（`.pi-lyricstage__space`），不挂 `data-word-state`。
+ *
+ * 为什么不复用 `.pi-lyricstage__word`：那个类必须保留给「字」（冒烟探针按
+ * `.pi-lyricstage__word[data-word-state]` 数逐字状态与配色，`readStage()` 见
+ * apps/desktop/src/main/index.ts:4245），空白混进去会污染逐字计数与配色众数。
+ * 宽度由 TS 逐格给（`--pi-space-extra` = 0.38~0.54em，见 LyricStage.tsx 的 `SPACE_MIN_EM`），
+ * 下界 0.38em 是为了让同父容器里相邻两个西文原子的横向间隙始终 > 4px（第十六轮新增判据）。 */
+.pi-lyricstage__space {
+  display: inline-block;
+  white-space: pre;
+  width: var(--pi-space-extra, 0.4em);
+}
+
 /* ---------------------------------------------------------------------------
  * 逐字素三态（classic 的灵魂）
  * 基准 = **未唱 waiting**：opacity 0 / scale 0.5 / blur(10px) / 主色，0.4s 入场位。
  * 下面两个状态只改「目标值 + 过渡时长」。
  *
  * 第十四轮第 4 条（用户 m05281）：「流光的歌词动效，在设置页添加逐字旋转的开关」——
- * 开关打开时 TS 会给每个字写一个确定性的 `--pi-word-spin`（±6°），这里把它拼进 transform：
+ * 开关打开时 TS 会给每个字写一个确定性的 `--pi-word-spin`（7°~14°），这里把它拼进 transform：
  * 未唱的字歪着 → 唱到它时弹回 0°（与放大同时发生，就是一个字的「转正」）→ 唱过保持正。
  * 开关关着时变量不存在 ⇒ `rotate(0deg)`，画面与改造前逐位相同。
+ *
+ * 第十六轮第 1 / 3 条（用户原话「英语单词…整个单词往外冒」「一行歌词不是整齐的一行而是如图 2 所示」）：
+ * - 「字」= `.pi-lyricstage__word` 现在承载的是**原子**：中文一个字、西文一个词（逻辑在 LyricStage.tsx
+ *   的 `buildStageAtoms`），所以这三态的切换天然就是「整词一起冒」；
+ * - 每个原子多三个由 TS 逐位算好的变量（`scatterFor`，行下标 + 原子下标决定，与播放位置无关 ⇒
+ *   同一行每次渲染完全一致、不抖动）：`--pi-word-y`（纵向错落 em）、`--pi-word-tilt`（停留倾角）、
+ *   `--pi-word-x`（中文字距）。三支都拼进 transform，缺省 0 ⇒ 关掉时与改造前逐位相同。
  * ------------------------------------------------------------------------- */
 .pi-lyricstage__word {
   /* 三档过渡时长：默认 normal 档；下面按 data-hint 覆盖 filter 时长。 */
@@ -254,8 +327,39 @@
   /* 第十五轮第 4 条：唱过之后「主题色 → 白」的退色时长（下面按 data-hint 覆盖）。
    * 单列一支是为了**只**拉长颜色/辉光的尾巴，不动进场那三支（opacity / transform / filter）。 */
   --pi-word-fade-ms: 1100ms;
-  /* 第十五轮第 5 条：字冒出来时「从自己的角度转正」的时长（下面按 data-hint 覆盖）。 */
-  --pi-word-spin-ms: 420ms;
+  /* 第十五轮第 5 条：字冒出来时「从自己的角度转正」的时长。
+   * 第十六轮第 5 条起这只是**兜底**：真正的时长由 TS 按每个原子自己的高亮窗口写在
+   * `--pi-word-fly-ms` 上（内联变量优先，见 `StageAtom.flyMs`），没有内联变量时才落到这三档。 */
+  --pi-word-spin-ms: 620ms;
+  /* 用户 m00001 第 5 条（本轮）：入场要**看得见从远处来**，所以「淡入 / 去模糊」不能再是定值。
+   *
+   * 未唱那一格是 `opacity: 0` + `filter: blur(10px)`，翻到 active 时全靠过渡显形。原来那两条
+   * 是写死的 100ms（`--pi-word-active-opacity-ms`，共用 active 规则）/ 200ms（`--pi-word-filter-ms`），
+   * 而飞行是 100~620ms：
+   *   · 620ms 的长飞 ⇒ 头 16% / 32% 航程被盖住；
+   *   · 200ms 的短飞 ⇒ **整段航程都在这两条过渡里** —— 字一边飞一边慢慢显形，等它显形时已经
+   *     快落到位置上了，看上去就是「原地冒出来」。这正是「看不出从远处来」的直接原因。
+   * 现在两支都改成**这个字自己的飞行时长**的一个小比例（`--pi-word-fly-ms` 是 TS 逐字写在
+   * 内联变量上的，见 `StageAtom.flyMs`）：
+   *   opacity × 0.07、filter × 0.12 ⇒ flyMs=100 时 7ms / 12ms，flyMs=300 时 21ms / 36ms。
+   * 也就是字在航程的头 ~7% / ~12% 就完全不透明、不糊，剩下 90% 的航程一路看得见。
+   *
+   * **用户本轮第 2 条**（原话：「逐字旋转不是等字冒出一出一半再自旋，而是从无到有冒出的过程
+   * 伴随自旋」）：这两个比例原来是 0.18 / 0.26（配 620ms 的长飞），而关键帧的缓动是强 ease-out
+   *（头 30% 走完大部分位移与转角）⇒ 字**完全显形时自转已经走掉大半**，人眼读到的是
+   *「先冒出一颗字，然后它才转一下」。压到 0.07 / 0.12 之后，字在航程的头一两帧就亮起来、锐起来，
+   * 后面 90% 的航程里那 10~20° 的自转**一直看得见** —— 自转与「从无到有」是同一段过程。
+   * 为什么是比例而不是新的定值：定值必然二选一地得罪一头 —— 200ms 的短飞里 100ms 淡入等于
+   * 一半航程看不见，而 620ms 的长飞里 100ms 又几乎是瞬现（字还没离开框边就全亮了）。
+   * 为什么不用 max() 垫一个绝对地板：短飞时 18ms/26ms ≈ 1~2 帧，此刻字是 0.5 倍大 + 10px 模糊
+   * 的一团，一帧的过渡看着仍是「化开」而不是「啪地出现」；而一个 48ms 的地板在 100ms 的短飞里
+   * 反而要吃掉半个航程，与「飞行期间可见」这条直接冲突。
+   * 兜底链与 `animation` 那条（:541）一致：没有内联 `--pi-word-fly-ms` 时退到档位的
+   * `--pi-word-spin-ms`、再退到 620ms。
+   * 这两支只被下面 classic 的 active 规则引用（`:366` 那条**共用**规则一个字节没动
+   * ⇒ tilt / pendolo / partita 三套主题的手感与改造前完全一致）。 */
+  --pi-word-reveal-ms: calc(var(--pi-word-fly-ms, var(--pi-word-spin-ms, 620ms)) * 0.07);
+  --pi-word-unblur-ms: calc(var(--pi-word-fly-ms, var(--pi-word-spin-ms, 620ms)) * 0.12);
   display: inline-block;
   /* 空格也是字素，不能被折叠掉，否则断句位置全变。 */
   white-space: pre;
@@ -263,7 +367,32 @@
   /* 第十五轮第 4 条：常态 = 白（未唱的字 opacity 恒为 0，看的是下面 active / passed 两档）。 */
   color: var(--pi-lyric-ink, #fff);
   opacity: 0;
-  transform: rotate(var(--pi-word-spin, 0deg)) scale(0.5);
+  /* 第十六轮第 3 条：未唱那一格 = 自己的入场角 + 自己的错落（纵向 / 倾角 / 字距）。
+   * 先 translate 再 rotate ⇒ 旋转仍绕元素自己的中心（transform-origin: center），
+   * 错落不会把字挪出视觉中心；`Math.atan2(m.b, m.a)` 只看得见后面那支 rotate。
+   *
+   * 第十六轮第 5 条：这一格还必须**逐字等于**关键帧 0% 那一帧（含「从远处来」的
+   * `--pi-word-from-x/y` 与 scale）—— 那是飞入能成立的前提。未唱的字 `opacity: 0`，站在远处
+   * 看不到，没有代价；而它同时挂着 transform 过渡（见下面的 transition），于是未唱 → 唱的
+   * 那一瞬如果这两格**不等**，浏览器会另起一支 transform 过渡（transition 声明在层叠里的
+   * 优先级本来就高于动画声明）去和入场关键帧抢同一支 transform —— 抢赢就等于**飞入被吃掉**。
+   * 两格逐字相等 ⇒ 这一支没有值变 ⇒ 过渡根本不会起，从头到尾归关键帧。
+   * 所以：改这里的 translate / scale，必须同步改关键帧 0% 那一帧（反过来也一样）。
+   *
+   * 用户 m00001 第 3 条（「流畅生动」）把这条 translate 换成 `translate3d(...)`：
+   * 显式 3D 位移让浏览器走合成层的 transform 路径（`translateY/translateX` 在带 `filter`
+   * 的元素上也合成，但多一层「先拍平再变换」的解释余地）。参数顺序是 **(x, y, 0)** ——
+   * 与 0% 那一帧逐字一致，也与 `--pi-word-x/y` 的语义顺序一致。
+   * 同时这支 rotate 多了一支 `--pi-word-roll`（±10~20° 的入场自转，用户 m00001 第 2 条；
+   * 用户 m06899 第 1 条把幅度从 ±150~300° 收到 ±10~20°）：
+   * 它在关键帧里一路转回 0，所以静止态的合成角**仍然是** `tilt`（≤ 5.4°）。 */
+  transform: translate3d(
+      calc(var(--pi-word-x, 0em) + var(--pi-word-from-x, 0em)),
+      calc(var(--pi-word-y, 0em) + var(--pi-word-from-y, 0em)),
+      0
+    )
+    rotate(calc(var(--pi-word-roll, 0deg) + var(--pi-word-spin, 0deg) + var(--pi-word-tilt, 0deg)))
+    scale(0.5);
   filter: blur(10px);
   transition:
     opacity var(--pi-word-enter-ms) ease-out,
@@ -273,15 +402,22 @@
     text-shadow var(--pi-word-filter-ms) ease-out;
 }
 
-/* 当前字：亮起来、放大、去模糊、转强调色，并点亮双层辉光。
- * 第十五轮第 4 条之后，这一档是**全舞台唯一带主题色的地方**（常态由 --pi-lyric-ink 白扛）。 */
+/* 当前原子：亮起来、放大、去模糊、转强调色，并点亮辉光。
+ * 第十六轮第 1 条起这一档是**整词**一起进（西文），不再是字母逐颗冒。
+ * 第十五轮第 4 条之后，这一档是**全舞台唯一带主题色的地方**（常态由 --pi-lyric-ink 白扛）。
+ *
+ * 这一条是**共用**选择器（权重 0,2,0）：tilt / pendolo / partita 的字素也挂
+ * `.pi-lyricstage__word` + `data-word-state`（契约见 lyric-themes.css:11-12），
+ * 所以这里保持改造前的原值（`--pi-primary-deep` + `--pi-primary` 38% / 20% 两层影）。
+ * 「流光」（classic）专属的高光字色与三层暖辉光写在紧接下面的 classic 作用域规则里。 */
 .pi-lyricstage__word[data-word-state='active'] {
   opacity: 1;
-  transform: rotate(0deg) scale(1.4);
+  /* 唱到它：入场角归 0（`--pi-word-spin` 不在这里出现），但**保留自己的停留倾角与错落**——
+   * 图 2 那种「一行不整齐」是常驻状态，不是出场特效。 */
+  transform: translateY(var(--pi-word-y, 0em)) translateX(var(--pi-word-x, 0em))
+    rotate(var(--pi-word-tilt, 0deg)) scale(1.4);
   filter: none;
   color: var(--pi-primary-deep);
-  /* 辉光半径由 TS 按档位写在 --pi-word-glow-* 上（instant 14/24、fast 18/32、normal 20/40），
-   * 颜色用主色的 38% / 20%，与仓库既有轨道口径一致。 */
   text-shadow:
     0 0 var(--pi-word-glow-sm, 20px) color-mix(in srgb, var(--pi-primary) 38%, transparent),
     0 0 var(--pi-word-glow-lg, 40px) color-mix(in srgb, var(--pi-primary) 20%, transparent);
@@ -293,29 +429,191 @@
     text-shadow var(--pi-word-filter-ms) ease-out;
 }
 
-/* 第十五轮第 5 条（用户本轮原话）：「流光歌词动效，逐字旋转的效果是冒出来的字要带上一定旋转」。
+/* 第十六轮第 2 条（用户原话「歌词高光以及辉光要如图 1 所示的效果」）：**classic 专属**的
+ * 高光字色 + 三层辉光。作用域必须写全 `[data-theme='classic']`（权重 0,4,0）：上面那条共用
+ * 规则里放的是三套主题的原值，改那一条会把 tilt / pendolo / partita 的辉光一起换掉。
  *
- * 旧写法的毛病：角度只挂在**等唱态**上，而未唱字的 `opacity` 恒为 0 —— 于是那个 ±6° 一次都
- * 没被看见（字第一次露面就已经是 active 的 `rotate(0deg)`）。
- * 现在保留 `SPIN_ANGLES` 的确定性角度（TS 写在 `--pi-word-spin` 上），改成**入场关键帧**：
- * 字冒出来的那一下从自己的角度开始转，与放大同时发生，`--pi-word-spin-ms` 之后落在 0°。
- * 动画 `fill-mode` 是默认的 none ⇒ 播完回到规则里的 `rotate(0deg) scale(1.4)`，
- * 与关键帧的 `to` 完全一致，不会跳一下。
- * 只在 `[data-word-spin='true']`（设置页 classicWordSpin 打开）时生效；关着时这条规则不匹配，
- * 画面与改造前逐位相同（`--pi-word-spin` 也不存在 ⇒ `var()` 取兜底的 0deg）。 */
-@keyframes pi-lyricstage-word-spin-in {
-  from {
-    transform: rotate(var(--pi-word-spin, 0deg)) scale(0.5);
-  }
-
-  to {
-    transform: rotate(0deg) scale(1.4);
-  }
+ * 色：`--pi-lyric-hot` = 这一首封面色推导出来的 `--pi-th-accent`（HomePage.tsx:149-151 注入到
+ * 播放页根节点；m05660 第 2 条把口径从 primary 改成 accent，理由见 `:120-131`），
+ * 拿不到 accent 才退 `--pi-th-primary`，都没有时兜底 `--pi-primary-deep` ⇒ 逐位等于改造前。
+ * 图 1 逐像素取样：字身 #e54f53（暖红）、紧贴字缘的晕 #e9a3a2（偏粉、更亮）、
+ * 往外约 30~40px 淡进背景（≈ 字高的 0.15~0.2 倍）。
+ * 影（半径由 TS 按档位写在 --pi-word-glow-* 上：micro 14/24、short 18/32、normal 20/40）：
+ *   1 层 `0 0 0.06em` 贴着字缘（字号的 6%，121px 字号 ≈ 7px）把边缘烧亮 —— 对应取样里那圈偏粉的亮晕；
+ *   2 层 small 半径 60%，是「晕开一圈」的实心部分；
+ *   3 层 large 半径 32%，外扩到字高的 0.15~0.2 倍 —— 对应往外的暖红衰减。
+ * 影色一律取高亮字色本身（不再用 38% / 20% 那种给蓝色常态调的淡影）。
+ * 用户 m05660 第 2 条（「流光的歌词要有符合封面主题颜色的辉光」）又加了一层**按字号缩放**的
+ * `0.45em` 外扩（folia 的高光精灵就是一层 `shadowBlur = 字号 × 0.45` 的画布阴影），并把贴缘层从
+ * 0.06em/60% 提到 0.08em/92%、中段提到 82%、外扩提到 52% —— 旧口径在 121px 字号下最外只到 40px
+ * （0.33 倍字高），看图仍然只是「一圈亮边」，看不到「晕开」。
+ * 高亮色必须与常态的 `--pi-lyric-ink` 不同（冒烟判据 `activeDiffers`，index.ts:6443 起）。
+ *
+ * 用户 m00597 第 3 条（「以及高亮的字辉光太重了，应该如图 3 所示的效果」）：图 3 是单个假名
+ * 平铺着黄绿色，字身**没有**亮边，四周只有一圈很柔很淡的雾（最亮处也在 30% 上下，往外
+ * 0.3~0.5 倍字高就淡没了）。上面那套 m05660 口径（贴缘 92% / 中段 82% / 外扩 52% / 0.45em 38%）
+ * 在 121px 字号下会烧出一圈很实的亮边 —— 正是用户说的「太重」。
+ * 现在四层都留着（图 3 那种「雾」需要小半径实心 + 大半径虚化两层叠出来），只压 alpha 与最外半径：
+ *   贴缘 0.08em/92% → 0.06em/30%，中段 82% → 42%，外扩 52% → 20%，最外 0.45em/38% → 0.3em/10%。
+ * 判据没变：高亮字 `text-shadow` 非空（冒烟 `lyricWordOk` 只要求 `activeGlow >= 1`），
+ * 高亮色仍走 `--pi-lyric-hot`，所以 `activeDiffers` 不受影响。
+ *
+ * **用户（本轮）第 1 条**：「辉光亮度有点低了，稍微高一点」—— 四层 alpha 各提高一档
+ * （30→40 / 42→56 / 20→28 / 10→16，约 +33%），半径与层数一个没动：只是把雾提亮，
+ * 不把边缘重新烧出一圈实边（那正是 m00597 第 3 条压下去的东西）。 */
+.pi-lyricstage[data-theme='classic'] .pi-lyricstage__word[data-word-state='active'] {
+  color: var(--pi-lyric-hot, var(--pi-primary-deep));
+  text-shadow:
+    0 0 0.06em
+      color-mix(
+        in srgb,
+        var(--pi-lyric-hot, var(--pi-primary-deep)) var(--pi-word-glow-rim, 30%),
+        transparent
+      ),
+    0 0 var(--pi-word-glow-sm, 20px)
+      color-mix(
+        in srgb,
+        var(--pi-lyric-hot, var(--pi-primary-deep)) var(--pi-word-glow-strong, 42%),
+        transparent
+      ),
+    0 0 var(--pi-word-glow-lg, 40px)
+      color-mix(
+        in srgb,
+        var(--pi-lyric-hot, var(--pi-primary-deep)) var(--pi-word-glow-soft, 20%),
+        transparent
+      ),
+    0 0 0.3em
+      color-mix(
+        in srgb,
+        var(--pi-lyric-hot, var(--pi-primary-deep)) var(--pi-word-glow-bloom, 10%),
+        transparent
+      );
 }
 
-.pi-lyricstage__word[data-word-state='active'][data-word-spin='true'] {
-  /* 缓动选「快出慢收」：前段转得快（看得出在转），后段贴到位（不会来回晃）。 */
-  animation: pi-lyricstage-word-spin-in var(--pi-word-spin-ms, 420ms) cubic-bezier(0.16, 1, 0.3, 1);
+/* （旧方案的实现说明已在用户本轮第 2 条整段删除：流光原来是「四帧关键帧 + 落定回 1 倍 +
+ *  一律从左上角 0.9~1.4em 飞来」，与 folia classic 的三态弹簧模型不是一回事。现在的口径见
+ *  下面「classic：三态动效（照 folia classic 重做）」那一段。） */
+/* （旧的四帧关键帧 `pi-lyricstage-word-spin-in` 已在用户本轮第 2 条整段删除：
+ *  三态模型取代了它，见下面「classic：三态动效」那一段。） */
+
+/* （旧的「挂载关键帧」那条规则与它的说明已在用户本轮第 2 条整段删除：关键帧
+ *  `pi-lyricstage-word-spin-in` 不再存在，classic 的 `[data-word-state='active']` 由下面
+ *  那条三态规则接管。`data-word-spin` 属性保留着 —— 设置页那枚开关现在的语义是
+ *  folia 的 `enableWordRotation`：关着时落点角 / 未唱角 / 漂移角全是 0。） */
+/* ===========================================================================
+ * classic（流光）：三态动效**照 folia classic 重做**（用户本轮第 2 条）
+ *
+ * 原话：「流光的歌词出现的动画重新做，首先分析视频里的动画，再结合学习 folia 库
+ * （chthollyphile/folia-major）的动画实现，要达到一样的视效」。
+ *
+ * folia 是 framer-motion 的三个状态变体（`layoutVariants` / `bodyVariants`）：每个字 / 词按
+ * 自己的时间戳在 `waiting → active → passed` 之间切，**没有关键帧动画**。这里用 CSS 过渡
+ * 表达同一件事 —— 三态各自给目标值，位移 / 缩放那支写成「弹簧」：`linear()` 拟合
+ * `spring(stiffness 200, damping 20)`（framer 的默认质量 1）的解析解，过冲 4.1%、520ms 收敛。
+ * 旧的 `pi-lyricstage-word-spin-in` 关键帧（四帧、落定回 1 倍、一律「从左上角 0.9~1.4em 飞来」）
+ * 整段退休。
+ *
+ * 三态（数值由 LyricStage.tsx 的 `classicMotionFor` 逐字写在行内变量上）：
+ *   · waiting：远（±100px / ±50px，还会被 `clampWaitingFlyToFrame` 夹进歌词框）、小（0.5 倍）、
+ *              糊（10px）、歪（落点角 + 20°）、全透明；
+ *   · active ：落位、放大到「落点缩放 × 1.4」、清晰、换高亮色 —— **整个「正在唱」期间保持**；
+ *   · passed ：缩回「落点缩放」（≈1.1~1.3）、0.82 的余温、在 **5s** 里慢慢歪向漂移角。
+ *
+ * 三条规则都写全 `[data-theme='classic']`（权重 0,3,0）：`.pi-lyricstage__word` 是**多套主题共用**
+ * 的类（契约见 lyric-themes.css:11-12），不写作用域就等于把这套 transform 糊到
+ * tilt / pendolo / partita 的排版上 —— 上面那条共用三态规则（:278 / :369 / :693）保持原样不动。
+ *
+ * 为什么 `rotate` 用**独立属性**而不是 transform 里那支 `rotate()`：folia 的 passed 变体给
+ * `rotate` 单列了 5s、给缩放与位移 0.5s，一支 transform 写不出两种时长。独立属性按
+ * translate → rotate → scale → transform 的顺序合成，绕的仍是元素自己的中心，观感与
+ * 「transform 里带 rotate」逐位相同。
+ * ========================================================================= */
+
+.pi-lyricstage[data-theme='classic'] .pi-lyricstage__word {
+  /* 弹簧缓动：`1 − e^(−ζω₀t)·(cos ωd t + (ζω₀/ωd)·sin ωd t)`，ω₀ = 14.142、ζ = 0.7071、
+     ωd = 10 —— 在 0~520ms 上取 26 个等距点、末点归一成 1（过冲 4.08% 落在约 120ms 处）。 */
+  --pi-word-spring: linear(
+    0,
+    0.0375,
+    0.1297,
+    0.2515,
+    0.3844,
+    0.5151,
+    0.6352,
+    0.74,
+    0.8272,
+    0.8967,
+    0.9496,
+    0.988,
+    1.0139,
+    1.0299,
+    1.0382,
+    1.0408,
+    1.0395,
+    1.0357,
+    1.0305,
+    1.0248,
+    1.0191,
+    1.0139,
+    1.0093,
+    1.0054,
+    1.0024,
+    1
+  );
+  /* 未唱那一格：远、小、糊、歪、全透明。 */
+  opacity: 0;
+  filter: blur(10px);
+  color: var(--pi-lyric-ink, #fff);
+  text-shadow: none;
+  transform-origin: center;
+  rotate: var(--pi-word-wait-rot, 0deg);
+  transform: translate3d(var(--pi-word-wait-x, 0px), var(--pi-word-wait-y, 0px), 0) scale(0.5);
+}
+
+.pi-lyricstage[data-theme='classic'] .pi-lyricstage__word[data-word-state='active'] {
+  opacity: 1;
+  filter: none;
+  rotate: var(--pi-word-rot, 0deg);
+  transform: translate3d(var(--pi-word-x, 0px), var(--pi-word-y, 0px), 0)
+    scale(calc(var(--pi-word-scale, 1) * var(--pi-word-active-scale, 1.4)));
+  /* 字色 / 辉光仍走紧接上面的那条 classic 高光规则（权重 0,4,0）；这里只补
+     「位置 / 大小 / 显出」这一路。`color 0ms` 是**有意**的：字是**淡入**进来的
+     （opacity 100ms），颜色在那一层淡入底下直接切到位 ⇒ 看到的是「一颗高亮的字弹出来」，
+     而不是「一颗黑字飞进来再变蓝」（第十五轮第 4 条那条口径，一个字节没改）。 */
+  transition:
+    opacity 100ms linear,
+    transform 520ms var(--pi-word-spring),
+    rotate 520ms var(--pi-word-spring),
+    /* 第二十三轮第 3 条：放大占位（`--pi-word-pad`）跟缩放同一条弹簧一起长出来，
+       不然「字变大了、位置才让开」会先挤一下。 */
+    margin 520ms var(--pi-word-spring),
+    filter 200ms ease-out,
+    color 0ms linear,
+    text-shadow 200ms ease-out;
+  will-change: transform, opacity;
+  backface-visibility: hidden;
+}
+
+/* 已唱：大小**回落到落点缩放**（folia 的 `passed` 变体），漂移角单独跑 5s 线性 ——
+ * 「单个字唱完就恢复大小」在流光这一侧的对应条款（云阶那条见 PartitaTheme）。
+ * 字色的尾巴沿用共用 passed 规则里那条 1100ms 起步慢的 S 曲线（第十五轮第 2 条按参考片段
+ * 量出来的「高光带宽」口径），这里只把 transform / rotate 换成三态模型的值。 */
+.pi-lyricstage[data-theme='classic'] .pi-lyricstage__word[data-word-state='passed'] {
+  opacity: 0.82;
+  filter: blur(0px);
+  color: var(--pi-lyric-ink, #fff);
+  text-shadow: none;
+  rotate: calc(var(--pi-word-rot, 0deg) + var(--pi-word-passed-rot, 0deg));
+  transform: translate3d(var(--pi-word-x, 0px), var(--pi-word-y, 0px), 0)
+    scale(var(--pi-word-scale, 1));
+  transition:
+    opacity 500ms ease-out,
+    transform 500ms ease-out,
+    /* 第二十三轮第 3 条：唱完把放大占位一起收回（与缩放同一时长）。 */ margin 500ms ease-out,
+    rotate 5000ms linear,
+    filter 500ms ease-out,
+    color var(--pi-word-fade-ms, 1100ms) cubic-bezier(0.45, 0, 0.55, 1),
+    text-shadow var(--pi-word-fade-ms, 1100ms) cubic-bezier(0.45, 0, 0.55, 1);
 }
 
 /* 已唱字：第十五轮第 4 条 —— 颜色**逐渐**从主题色淡回常态白（过渡而不是瞬间跳色），
@@ -324,7 +622,10 @@
 .pi-lyricstage__word[data-word-state='passed'] {
   --pi-word-enter-ms: 500ms;
   opacity: 0.82;
-  transform: rotate(0deg) scale(1);
+  /* 第十六轮：唱过的字**留在自己那个错落位置上**（图 2 整行都是错落的，不是只有当前字歪），
+   * 但入场角归零、缩放回 1、辉光熄灭（text-shadow: none）—— 高光只跟着「正在唱的那几个字」。 */
+  transform: translateY(var(--pi-word-y, 0em)) translateX(var(--pi-word-x, 0em))
+    rotate(var(--pi-word-tilt, 0deg)) scale(1);
   filter: blur(0px);
   color: var(--pi-lyric-ink, #fff);
   text-shadow: none;
@@ -334,8 +635,16 @@
     opacity var(--pi-word-enter-ms) ease-out,
     transform var(--pi-word-enter-ms) ease-out,
     filter var(--pi-word-enter-ms) ease-out,
-    color var(--pi-word-fade-ms) ease-out,
-    text-shadow var(--pi-word-fade-ms) ease-out;
+    /* **用户本轮第 2 条**（借 `analyze.py` 对参考片段的量测改进观感）：
+     * 参考片段里那圈「粉」是一条**很宽的带**——逐帧量高亮像素的水平跨度在 500~1200px 之间
+     *（画幅 1582px ⇒ 占整行的 32%~74%，也就是同一时刻有 4~6 个字还带着高亮色），而不是
+     * 「只有当前那颗字有色、过了就立刻变白」。原来这两支用的是 `ease-out`（起步最快 ⇒ 一过播放头
+     * 颜色就掉掉一半），所以我们的带比参考窄一截。
+     * 换成一条**起步慢**的 S 曲线（`cubic-bezier(0.45, 0, 0.55, 1)`）：前 1/3 段基本还停在
+     * 高亮色上、后段才收干净 —— 带的宽度与参考一致，收尾仍然是渐进的（不会「啪」地截断）。
+     * 时长 `--pi-word-fade-ms`（1100ms，短句档 700/520ms）一个字没动。 */
+    color var(--pi-word-fade-ms) cubic-bezier(0.45, 0, 0.55, 1),
+    text-shadow var(--pi-word-fade-ms) cubic-bezier(0.45, 0, 0.55, 1);
 }
 
 /* 档位只改 filter 过渡时长（folia：instant 0.08s / fast 0.12s / normal 0.2s）。
@@ -344,13 +653,13 @@
 .pi-lyricstage__line[data-hint='short'] .pi-lyricstage__word {
   --pi-word-filter-ms: 120ms;
   --pi-word-fade-ms: 700ms;
-  --pi-word-spin-ms: 260ms;
+  --pi-word-spin-ms: 400ms;
 }
 
 .pi-lyricstage__line[data-hint='micro'] .pi-lyricstage__word {
   --pi-word-filter-ms: 80ms;
   --pi-word-fade-ms: 520ms;
-  --pi-word-spin-ms: 180ms;
+  --pi-word-spin-ms: 280ms;
 }
 
 /* ---------------------------------------------------------------------------
@@ -523,12 +832,21 @@
 }
 
 /* ---------------------------------------------------------------------------
- * 底部字幕层：译文 + 下两句预览
+ * 底部字幕层：**只放当前这一句的译文**（用户第 8 轮第 2 条）
+ *
+ * 这一层现在是**六套主题共用**的：`LyricStage.tsx` 在所有主题下都渲染同一个
+ * `.pi-lyricstage__sub`（不再只有 classic 挂），位置只在这条规则里定义一次 ——
+ * 绝对贴底 + 让开底部进度条（`--pi-stage-bleed-bottom`），所以「所有歌词动效的译文都在
+ * 进度条部件上面」是结构性成立的，不再靠六份各自的定位规则凑。
+ * 同时删掉了「下两句原文预览」：一次只显示一句（预览的样式规则也一并退休）。
  * ------------------------------------------------------------------------- */
 .pi-lyricstage__sub {
-  position: relative;
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
   min-width: 0;
-  padding: 0 12px 14px;
+  padding: 0 12px var(--pi-stage-bleed-bottom, 14px);
   text-align: center;
   /* 整层压到 60% 存在感，别抢主行。 */
   opacity: 0.6;
@@ -590,27 +908,15 @@
   overflow-wrap: anywhere;
 }
 
-/* 下两句预览：更小、更淡，常驻一点点模糊；单行截断。 */
-.pi-lyricstage__preview {
-  margin: 0;
-  max-width: 100%;
-  color: var(--pi-text-sub);
-  font-family: var(--pi-font);
-  font-size: clamp(0.875rem, 2vw, 1rem);
-  font-weight: 400;
-  line-height: 1.35;
-  filter: blur(1px);
-  transition: all 500ms;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+/* 下两句预览那一档整段退休（**用户第 8 轮第 2 条**：字幕一次只显示一句）。
+   原来这里是 `.pi-lyricstage__preview` 的样式（更小、更淡、常驻 1px 模糊、单行截断）——
+   DOM 与样式一起删掉，免得留一条永远选不中元素的死规则。 */
 
 /* ---------------------------------------------------------------------------
  * 窄列 / 无容器查询时的兜底
  * ------------------------------------------------------------------------- */
 /* 不支持 cqi 的老引擎：退回按视口算。整窗铺满的 classic 用 8vw —— 根节点铺满后 1cqi 就是
- * 窗宽的 1%，与 vw 同量；译文 / 预览同理换成 vw，取值与带 cqi 的那三条一一对应。 */
+ * 窗宽的 1%，与 vw 同量；译文同理换成 vw，取值与带 cqi 的那条一一对应。 */
 @supports not (font-size: 1cqi) {
   .pi-lyricstage__line {
     font-size: clamp(1.6rem, 5.2vw, 3.1rem);
@@ -622,10 +928,6 @@
 
   .pi-lyricstage[data-theme='classic'] .pi-lyricstage__translated {
     font-size: clamp(1.125rem, 1.75vw, 2rem);
-  }
-
-  .pi-lyricstage[data-theme='classic'] .pi-lyricstage__preview {
-    font-size: clamp(0.875rem, 1.3vw, 1.5rem);
   }
 }
 
@@ -666,6 +968,41 @@
     text-shadow: none;
     /* 第十五轮第 5 条：减少动态效果时不做「转正」动画，字直接落位。 */
     animation: none;
+    transition:
+      opacity 200ms linear,
+      transform 200ms ease-out,
+      color 200ms linear;
+  }
+
+  /* **用户本轮第 2 条**：classic 的三态规则是 (0,3,0)，会盖过上面那条 (0,2,0) 的
+   * `animation: none` / `text-shadow: none`，所以这里按同一支选择器（也是 (0,3,0)，
+   * 本块在文件末尾 ⇒ 靠源码顺序胜）再关一次：少动效时字**不飞、不转**，就在自己的排版位置上
+   * 淡入放大 —— 未唱那一格根本不读 `--pi-word-wait-*`（起点就是落点），
+   * `rotate` 也一律归 0（落点角、未唱角、漂移角全不生效）。 */
+  .pi-lyricstage[data-theme='classic'] .pi-lyricstage__word {
+    rotate: 0deg;
+    transform: translate3d(var(--pi-word-x, 0px), var(--pi-word-y, 0px), 0) scale(0.5);
+    transition:
+      opacity 200ms linear,
+      transform 200ms ease-out,
+      color 200ms linear;
+  }
+
+  .pi-lyricstage[data-theme='classic'] .pi-lyricstage__word[data-word-state='active'] {
+    text-shadow: none;
+    rotate: 0deg;
+    transform: translate3d(var(--pi-word-x, 0px), var(--pi-word-y, 0px), 0)
+      scale(calc(var(--pi-word-scale, 1) * var(--pi-word-active-scale, 1.4)));
+    transition:
+      opacity 200ms linear,
+      transform 200ms ease-out,
+      color 200ms linear;
+  }
+
+  .pi-lyricstage[data-theme='classic'] .pi-lyricstage__word[data-word-state='passed'] {
+    rotate: 0deg;
+    transform: translate3d(var(--pi-word-x, 0px), var(--pi-word-y, 0px), 0)
+      scale(var(--pi-word-scale, 1));
     transition:
       opacity 200ms linear,
       transform 200ms ease-out,

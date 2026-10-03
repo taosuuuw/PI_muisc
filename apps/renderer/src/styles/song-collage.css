@@ -221,7 +221,9 @@
    */
   transform: translate(-50%, -50%);
   /* ③ 不给 `will-change`/`transform: translateZ(0)`：分数缩放下会出现 1px 未遮罩接缝。 */
-  transition: box-shadow 600ms ease, filter 600ms ease;
+  transition:
+    box-shadow 600ms ease,
+    filter 600ms ease;
   /**
    * folia 的入场是「Metro 磁贴对角波」：起点在视口左上角，按曼哈顿格数延迟 0.03s/格、
    * 封顶 0.34s，从上方 90px 落下并淡入。它原本是 framer-motion 的弹簧
@@ -621,4 +623,19 @@
   .pi-collage--settled .pi-collage__item--exiting {
     transition: none;
   }
+}
+
+/*
+ * **用户第 7 轮第 1 条**（原话：「铺满之后切播放页需要**交叠淡入**」）。
+ *
+ * `SongCollage.enterPlayer()` 收尾时会给「宿主那一层」打 `data-collage-fading="true"`：
+ * 有浮层的宿主打在浮层上（`overlays.css` 的 `pi-listoverlay-crossfade-out`），
+ * **没有**浮层的宿主（拼贴自己占满整页的那种）退回打在这面墙上 —— 就是这条。
+ * 画布自己不带入场 `animation`，所以一条 `transition` 就够（浮层那边不行，理由见 `overlays.css`）。
+ * 340ms 与 `COLLAGE_CROSSFADE_MS` 同值。
+ */
+.pi-collage[data-collage-fading='true'] {
+  opacity: 0;
+  transition: opacity 340ms ease-out;
+  pointer-events: none;
 }

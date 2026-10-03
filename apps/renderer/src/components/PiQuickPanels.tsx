@@ -1,8 +1,11 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { QUALITY_LABEL, QUALITY_REQUIRES_VIP } from '@pi/shared';
 import type { LyricTheme, Quality, ThemeMode } from '@pi/shared';
+import { AccentPicker } from './AccentPicker';
 import { Icon } from './Icons';
+import type { IconName } from './Icons';
+import type { AccentMode } from '../lib/accent';
 import { coverAt } from '../lib/cover';
 import { useAccount, usePatchSettings, useSettings } from '../lib/queries';
 import { useUi } from '../state/ui';
@@ -31,11 +34,15 @@ import '../styles/quick-account.css';
  * - 卡片本身：`data-quick-panel="playlists"` 或 `"settings"`；
  *   设置卡在设置还没读到时额外带 `data-quick-panel-state="loading"`。
  * - 六宫格每个按键：`data-quick-item="<id>"` + `data-quick-item-state="ready|empty|unavailable"`。
- * - 迷你设置每一行：`data-quick-switch="lyric|quality|theme|account"`；
- *   按钮式选项 `data-quick-choice="<值>"` + `data-active="true|false"`；
- *   音质那行**不再是**原生 `<select>`（用户 m02898 第 2 条改成按键组）：六个官方档位全部
- *   渲染成 `data-quick-choice` 按钮，装它们的容器带 `data-quick-quality-group="true"`，
- *   选中的那个 `data-active="true"`。
+ * - 迷你设置**顶层图标分页栏**（用户第二十轮第 3 条）：每颗
+ *   `data-quick-tab="lyric|quality|theme|account"` + `data-active="true|false"`。
+ * - 分页内容：每个 `<section>` 带 `data-quick-tabpanel="<同一个 id>"`（加 `data-active`），
+ *   没选中的那颗有 `hidden` 属性——**节点不卸载**，所以下面那些抓手在任何分页下都找得到。
+ * - 每一类设置的标题行（浅色小字 + 右侧当前值）：`data-quick-switch="lyric|quality|theme"`；
+ *   账号那一类的行本身仍是 `data-quick-switch="account"`。
+ * - 选项按键：`data-quick-choice="<值>"` + `data-active="true|false"`；
+ *   装它们的方块网格 `data-quick-choices="lyric|quality|theme"`；
+ *   音质那组的容器额外带 `data-quick-quality-group="true"`。
  * - 账号行（用户 m02213 第 7 条重做）：行本身 `data-quick-switch="account"` 不变；
  *   昵称块 `data-quick-account-state="loggedIn|loggedOut"` 不变（状态只挂在**一个**节点上）；
  *   右侧独立按钮 `data-quick-more="account"` 不变。三个抓手原样保留，改名会让冒烟假红。
@@ -202,35 +209,70 @@ export function PiQuickPlaylistCard({
  * 那份表是 `SettingsPage.tsx` 的模块内常量、没有导出，而任务约束禁止改那个文件，
  * 所以短标签在这里镜像了一份；**键本身**仍来自 `@pi/shared` 的 `LyricTheme`，
  * 加第七套主题时这里会类型报错，不会悄悄漏掉。
+ *
+ * `icon` 是**用户第二十轮第 3 条**要的「选项按键文字带图标」（参考图里每个按键都带一枚图标）：
+ * 六套主题各挑一枚形状好认的既有图标，不改六套主题自己的实现。
  */
-const QUICK_LYRIC_THEMES: readonly { key: LyricTheme; short: string }[] = [
-  { key: 'classic', short: '流光' },
-  { key: 'fume', short: '浮名' },
-  { key: 'cadenza', short: '心象' },
-  { key: 'partita', short: '云阶' },
-  { key: 'tilt', short: '倾诉' },
-  { key: 'pendolo', short: '时计' },
+const QUICK_LYRIC_THEMES: readonly { key: LyricTheme; short: string; icon: IconName }[] = [
+  { key: 'classic', short: '流光', icon: 'waveform' },
+  { key: 'fume', short: '浮名', icon: 'comment' },
+  { key: 'cadenza', short: '心象', icon: 'star' },
+  { key: 'partita', short: '云阶', icon: 'bars' },
+  { key: 'tilt', short: '倾诉', icon: 'artist' },
+  { key: 'pendolo', short: '时计', icon: 'clock' },
 ];
 
 /**
  * 官方音质档位。顺序同 `pages/SettingsPage.tsx:114` 的 `OFFICIAL_CHOICES`
  * （同样没导出，同样只能镜像）；**中文名**直接用 `@pi/shared` 导出的 `QUALITY_LABEL`，
  * 不另抄一份文案。
+ *
+ * 图标从低到高给一枚「越来越贵」的形状：音符 → 波形 → 信号格 → 唱片 → 星 → 王冠
+ * （`signal` / `crown` 是这一轮新加的两枚，见 `components/Icons.tsx`）。
  */
-const QUICK_QUALITIES: readonly Quality[] = [
-  'standard',
-  'higher',
-  'exhigh',
-  'lossless',
-  'hires',
-  'jymaster',
+const QUICK_QUALITIES: readonly { key: Quality; icon: IconName }[] = [
+  { key: 'standard', icon: 'music' },
+  { key: 'higher', icon: 'waveform' },
+  { key: 'exhigh', icon: 'signal' },
+  { key: 'lossless', icon: 'album' },
+  { key: 'hires', icon: 'star' },
+  { key: 'jymaster', icon: 'crown' },
 ];
 
 /** 界面主题明暗（`Settings.theme`）。设置里没有独立的「主题颜色」字段，见交付报告。 */
-const QUICK_THEMES: readonly { key: ThemeMode; short: string }[] = [
-  { key: 'light', short: '浅色' },
-  { key: 'dark', short: '深色' },
-  { key: 'system', short: '跟随系统' },
+const QUICK_THEMES: readonly { key: ThemeMode; short: string; icon: IconName }[] = [
+  { key: 'light', short: '浅色', icon: 'sun' },
+  { key: 'dark', short: '深色', icon: 'moon' },
+  // 明暗那三档里「跟随系统」用刷新圈（`contrast` 让给下面的「黑白」主色档，同一页里不重复）。
+  { key: 'system', short: '跟随系统', icon: 'refresh' },
+];
+
+/**
+ * 应用主色的三档（用户第二十二轮第 2 条：「要在快捷设置页加上自定义主题色的功能栏」）。
+ * 值与设置页那三档**同一份**（`state/ui.ts` 的 `accentMode`），点哪档两边一起变。
+ */
+const QUICK_ACCENTS: readonly { key: AccentMode; short: string; icon: IconName }[] = [
+  { key: 'sky', short: '天蓝', icon: 'droplet' },
+  { key: 'mono', short: '黑白', icon: 'contrast' },
+  { key: 'custom', short: '自定义', icon: 'grid' },
+];
+
+/**
+ * 顶部**图标分页栏**的四档（用户第二十轮第 3 条：「顶部加图标分页栏把不同类的设置分开」）。
+ *
+ * 参考图里那条栏只有图标、没有文字：所以这里也是图标 + `title`/`aria-label`（鼠标停上去有名字，
+ * 读屏也读得到），标签字则留给每个分页内部那一行**浅色小标题**（同一条要求里的
+ * 「『歌词动效』『默认音质』等这样的黑体标题缩小改成浅色」）——两者不重复堆在同一处。
+ *
+ * 四档与 `data-quick-switch` 的四个 id 一一对应，冒烟抓手不变。
+ */
+export type QuickTab = 'lyric' | 'quality' | 'theme' | 'account';
+
+const QUICK_TABS: readonly { key: QuickTab; label: string; icon: IconName }[] = [
+  { key: 'lyric', label: '歌词动效', icon: 'waveform' },
+  { key: 'quality', label: '默认音质', icon: 'music' },
+  { key: 'theme', label: '主题颜色', icon: 'contrast' },
+  { key: 'account', label: '账号', icon: 'user' },
 ];
 
 export interface PiQuickSettingsCardProps {
@@ -247,8 +289,9 @@ export interface PiQuickSettingsCardProps {
  *   `packages/ipc/src/index.ts:428`）；
  * - 默认音质 → `Settings.preferredQuality`，文案来自 `QUALITY_LABEL`
  *   （`packages/shared/src/index.ts:39`）；
- * - 主题颜色 → 只有 `Settings.theme` 的明暗三档（`packages/ipc/src/index.ts:411`），
- *   没有「主色 / accent」字段（主题色由封面提色决定，见 `lib/song-palette.ts`）；
+ * - 主题颜色 → 只有 `Settings.theme` 的明暗三档（`packages/ipc/src/index.ts:411`）；
+ *   **界面主色**（用户第二十一轮第 5 条）是本机的 `pi.accent`（`state/ui.ts`），
+ *   它在设置页「界面」tab 里选，这张卡只写一句提示指过去——卡片里那三档是明暗，不是主色。
  * - 账号 → `useAccount()`（`lib/queries.ts:15`）。
  * 读写统一走 `useSettings()` / `usePatchSettings()`（`lib/queries.ts:169` / `:183`），
  * 和设置页改的是同一份缓存，两边不会打架。
@@ -294,98 +337,200 @@ export function PiQuickSettingsCard({
     openLogin();
   };
 
+  /**
+   * 当前分页（用户第二十轮第 3 条的图标分页栏）。
+   *
+   * 默认停在「歌词动效」：六套歌词动效是这张卡里改得最勤的一项，也是最常被打开的那一格。
+   * 四个分页的 DOM **一直挂着**（没选中的那颗只加 `hidden`），所以 `data-quick-choice` /
+   * `data-quick-quality-group` / `data-quick-more="account"` 这些冒烟抓手在任何分页下都找得到。
+   */
+  const [tab, setTab] = useState<QuickTab>('lyric');
+  // 应用主色（用户第二十二轮第 2 条）：与设置页同一份 store，改哪边都一起变。
+  const accentMode = useUi((state) => state.accentMode);
+  const accentColor = useUi((state) => state.accentColor);
+  const setAccentMode = useUi((state) => state.setAccentMode);
+  const setAccentColor = useUi((state) => state.setAccentColor);
+
   return (
-    <QuickCardShell
-      kind="settings"
-      title="快速设置"
-      onDismiss={onDismiss}
-      loading={!value}
-    >
+    <QuickCardShell kind="settings" title="快速设置" onDismiss={onDismiss} loading={!value}>
       {value ? (
-        <div className="pi-quick-switches">
-          <div className="pi-quick-switch" data-quick-switch="lyric">
-            <span className="pi-quick-switch__label">歌词动效</span>
-            <span className="pi-quick-switch__value">
-              {QUICK_LYRIC_THEMES.find((theme) => theme.key === value.lyricTheme)?.short ?? '—'}
-            </span>
-            <div className="pi-quick-switch__choices">
+        <div className="pi-quick-body">
+          {/*
+            顶部图标分页栏（用户第二十轮第 3 条）。
+            抓手：每颗 `data-quick-tab="lyric|quality|theme|account"` + `data-active`；
+            下面每个分页 `data-quick-tabpanel="<同一个 id>"` + `data-active`，没选中的带 `hidden`
+            （`hidden` 只是 `display:none`，节点还在 DOM 里，所以 `[data-quick-switch]` /
+            `[data-quick-choice]` 这些老抓手一个都不少，冒烟照旧找得到）。
+            样式表里必须写 `.pi-quick-panel[hidden] { display: none }`：本文件给
+            `.pi-quick-panel` 定了 `display: grid`，作者样式会盖掉浏览器默认的 `[hidden]`。
+          */}
+          <div className="pi-quick-tabs" role="tablist" aria-label="快速设置分类">
+            {QUICK_TABS.map((entry) => (
+              <button
+                key={entry.key}
+                type="button"
+                role="tab"
+                className="pi-quick-tab"
+                data-quick-tab={entry.key}
+                data-active={tab === entry.key}
+                aria-selected={tab === entry.key}
+                aria-label={entry.label}
+                title={entry.label}
+                onClick={() => setTab(entry.key)}
+              >
+                <Icon name={entry.icon} size={18} />
+              </button>
+            ))}
+          </div>
+
+          <section
+            className="pi-quick-panel"
+            data-quick-tabpanel="lyric"
+            data-active={tab === 'lyric'}
+            hidden={tab !== 'lyric'}
+          >
+            <div className="pi-quick-head" data-quick-switch="lyric">
+              <span className="pi-quick-head__label">歌词动效</span>
+              <span className="pi-quick-head__value">
+                {QUICK_LYRIC_THEMES.find((theme) => theme.key === value.lyricTheme)?.short ?? '—'}
+              </span>
+            </div>
+            <div className="pi-quick-choices" data-quick-choices="lyric">
               {QUICK_LYRIC_THEMES.map((theme) => (
                 <button
                   key={theme.key}
                   type="button"
-                  className="pi-quick-chip"
+                  className="pi-quick-choice"
                   data-quick-choice={theme.key}
                   data-active={value.lyricTheme === theme.key}
                   disabled={patch.isPending}
                   onClick={() => patch.mutate({ lyricTheme: theme.key })}
                 >
-                  {theme.short}
+                  <span className="pi-quick-choice__icon" aria-hidden="true">
+                    <Icon name={theme.icon} size={18} />
+                  </span>
+                  <span className="pi-quick-choice__text">{theme.short}</span>
                 </button>
               ))}
             </div>
-          </div>
+          </section>
 
-          <div className="pi-quick-switch" data-quick-switch="quality">
-            <span className="pi-quick-switch__label">默认音质</span>
-            <span className="pi-quick-switch__value">
-              {QUALITY_LABEL[value.preferredQuality]}
-            </span>
+          <section
+            className="pi-quick-panel"
+            data-quick-tabpanel="quality"
+            data-active={tab === 'quality'}
+            hidden={tab !== 'quality'}
+          >
+            <div className="pi-quick-head" data-quick-switch="quality">
+              <span className="pi-quick-head__label">默认音质</span>
+              <span className="pi-quick-head__value">{QUALITY_LABEL[value.preferredQuality]}</span>
+            </div>
             {/*
-              用户 m02898 第 2 条：「默认音质」从原生 `<select>` 改成**按键组**——
-              未选中=暗色（`.pi-quick-chip` 的默认皮肤：淡描边 + 透明底），
-              已选=亮色（`[data-active='true']` 那条主色底/主色字）。
+              用户 m02898 第 2 条：「默认音质」从原生 `<select>` 改成**按键组**。
+              用户第二十轮第 3 条：六颗按键从「一条分段轨道上的纯文字」改成「图标 + 文字的方块」
+              （`.pi-quick-choice`，见 `styles/quick-panels.css`），与歌单卡那六块按键同一套语言。
               档位仍然只有 `OFFICIAL_CHOICES` 那六个（`pages/SettingsPage.tsx:116`，同一套
               `@pi/shared` 的 `Quality`），不发明新字符串；VIP 门槛用既有的
               `QUALITY_REQUIRES_VIP` 只做 `title` 提示，**不禁用**按钮——设置页那边也是随便选、
               由主进程按账号能力往下试（`SettingsPage.tsx:165` 的 title 原话）。
-              `data-quick-choice` 挂到**每一颗**按钮上（原来只挂在 `<select>` 自己身上），
-              外层容器另给 `data-quick-quality-group="true"`。
+              `data-quick-choice` 挂到**每一颗**按钮上，外层容器仍给 `data-quick-quality-group="true"`
+              （冒烟「点了要真换成那一档」那条探针认它）。
             */}
-            <div className="pi-quick-switch__choices" data-quick-quality-group="true">
+            <div
+              className="pi-quick-choices"
+              data-quick-choices="quality"
+              data-quick-quality-group="true"
+            >
               {QUICK_QUALITIES.map((quality) => (
                 <button
-                  key={quality}
+                  key={quality.key}
                   type="button"
-                  className="pi-quick-chip"
-                  data-quick-choice={quality}
-                  data-active={value.preferredQuality === quality}
+                  className="pi-quick-choice"
+                  data-quick-choice={quality.key}
+                  data-active={value.preferredQuality === quality.key}
                   title={
-                    vip || !QUALITY_REQUIRES_VIP[quality]
-                      ? QUALITY_LABEL[quality]
-                      : `${QUALITY_LABEL[quality]}（需要 VIP）`
+                    vip || !QUALITY_REQUIRES_VIP[quality.key]
+                      ? QUALITY_LABEL[quality.key]
+                      : `${QUALITY_LABEL[quality.key]}（需要 VIP）`
                   }
                   disabled={patch.isPending}
-                  onClick={() => patch.mutate({ preferredQuality: quality })}
+                  onClick={() => patch.mutate({ preferredQuality: quality.key })}
                 >
-                  {QUALITY_LABEL[quality]}
+                  <span className="pi-quick-choice__icon" aria-hidden="true">
+                    <Icon name={quality.icon} size={18} />
+                  </span>
+                  <span className="pi-quick-choice__text">{QUALITY_LABEL[quality.key]}</span>
                 </button>
               ))}
             </div>
-          </div>
+          </section>
 
-          <div className="pi-quick-switch" data-quick-switch="theme">
-            <span className="pi-quick-switch__label">主题颜色</span>
-            <div className="pi-quick-switch__choices">
+          <section
+            className="pi-quick-panel"
+            data-quick-tabpanel="theme"
+            data-active={tab === 'theme'}
+            hidden={tab !== 'theme'}
+          >
+            <div className="pi-quick-head" data-quick-switch="theme">
+              <span className="pi-quick-head__label">主题颜色</span>
+            </div>
+            <div className="pi-quick-choices" data-quick-choices="theme">
               {QUICK_THEMES.map((theme) => (
                 <button
                   key={theme.key}
                   type="button"
-                  className="pi-quick-chip"
+                  className="pi-quick-choice"
                   data-quick-choice={theme.key}
                   data-active={value.theme === theme.key}
                   disabled={patch.isPending}
                   onClick={() => patch.mutate({ theme: theme.key })}
                 >
-                  {theme.short}
+                  <span className="pi-quick-choice__icon" aria-hidden="true">
+                    <Icon name={theme.icon} size={18} />
+                  </span>
+                  <span className="pi-quick-choice__text">{theme.short}</span>
                 </button>
               ))}
             </div>
-            {/* 诚实提示：设置里没有独立主题色，主色跟着当前封面走。 */}
-            <span className="pi-quick-switch__hint">没有独立主色，配色跟着封面走</span>
-          </div>
+            {/*
+              用户第二十二轮第 2 条：「要在快捷设置页加上自定义主题色的功能栏」。
+              与设置页「界面」tab 改的是**同一份** `state/ui.ts` 的 `accentMode` / `accentColor`，
+              所以两边互为镜像；自定义档直接把那块取色面板（紧凑档）搬进来。
+            */}
+            <div className="pi-quick-head" data-quick-switch="accent">
+              <span className="pi-quick-head__label">应用主色</span>
+              <span className="pi-quick-head__value">
+                {QUICK_ACCENTS.find((entry) => entry.key === accentMode)?.short ?? '天蓝'}
+              </span>
+            </div>
+            <div className="pi-quick-choices" data-quick-choices="accent">
+              {QUICK_ACCENTS.map((entry) => (
+                <button
+                  key={entry.key}
+                  type="button"
+                  className="pi-quick-choice"
+                  data-quick-choice={entry.key}
+                  data-active={accentMode === entry.key}
+                  onClick={() => setAccentMode(entry.key)}
+                >
+                  <span className="pi-quick-choice__icon" aria-hidden="true">
+                    <Icon name={entry.icon} size={18} />
+                  </span>
+                  <span className="pi-quick-choice__text">{entry.short}</span>
+                </button>
+              ))}
+            </div>
+            {accentMode === 'custom' ? (
+              <AccentPicker compact value={accentColor} onChange={setAccentColor} />
+            ) : null}
+            {/* 诚实提示：歌词配色跟着封面走，界面主色就是上面这一栏。 */}
+            <p className="pi-quick-note">
+              歌词配色跟着封面走；上面这栏改的是按钮、进度条那套界面主色
+            </p>
+          </section>
 
           {/*
-            账号行（用户 m02213 第 7 条重做）。
+            账号行（用户 m02213 第 7 条重做；用户第二十轮第 3 条搬进「账号」分页）。
             原来是一坨：竖排「账号」标题 + 挤在标题下的 VIP 徽章 + 右侧一行灰字用户名 +
             单独一行的蓝色「切换账号」文字。现在改成左中右三段：
               ① 40px 圆形头像（拿不到头像地址时退回 `user` 图标占位；未登录同款占位）；
@@ -395,49 +540,64 @@ export function PiQuickSettingsCard({
             三个冒烟抓手（`data-quick-switch="account"` / `data-quick-account-state` /
             `data-quick-more="account"`）都留在原来的节点层级上。
           */}
-          <div className="pi-quick-switch pi-quick-account-row" data-quick-switch="account">
-            {avatar ? (
-              <img className="pi-quick-account__avatar" src={avatar} alt="" />
-            ) : (
-              <span
-                className="pi-quick-account__avatar pi-quick-account__avatar--empty"
-                aria-hidden="true"
-              >
-                <Icon name="user" size={19} />
+          <section
+            className="pi-quick-panel"
+            data-quick-tabpanel="account"
+            data-active={tab === 'account'}
+            hidden={tab !== 'account'}
+          >
+            <div className="pi-quick-head">
+              <span className="pi-quick-head__label">账号</span>
+              <span className="pi-quick-head__value">
+                {loggedIn ? (capability?.nickname ?? '已登录') : '未登录'}
               </span>
-            )}
-            <span
-              className="pi-quick-account"
-              data-quick-account-state={loggedIn ? 'loggedIn' : 'loggedOut'}
-            >
-              <span className="pi-quick-account__line">
+            </div>
+            <div className="pi-quick-switch pi-quick-account-row" data-quick-switch="account">
+              {avatar ? (
+                <img className="pi-quick-account__avatar" src={avatar} alt="" />
+              ) : (
                 <span
-                  className="pi-quick-account__name"
-                  title={loggedIn ? (capability?.nickname ?? undefined) : undefined}
+                  className="pi-quick-account__avatar pi-quick-account__avatar--empty"
+                  aria-hidden="true"
                 >
-                  {loggedIn ? (capability?.nickname ?? `用户 ${capability?.userId ?? ''}`) : '未登录'}
+                  <Icon name="user" size={19} />
                 </span>
-                {loggedIn && (capability?.vipType ?? 0) > 0 ? (
-                  <span className="pi-quick-account__vip">VIP</span>
-                ) : null}
+              )}
+              <span
+                className="pi-quick-account"
+                data-quick-account-state={loggedIn ? 'loggedIn' : 'loggedOut'}
+              >
+                <span className="pi-quick-account__line">
+                  <span
+                    className="pi-quick-account__name"
+                    title={loggedIn ? (capability?.nickname ?? undefined) : undefined}
+                  >
+                    {loggedIn
+                      ? (capability?.nickname ?? `用户 ${capability?.userId ?? ''}`)
+                      : '未登录'}
+                  </span>
+                  {loggedIn && (capability?.vipType ?? 0) > 0 ? (
+                    <span className="pi-quick-account__vip">VIP</span>
+                  ) : null}
+                </span>
+                <span className="pi-quick-account__meta">
+                  {loggedIn
+                    ? capability?.userId !== undefined
+                      ? `ID: ${capability.userId}`
+                      : '已登录'
+                    : '登录后同步歌单与收藏'}
+                </span>
               </span>
-              <span className="pi-quick-account__meta">
-                {loggedIn
-                  ? capability?.userId !== undefined
-                    ? `ID: ${capability.userId}`
-                    : '已登录'
-                  : '登录后同步歌单与收藏'}
-              </span>
-            </span>
-            <button
-              type="button"
-              className="pi-quick-account__action"
-              data-quick-more="account"
-              onClick={onAccountAction}
-            >
-              {loggedIn ? '切换账号' : '去登录'}
-            </button>
-          </div>
+              <button
+                type="button"
+                className="pi-quick-account__action"
+                data-quick-more="account"
+                onClick={onAccountAction}
+              >
+                {loggedIn ? '切换账号' : '去登录'}
+              </button>
+            </div>
+          </section>
         </div>
       ) : (
         <p className="pi-quick-loading">正在读取设置…</p>

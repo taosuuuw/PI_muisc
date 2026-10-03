@@ -390,12 +390,25 @@
   );
 }
 
-/* 球心的「PI」：老悬浮球同款天蓝渐变字，字号跟着半径一起缩。 */
+/*
+ * 球心的「PI」：老悬浮球同款渐变字，字号跟着半径一起缩。
+ *
+ * 用户第二十二轮第 1 条（原话：「应用主题色也要改变如图 1 所显示的圆球颜色」）：
+ * 这三个色**原来写死**成天蓝渐变（#8fd8ff → #35a7f5 → #0b6fd0），主色换黑白/自定义时
+ * 球里的字还是蓝的。现在整条渐变由 `--pi-primary` 现算：
+ * 高光 = 主色掺白 45%、中间 = 主色本身、暗部 = 主色掺黑 30%，
+ * 于是天蓝档出来的仍是那枚蓝字（只是精确色值略有出入），黑白/自定义档跟着换。
+ */
 .pi-quick-orb__logo {
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.4px;
-  background: linear-gradient(160deg, #8fd8ff 0%, #35a7f5 45%, #0b6fd0 100%);
+  background: linear-gradient(
+    160deg,
+    color-mix(in srgb, var(--pi-primary) 55%, #ffffff) 0%,
+    var(--pi-primary) 45%,
+    color-mix(in srgb, var(--pi-primary) 70%, #000000) 100%
+  );
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;

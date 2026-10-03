@@ -91,6 +91,15 @@ export interface LyricThemeProps {
   readonly leavingIndex?: number | null;
   readonly positionMs: number;
   /**
+   * 播放器**此刻是不是在出声**（`store.status === 'playing'`）。不传按「在放」处理。
+   *
+   * **用户第 5 轮第 2 条**（原话：「我按暂停，歌词依旧会先走几步再猛地回到暂停的进度位置」）：
+   * `positionMs` 只有 ~4Hz，主题层要拿 `usePositionClock` 外推才能连续；可外推**必须**知道
+   * 播放器停没停 —— 只靠「多久没收到新值」推断时，暂停后那 600ms 里时钟会继续往前跑，
+   * 等超时判定回落到锚点值时，画面就是「先走几步、再猛地回到原位」。有这个 prop 就直接停。
+   */
+  readonly playing?: boolean;
+  /**
    * 整首歌曲时长（毫秒）；拿不到就不传（`0` / `undefined` 都当「不知道」）。
    *
    * **用户 m01402 第 3 条（M4 剩余项）**：浮名曲尾「剩余 N 秒」的判据靠它；不传时 `FumeTheme`
@@ -317,9 +326,7 @@ export function parseRgb(color: string): RgbColor | null {
   const alphaRaw = parts[3];
   let a = 1;
   if (alphaRaw !== undefined) {
-    a = alphaRaw.endsWith('%')
-      ? Number.parseFloat(alphaRaw) / 100
-      : Number.parseFloat(alphaRaw);
+    a = alphaRaw.endsWith('%') ? Number.parseFloat(alphaRaw) / 100 : Number.parseFloat(alphaRaw);
     if (!Number.isFinite(a)) a = 1;
   }
   return { r, g, b, a };
@@ -388,8 +395,13 @@ export interface PositionClock {
  * 这里记下「上一次 prop 变化的时间」，用 `performance.now()` 外推；
  * 位置 600ms 没动过就当暂停/拖拽，冻在外推前的值上（否则暂停时脉冲会一直往前跑）。
  * 外层每 ~250ms 的 prop 更新会把它重新对齐一次。
+ *
+ * **用户第 5 轮第 2 条**（「按暂停，歌词依旧会先走几步再猛地回到暂停的进度位置」）：上面那条
+ * 「600ms 没动就当暂停」是**事后推断**，暂停后那 600ms 里时钟照样在往前跑，等它判定完再落回
+ * 锚点值 —— 屏幕上就是「先走几步、猛地弹回」。所以新增 `playing`：播放器一说停就**立刻**不再外推
+ *（`current()` 直接返回锚点值），那 600ms 的猜测只留给「拿不到播放状态」的老调用点。
  */
-export function usePositionClock(positionMs: number): PositionClock {
+export function usePositionClock(positionMs: number, playing = true): PositionClock {
   const state = useRef({ ms: positionMs, at: performance.now(), movedAt: performance.now() });
   useEffect(() => {
     const now = performance.now();
@@ -397,10 +409,14 @@ export function usePositionClock(positionMs: number): PositionClock {
     state.current.at = now;
     state.current.movedAt = now;
   }, [positionMs]);
+  // `current` 是稳定引用（下面 useMemo 的 deps 是空），所以播放状态要走 ref 读最新值。
+  const playingRef = useRef(playing);
+  playingRef.current = playing;
   return useMemo(
     () => ({
       current: (): number => {
         const snapshot = state.current;
+        if (!playingRef.current) return snapshot.ms;
         const now = performance.now();
         if (now - snapshot.movedAt > 600) return snapshot.ms;
         return snapshot.ms + (now - snapshot.at);
@@ -600,6 +616,18 @@ export interface ResolvedThemeColors {
   readonly primary: string;
   readonly accent: string;
   readonly surface: string;
+  /**
+   * **用户第 11 轮第 1 / 2 条**（原话：「心象浅色模式下，唱过的歌词应该是黑色」＋
+   * 「浮名浅色模式下，唱过的歌词的黑色……应该和浅色模式下的流光的黑色一样」）：
+   * 常态（未唱 / 唱过）歌词色 = **classic / partita / tilt / pendolo 在 CSS 里吃的那一支**
+   * `--pi-lyric-ink`（`lyric-stage.css`：暗档 `#fff`、亮档 `var(--pi-text)` 近黑）。
+   *
+   * 为什么要把它解析出来：`fume` / `cadenza` 每帧都要用 `mixColor()` 混色，而它只认实色
+   * （不认 `var()`），所以这两套主题原来各自造了一支 —— 亮档「白往黑推到够 3:1 就停」⇒ 中灰，
+   * 于是同一屏上「流光的唱过字是近黑、浮名/心象的却是中灰」。现在两套直接吃这一支，
+   * 六套主题的常态色**必然一致**（这正是主人第 2 条要的「和流光的黑色一样」）。
+   */
+  readonly ink?: string;
 }
 
 /**
@@ -636,9 +664,8 @@ export function contrastRatio(a: RgbColor, b: RgbColor): number {
 export function ensureContrast(fg: RgbColor, bg: RgbColor, minRatio = 3): string {
   const fgText = `rgb(${Math.round(fg.r)}, ${Math.round(fg.g)}, ${Math.round(fg.b)})`;
   if (contrastRatio(fg, bg) >= minRatio) return fgText;
-  const target: RgbColor = relativeLuminance(bg) > 0.42
-    ? { r: 0, g: 0, b: 0, a: 1 }
-    : { r: 255, g: 255, b: 255, a: 1 };
+  const target: RgbColor =
+    relativeLuminance(bg) > 0.42 ? { r: 0, g: 0, b: 0, a: 1 } : { r: 255, g: 255, b: 255, a: 1 };
   const targetText = `rgb(${target.r}, ${target.g}, ${target.b})`;
   let best = fgText;
   for (let amount = 0.25; amount <= 1.0001; amount += 0.25) {
@@ -657,11 +684,19 @@ function resolveThemeColors(scope: HTMLElement | null, palette: LyricPalette): R
     primary: resolveCssColor(scope, cssVarChain('--pi-th-primary', palette.primaryColor)),
     accent: resolveCssColor(scope, cssVarChain('--pi-th-accent', palette.accentColor)),
     surface: resolveCssColor(scope, cssVarChain('--pi-th-surface', palette.backgroundColor)),
+    /*
+     * **用户第 11 轮第 1 / 2 条**：常态墨色直接读舞台那一支 `--pi-lyric-ink`（亮档 = `var(--pi-text)`），
+     * 与 classic / partita / tilt / pendolo 用的是同一个事实来源 —— 不再各自造一支。
+     * 解析不到（没有 DOM / 还没挂载）时留空串，由消费方退回自己的兜底。
+     */
+    ink: resolveCssColor(scope, 'var(--pi-lyric-ink, #fff)'),
   };
 }
 
 function sameThemeColors(a: ResolvedThemeColors, b: ResolvedThemeColors): boolean {
-  return a.primary === b.primary && a.accent === b.accent && a.surface === b.surface;
+  return (
+    a.primary === b.primary && a.accent === b.accent && a.surface === b.surface && a.ink === b.ink
+  );
 }
 
 /**
@@ -676,7 +711,9 @@ export function useLiveThemeColors<T extends HTMLElement>(
   ref: RefObject<T | null>,
   palette: LyricPalette,
 ): ResolvedThemeColors {
-  const [colors, setColors] = useState<ResolvedThemeColors>(() => resolveThemeColors(null, palette));
+  const [colors, setColors] = useState<ResolvedThemeColors>(() =>
+    resolveThemeColors(null, palette),
+  );
   useEffect(() => {
     const element = ref.current;
     const scope = element ?? (typeof document === 'undefined' ? null : document.documentElement);

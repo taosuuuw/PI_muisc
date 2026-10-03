@@ -75,12 +75,19 @@
   font-family: var(--pi-font, inherit);
 }
 
-/* 正文本体。文字本身保持不透明，辉光靠下面的兄弟层描。 */
+/* 正文本体。文字本身保持不透明，辉光靠下面的兄弟层描。
+ *
+ * **用户第 10 轮第 1 条**（「心象的辉光强度太大了，降低一点」）：这里必须显式 `text-shadow: none`。
+ * 辉光是逐帧写在 `.pi-lyriccadenza__word`（外层 div）上的，而 `text-shadow` 是**继承**属性 ——
+ * 不挡掉的话，正文层与下面那层 `.pi-lyriccadenza__glow` **各描一遍同一圈光**，屏幕上两支阴影叠加、
+ * 透明度相加，观感约等于设计值的 2 倍（这就是「太重」的真根因；数值本身也一起收了三成，
+ * 见 `CadenzaTheme.buildDomTextShadow` 的注释）。 */
 .pi-lyriccadenza__body {
   position: relative;
   z-index: 1;
   display: block;
   white-space: nowrap;
+  text-shadow: none;
 }
 
 /* 辉光层：透明字 + text-shadow（z-index 0，被正文压住）。 */
@@ -119,45 +126,9 @@
   animation: pi-cad-ripple 2.4s ease-out infinite;
 }
 
-/* 译文 / 下两句预览：贴底居中。
- * 主题舞台现在铺满整个播放页（见 lyric-themes.css 里那条 `position: absolute; inset: 0`），
- * 所以这里不能用固定的 `bottom: 8px`——那会贴到窗口最底下、压住底部悬浮进度条。
- * `--pi-stage-bleed-bottom` 由主题舞台给出（跟窗口高走的一个安全高度，默认 11vh / 86~132px），
- * 正好是 `.pi-home__bar`（bottom 22px + height 56px）那一条的占位。 */
-.pi-lyriccadenza__sub {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: calc(var(--pi-stage-bleed-bottom, 92px) + 8px);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 0.25em;
-  text-align: center;
-  font-family: var(--pi-font, inherit);
-}
-
-.pi-lyriccadenza__translated {
-  margin: 0;
-  max-width: 92%;
-  font-size: 0.9rem;
-  line-height: 1.4;
-  opacity: 0.6;
-  color: var(--pi-text-sub, #6b7280);
-}
-
-.pi-lyriccadenza__preview {
-  margin: 0;
-  max-width: 88%;
-  font-size: 0.74rem;
-  line-height: 1.35;
-  opacity: 0.38;
-  color: var(--pi-text-tertiary, #9aa3b2);
-}
-
-.pi-lyriccadenza__preview + .pi-lyriccadenza__preview {
-  opacity: 0.22;
-}
+/* 心象自己那层译文（含「下两句预览」）整段退休（**用户第 8 轮第 2 条**：所有主题的译文都收归
+ * `LyricStage` 的统一字幕层 —— 绝对贴底 + 让开进度条，而且一次只显示一句）。
+ * 原来这里是 `.pi-lyriccadenza__sub` / `__translated` / `__preview` 三条规则。 */
 
 @keyframes pi-cad-line-in {
   from {
@@ -201,6 +172,15 @@
   will-change: transform;
 }
 
+/* ------------------------------------------------------------------ *
+ * 浮名自己那层译文退休（**用户第 8 轮第 2 条**）
+ *
+ * 用户原话：「所有的歌词动效的翻译歌词都设置在进度条部件的上面，并且一次只显示一句」。
+ * 这一轮把译文收归 `LyricStage` 的**统一字幕层**（`lyric-stage.css` 的 `.pi-lyricstage__sub`：
+ * 绝对贴底 + 让开进度条），六套主题共用同一条位置规则、且一次只显示一句。
+ * 原来这里是 `.pi-lyricfume__sub`（自己钉在进度条上方）与 `.pi-lyricfume__translated`。
+ * ------------------------------------------------------------------ */
+
 /* 一「块」歌词（一行 = 一块）。 */
 .pi-lyricfume__block {
   position: absolute;
@@ -238,17 +218,8 @@
   color: inherit;
 }
 
-/* 块内译文（任务书样式：更小更淡）。 */
-.pi-lyricfume__translated {
-  display: block;
-  margin-top: 0.3em;
-  font-size: 0.62em;
-  font-weight: 500;
-  line-height: 1.35;
-  letter-spacing: 0;
-  opacity: 0.42;
-  color: var(--pi-text-sub, #6b7280);
-}
+/* 块内译文（`.pi-lyricfume__translated`）已经退休：纸面上只有原文，译文在统一字幕层里。
+   冒烟探针 `paperSubs`（`.pi-lyricfume__block .pi-lyricfume__translated` 的个数）继续要求 0。 */
 
 /* ------------------------------------------------------------------ *
  * 减少动效：把所有 CSS 动画 / 过渡关掉（JS 那边也读 usePrefersReducedMotion）

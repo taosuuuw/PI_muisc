@@ -60,10 +60,15 @@
  *   exit `clamp(raw × 0.22, 0.03, 0.04)`、hold 0.03s；micro 无过渡。
  *   normal 入场 `opacity 0→1 / scale 0.9→1 / blur 10→0`（easeOutCubic）、出场 `→0 / →1.1 / blur 20`；
  *   short 入场 `0.65→1 / 0.97→1 / blur 4→0`、出场 `scale→1.03 / blur 6`。
- * - 词体混色：`fill = mix(primary, placement.color, activeMix)`，`placement.color = wordColorOf(theme, word.text, accent)`；
- *   词内 `activeMix` = 词进度，词后 `1 - fadeOut`，`fadeOut = clamp((t-end)/(short?120:800), 0, 1)`（instant 是 0/1 开关）。
+ * - 词体混色（**用户第 9 轮第 3 条**改成三段曲线，见 `cadenzaHighlightMix`）：
+ *   `fill = mix(ink, placement.color, activeMix)`、`placement.color = wordColorOf(theme, word.text, accent)`；
+ *   开唱后 `clamp(词时值 × 0.3, 40, 140)`ms 内 0 → 1、词时值内**恒 1**、
+ *   唱完之后 `1 − easeInOutQuad((t − end) / fadeMs)` 回到 0，
+ *   `fadeMs = clamp((short ? 240 : 1100) × 歌速倍率, 420, 2200)`（instant 仍是 0/1 开关）。
  * - 辉光：三层 `0 0 40px`，透明度 `min(0.98, g)` / `min(0.92, g×0.92)` / `min(0.35, g×0.26)`，
  *   `g = 包络 × clamp(glowAlpha, 0, 1) × max(1, 0)`；词体是「透明字 + text-shadow」。
+ *   **用户第 9 轮第 3 条**：词唱完之后 `g ×= activeMix`（与字色同一条渐出曲线 —— 旧写法两条曲线
+ *   各走各的，屏上最常见的中间态是「字已经白回去、晕还挂着」，看起来就是高光「啪」一下掉了）。
  * - 副歌：`activeIndex` 那一行是副歌时，外面套一圈 1.2px、`0.45 × (1 - 进度)` 的 CSS 波纹。
  *
  * 本仓库的取舍（都写进交付报告）：
@@ -71,6 +76,23 @@
  *   每帧只写已存在 DOM 的 `style.transform / filter / opacity / color / textShadow`，**不 setState**。
  * - 没有 pretext 排版：词宽用 `measureTextWidth()`（canvas `measureText`，字体栈 / 字重和 DOM
  *   一致，量不到回退 `estimateTextWidth()`）量，所以螺旋避让是**按真实字形宽度**算的。
+ *
+ * === 用户第 9 轮第 3 条（心象：「图 4 是对于心象，没有逐个字高光逐渐消失的效果，
+ * 图 5 是应该达到的效果」）===
+ *
+ * **真根因（冒烟探针当场抓到的）**：词色是**没解析过的 CSS 变量链**。`palette.accentColor` 的默认值是
+ * `var(--pi-np-accent, var(--pi-primary))`，`wordColorOf()` 原样写进 `placement.color`，而
+ * `mixColor` / `rgba` 只认 `rgb()/rgba()`（解析失败原样返回第一个参数）⇒ 字色插值整段 no-op、
+ * **字永远停在常态色**；只有 `text-shadow` 里那支 `var()` 被浏览器自己解析了 ⇒ 屏上正是主人图 4 的
+ * 「白字 + 一团实色光晕」（而且那团光晕连 alpha 都没生效）。修法与浮名 `clumpColorOf` 同源：
+ * 绘制时 `resolvePaintColor()` 落到实色（见 effect 开头那段注释）。
+ *
+ * 第二个（次要）原因是**相位的形状**：旧写法让 `activeMix` 从前一个词的结束线性爬到这一个词的结束
+ * —— 一颗字全亮的那一瞬间恰好是它唱完的那一瞬间，随后立刻衰减。改成三段
+ *（`cadenzaHighlightMix`）：**渐入**（开唱后 40~140ms 内 0 → 1）→ **保持**（整个词时值恒 1：
+ * 唱到它时它就是实的主题色 + 光晕，对应效果图 5 里那颗正唱的字）→ **渐出**
+ *（`cadenzaFadeMs` = `clamp(1100 × 歌速, 420, 2200)`ms 缓缓回到常态色）。光晕与字色**共用同一条
+ * 渐出曲线**（`envelope ×= activeMix`），所以不会再有「字白了晕还挂着」。
  *
  * === 本次修复（用户第九轮第 4 条：铺满整个 app 视口，任意尺寸 / 全屏都不变形不留白）===
  * 1) **舞台铺满**：`styles/lyric-themes.css` 把 `.pi-lyricstage[data-theme='cadenza']` 改成
@@ -149,6 +171,7 @@ import {
   mixColor,
   parseRgb,
   rgba,
+  resolveCssColor,
   useElementFontFamily,
   useFullStageSize,
   usePositionClock,
@@ -186,10 +209,68 @@ const EXP_VISUAL = 14;
 const EXP_GLOW = 16;
 /** 唱过之后漂移时长 5s。 */
 const PASSED_DRIFT_MS = 5000;
+/**
+ * **用户（本轮）第 2 条**：高光淡出的**速度基准**（每字多少毫秒算「常速」）。
+ *
+ * 原话：「心象的歌词动效，高光要逐渐消失并且消失速度随歌曲速度而变」。原来词后的衰减时长是
+ * 写死的（高光 short 140 / normal 900ms、颜色 120 / 800ms），快歌会拖到下一句、慢歌一闪就没。
+ * 现在把「这一句平均一个字占多少毫秒」当歌速，逐句按 `clamp(字数均值 / 本值, 0.35, 2.2)` 缩放
+ * 那几条时长：歌越快，字越短，淡出越快。420ms/字 ≈ 中速华语流行（语速稍快的念白会到 300 上下）。
+ */
+const CADENZA_FADE_SPEED_REF_MS = 420;
+/**
+ * === **用户第 9 轮第 3 条**（心象）：「图 4 是对于心象，没有逐个字高光逐渐消失的效果，
+ * 图 5 是应该达到的效果」===
+ *
+ * 病根在**相位的形状**，不在配色：旧写法把 `activeMix`（字色的高光比例）**从前一个词的结束
+ * 线性爬到这一个词的结束** —— 也就是说，一颗字真正全亮的那一瞬间恰好是它唱完的那一瞬间，
+ * 紧接着就开始衰减（颜色 560ms×歌速、光晕 620ms×歌速）。于是任意一帧里几乎看不到「这支字是
+ * 主题色的」，看到的是**白字 + 一圈粉的光晕**（主人图 4 就是这个组合：字白、晕在）。
+ *
+ * 新写法把高光拆成三个相位（`cadenzaHighlightMix`）：
+ *   · **渐入**：这颗字开唱之后 `clamp(词时值 × 0.3, 40, 140)`ms 内 0 → 1（快，等于「亮起」）；
+ *   · **保持**：整个词时值里恒为 1（唱到它的那段时间，它就是**实的主题色 + 光晕**，对照图 5 里
+ *     那个正在唱的字就是这个样子）；
+ *   · **渐出**：唱完之后 over `cadenzaFadeMs()` 由 1 缓缓回到 0 —— 一帧里能看到好几颗字停在
+ *     不同的衰减档上，也就是主人要的「**逐个字**高光逐渐消失」。
+ * 光晕与字色**共用这条曲线**（旧写法两条曲线各走各的，才会出现「字已经白了、晕还挂着」）。
+ */
+const CADENZA_RAMP_RATIO = 0.3;
+const CADENZA_RAMP_MIN_MS = 40;
+const CADENZA_RAMP_MAX_MS = 140;
+/**
+ * 渐出基准时长（毫秒），再乘歌速倍率 `speedRatio`（见 `CADENZA_FADE_SPEED_REF_MS`），
+ * 最后夹在 `[CADENZA_FADE_MIN_MS, CADENZA_FADE_MAX_MS]`。
+ *
+ * 旧值是颜色 560 / 光晕 620：慢歌（×0.35）只有 0.2s、快歌（×2.2）能拖到 1.4s，两个档都看不出
+ * 「渐变」；窄句（short）那档更是 90/110ms —— 一闪而过。现在 normal 取 **1100ms**、
+ * short 取 240ms，并给一个 **420ms 的地板**：再快也要看得见那道坡（用户原话「逐渐消失」）。
+ */
+const CADENZA_FADE_NORMAL_MS = 1100;
+const CADENZA_FADE_SHORT_MS = 240;
+const CADENZA_FADE_MIN_MS = 420;
+const CADENZA_FADE_MAX_MS = 2200;
 /** 预读窗口（cadenza 规格；与 partita 的 `HINT_LOOKAHEAD` 正好互为快/慢）。 */
 const LOOKAHEAD_CADENZA: Record<Hint, number> = { normal: 180, short: 45, micro: 0 };
-/** 辉光三层半径固定 40px。 */
-const GLOW_BLUR_PX = 40;
+/**
+ * 辉光三层半径。
+ *
+ * **用户第 10 轮第 1 条**（原话：「心象的辉光强度太大了，降低一点」）：40 → **36**。
+ * 但这一条真正的病根不是半径，是**同一层阴影被画了两遍**（见下面 `buildDomTextShadow` 的注释）：
+ * 修掉重复绘制相当于直接把观感砍半，半径再微收一档就够了。
+ */
+const GLOW_BLUR_PX = 36;
+/**
+ * 三层辉光的**透明度上限**（依次是核心 / 中层 / 外层）。
+ *
+ * **用户第 10 轮第 1 条**：0.98 / 0.92 / 0.35 → **0.70 / 0.55 / 0.22**（整体再收约三成）。
+ * 这两处一起改的理由写在 `buildDomTextShadow` 上面：原来那套数值是照着「只有一层在画」定的，
+ * 而实际有两层（正文层继承了同一支 `text-shadow`）⇒ 观感是设计值的 ~2 倍。
+ * 修掉重复 + 收三成 ≈ 今天的 **0.37 倍**。主人若还嫌重，只需再动这三个数。
+ */
+const GLOW_ALPHA_CORE = 0.7;
+const GLOW_ALPHA_MID = 0.55;
+const GLOW_ALPHA_SOFT = 0.22;
 /** 螺旋搜索每圈的角度采样下限。 */
 const SPIRAL_MIN_SAMPLES = 12;
 /** 螺旋搜索的圈数上限（防止长句里最后一个词扫太久）。 */
@@ -252,9 +333,58 @@ const SIDE_GAP = 0.5;
 const MOTION_ENERGY = 1;
 
 const easeOutCubic = (t: number): number => 1 - (1 - t) ** 3;
-const easeInOutQuad = (t: number): number =>
-  t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2;
+const easeInOutQuad = (t: number): number => (t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2);
 const mixNumber = (a: number, b: number, t: number): number => a + (b - a) * clamp(t, 0, 1);
+
+/**
+ * 高光渐出的时长（毫秒）。纯函数（**用户第 9 轮第 3 条**，单测在 `CadenzaTheme.test.ts`）。
+ *
+ * `speedRatio` = 「这一句平均一个字多少毫秒 ÷ 420」夹在 [0.35, 2.2]（歌速代理，见
+ * `CADENZA_FADE_SPEED_REF_MS`）：快歌淡得快、慢歌淡得慢，但两端都被夹住 ——
+ * 快歌不会「一闪就没」（地板 420ms），慢歌也不会把高光钉在屏幕上（天花板 2200ms）。
+ */
+export function cadenzaFadeMs(hint: Hint, speedRatio: number): number {
+  const base = hint === 'short' ? CADENZA_FADE_SHORT_MS : CADENZA_FADE_NORMAL_MS;
+  const ratio = Number.isFinite(speedRatio) ? speedRatio : 1;
+  return clamp(base * ratio, CADENZA_FADE_MIN_MS, CADENZA_FADE_MAX_MS);
+}
+
+/**
+ * 字色高光比例（0 = 常态色，1 = 词自己的主题色）——**用户第 9 轮第 3 条**的核心曲线。
+ *
+ * 三个相位（见上面那组常量的注释）：
+ *   `ms <= startMs` ⇒ 0（还没轮到它，只是纸上的常态字）；
+ *   开唱后 `rampMs` 内 0 → 1（`easeOutCubic`，亮起来是快的）；
+ *   词的时值内 ⇒ 恒 1（**唱到它的时候它就是实的主题色**，这是旧写法缺的那一档）；
+ *   唱完之后 ⇒ `1 − easeInOutQuad(q)`，`q = (ms − endMs) / fadeMs` ⇒ **缓缓**回到常态色。
+ *
+ * `instant`（micro 行，整行 < 0.1s）保持旧口径：**0 / 1 开关**（唱完那一瞬间才置 1）——
+ * 那种行短到做不了补间，行为与改造前逐位一致。
+ */
+export function cadenzaHighlightMix(
+  ms: number,
+  startMs: number,
+  endMs: number,
+  fadeMs: number,
+  instant = false,
+): number {
+  // 先把三个时间轴入参消毒（缺字段 / 时钟没对齐时可能是 NaN）：
+  // `ms` 拿不到 ⇒ 0（常态色）。绝不让 NaN 漏进 `mixColor` —— 那会让整条颜色插值失效。
+  if (!Number.isFinite(ms)) return 0;
+  const start = Number.isFinite(startMs) ? startMs : 0;
+  const end = Number.isFinite(endMs) ? Math.max(endMs, start) : start;
+  const fade = Number.isFinite(fadeMs) && fadeMs > 0 ? fadeMs : 1;
+  if (instant) return ms > end ? 1 : 0;
+  if (ms <= start) return 0;
+  const span = end - start;
+  const rampMs = clamp(span * CADENZA_RAMP_RATIO, CADENZA_RAMP_MIN_MS, CADENZA_RAMP_MAX_MS);
+  if (ms < start + rampMs) {
+    return easeOutCubic(clamp((ms - start) / Math.max(rampMs, 1), 0, 1));
+  }
+  if (ms <= end) return 1;
+  const q = clamp((ms - end) / fade, 0, 1);
+  return 1 - easeInOutQuad(q);
+}
 
 /* ------------------------------------------------------------------ *
  * 文本 / 颜色小工具
@@ -400,14 +530,26 @@ function envelopeFor(
   };
 }
 
-/** 三层辉光：folia cadenza 的「透明字 + text-shadow」。 */
-function buildDomTextShadow(color: string, strength: number): string {
+/**
+ * 三层辉光：folia cadenza 的「透明字 + text-shadow」。导出只为单测钉三层透明度（用户第 10 轮第 1 条）。
+ *
+ * **用户第 10 轮第 1 条**（原话：「心象的辉光强度太大了，降低一点」）——真病根是**画了两遍**：
+ * 这支 `text-shadow` 写在 `.pi-lyriccadenza__word` 上，而那个 div 里有两层文字
+ * （`.pi-lyriccadenza__body` 可见正文 + `.pi-lyriccadenza__glow` 透明辉光层），`text-shadow`
+ * 是**继承**属性 ⇒ 两层各描一遍同一圈光，屏幕上是两支阴影**叠加**（透明度相加）——
+ * 观感约等于设计值的 2 倍。
+ *
+ * 修法两处，缺一不可：
+ *  ① `.pi-lyriccadenza__body` 明确 `text-shadow: none`（`lyric-moods.css`）⇒ 只剩辉光层描一遍；
+ *  ② 三层透明度上限整体收三成（`GLOW_ALPHA_*`，0.98/0.92/0.35 → 0.70/0.55/0.22）、半径 40 → 36。
+ */
+export function buildDomTextShadow(color: string, strength: number): string {
   const g = clamp(strength, 0, 1.6);
   if (g <= 0.01) return 'none';
-  return `0 0 ${GLOW_BLUR_PX}px ${rgba(color, Math.min(0.98, g))}, 0 0 ${GLOW_BLUR_PX}px ${rgba(
+  return `0 0 ${GLOW_BLUR_PX}px ${rgba(color, Math.min(GLOW_ALPHA_CORE, g))}, 0 0 ${GLOW_BLUR_PX}px ${rgba(
     color,
-    Math.min(0.92, g * 0.92),
-  )}, 0 0 ${GLOW_BLUR_PX}px ${rgba(color, Math.min(0.35, g * 0.26))}`;
+    Math.min(GLOW_ALPHA_MID, g * 0.78),
+  )}, 0 0 ${GLOW_BLUR_PX}px ${rgba(color, Math.min(GLOW_ALPHA_SOFT, g * 0.3))}`;
 }
 
 /** 辉光包络：instant「0→1（前 30%）→衰减回 0」；short / normal 是两个台阶。 */
@@ -489,6 +631,19 @@ function readableColor(value: string, surface: RgbColor | null): string {
   const parsed = parseRgb(value);
   if (parsed === null) return value;
   return ensureContrast(parsed, surface, 3);
+}
+
+/**
+ * **用户第 11 轮第 1 条**：把 `ResolvedThemeColors.ink`（舞台那一支 `--pi-lyric-ink`）落成实色。
+ *
+ * 解析得出就原样用（**不再做对比度兜底**）—— 主人要的是「心象的唱过字 = 流光那支黑」，
+ * 加一层兜底就会又和流光不一致。读不出 / 单测里没有 DOM 时返回 `null`，由调用方退回老口径。
+ */
+export function inkFromVar(value: string | undefined): string | null {
+  if (typeof value !== 'string' || value.trim() === '') return null;
+  const parsed = parseRgb(value);
+  if (parsed === null) return null;
+  return `rgb(${Math.round(parsed.r)}, ${Math.round(parsed.g)}, ${Math.round(parsed.b)})`;
 }
 
 export function buildCadenzaPlan(
@@ -587,10 +742,7 @@ export function buildCadenzaPlan(
      所以它的右边缘会长到 `0.8 × 宽`（`-宽/2 + 宽 × 1.3`）。若只按 `availableWidth × 0.86` 收，
      34 字符的无空格单词在最小窗口下会把这个放大后的右缘顶出舞台 20px。
      `viewportWidth × 0.625 − 50` 就是「放大后仍留在舞台内」解出来的宽度（50px 留给旋转与抖动）。 */
-  const heroMaxWidth = Math.min(
-    availableWidth * 0.86,
-    Math.max(viewportWidth * 0.625 - 50, 160),
-  );
+  const heroMaxWidth = Math.min(availableWidth * 0.86, Math.max(viewportWidth * 0.625 - 50, 160));
   if (heroWidth > heroMaxWidth) {
     /* 只有「连 `heroMaxWidth` 都放不下」时才允许比普通词更小（下限 `FONT_PX_MIN × 0.5`，
        与逐词收窄的下限同源）；放得下时仍旧守住「hero 不小于 `fontPx`」。 */
@@ -990,8 +1142,6 @@ export function buildCadenzaPlan(
     return result;
   };
 
-
-
   // 2. 逐个落位 + 唱后漂移（folia `passedDriftX/Y` 与 `rotate`）。
   for (const item of items) {
     const { x, y } = place(item);
@@ -1031,7 +1181,6 @@ export function buildCadenzaPlan(
       fontPx: item.fontPx,
     };
   }
-
 
   const words: CadenzaWordPlan[] = [];
   for (let index = 0; index < wordCount; index += 1) {
@@ -1108,12 +1257,13 @@ function CadenzaWordView({ plan, lineHeightPx, register }: CadenzaWordViewProps)
  * 再用指数趋近把差异写回 DOM。全程不 setState、不新建 / 销毁节点、不查 DOM。
  */
 export function CadenzaTheme(props: LyricThemeProps): ReactNode {
-  const { lines, translated, activeIndex, viewIndex, positionMs, theme } = props;
+  const { lines, activeIndex, viewIndex, positionMs, playing, theme } = props;
   const rootRef = useRef<HTMLDivElement>(null);
   const wordRefs = useRef<(HTMLDivElement | null)[]>([]);
   // 舞台 = 整个播放页可视区域（首帧 / 量不到回退视口）；窗口缩放由 ResizeObserver 重算。
   const stage = useFullStageSize(rootRef);
-  const clock = usePositionClock(positionMs);
+  // **用户第 5 轮第 2 条**：暂停时不外推（否则会先走几步再猛地回到暂停位置）。
+  const clock = usePositionClock(positionMs, playing ?? true);
   const reduced = usePrefersReducedMotion();
   const anchor = lines[viewIndex];
   const positionRef = useRef(positionMs);
@@ -1148,21 +1298,25 @@ export function CadenzaTheme(props: LyricThemeProps): ReactNode {
   const paint = {
     primary: readableColor(liveColors.current.primary, surface),
     accent: readableColor(liveColors.current.accent, surface),
-    // 第十五轮第 4 条：**常态歌词色 = 白**。只在「白 vs 底色」不足 3:1 时才压到可读的最浅中性色。
-    ink: readableColor(CADENZA_INK, surface),
+    /*
+     * 第十五轮第 4 条：**常态歌词色 = 白**（亮档由 `--pi-lyric-ink` 换成近黑）。
+     *
+     * **用户第 11 轮第 1 条**（原话：「心象浅色模式下，唱过的歌词应该是黑色」）：常态色不再自己算
+     * 「白 → 够 3:1 就停」，而是**直接吃 `--pi-lyric-ink`** —— 与 classic / partita / tilt /
+     * pendolo 在 CSS 里用的是同一支（亮档 `var(--pi-text)` 近黑、暗档纯白）。
+     * 拿不到（单测 / 首帧没挂载）时退回老口径 `readableColor('#ffffff', surface)`。
+     */
+    ink: inkFromVar(liveColors.current.ink) ?? readableColor(CADENZA_INK, surface),
     surface,
   };
   const paletteRef = useRef(paint);
   paletteRef.current = paint;
 
-  const translatedText = anchor === undefined ? undefined : translated.get(anchor.timeMs);
-  const previewLines: string[] = [];
-  if (anchor !== undefined) {
-    for (let step = 1; step <= 2; step += 1) {
-      const next = lines[anchor.index + step];
-      if (next !== undefined) previewLines.push(next.text === '' ? '…' : next.text);
-    }
-  }
+  /*
+   * **用户第 8 轮第 2 条**（原话：「所有的歌词动效的翻译歌词都设置在进度条部件的上面，
+   * 并且一次只显示一句」）：心象自己的那层字幕（译文 + 下两句预览）整段删掉 ——
+   * 译文现在由 `LyricStage` 统一渲染在进度条上方（`.pi-lyricstage__sub`），六套主题同一处。
+   */
 
   useEffect(() => {
     if (plan === undefined) return undefined;
@@ -1170,6 +1324,28 @@ export function CadenzaTheme(props: LyricThemeProps): ReactNode {
     if (rootElement === null) return undefined;
     const words = plan.words;
     if (words.length === 0) return undefined;
+    /*
+     * **用户第 9 轮第 3 条的**真根因**（探针当场抓到的）：词的原始颜色是**没解析过的 CSS 变量链**。
+     *
+     * `palette.accentColor` 默认值是 `var(--pi-np-accent, var(--pi-primary))`，
+     * `wordColorOf()` 会把它**原样**塞进 `placement.color`；而 `mixColor` / `rgba` 只认
+     * `rgb()/rgba()`（`parseRgb` 解析失败就**原样返回第一个参数**）⇒ `mixColor(ink, 词色, t)`
+     * 对任何 `t` 都吐常态色（白 / 墨），字**永远上不了高光色**；只有 `text-shadow` 里那支
+     * `var()` 还能被浏览器自己解析 ⇒ 屏上就是主人图 4 那个「白字 + 一团实色光晕」，
+     * 也就是「高光没有颜色、更没有逐渐消失」。
+     *
+     * 与浮名 `clumpColorOf` 同一个修法，也放在**绘制时**解析（首帧 root 还没挂载，放 plan 里会白解析
+     * 一次），同一个 effect 生命周期里按原串缓存。`ink` 也过一次：底色拿不到时它是 `#ffffff`
+     * 那种十六进制，`mixColor` 同样解析不了。
+     */
+    const resolvedColors = new Map<string, string>();
+    const resolvePaintColor = (raw: string): string => {
+      const cached = resolvedColors.get(raw);
+      if (cached !== undefined) return cached;
+      const resolved = parseRgb(raw) !== null ? raw : resolveCssColor(rootElement, raw);
+      resolvedColors.set(raw, resolved);
+      return resolved;
+    };
     const hint = plan.line.hint;
     const instant = hint === 'micro';
     const chaotic = theme.animationIntensity === 'chaotic';
@@ -1181,7 +1357,23 @@ export function CadenzaTheme(props: LyricThemeProps): ReactNode {
     const frameGate = createFrameGate(fpsCap);
     const lookahead = LOOKAHEAD_CADENZA[hint];
     const activeEndFallback = plan.line.timeMs + plan.line.durationMs;
-    const fadeOutMs = hint === 'short' ? 120 : 800;
+    /*
+     * **用户（本轮）第 2 条**（原话：「心象的歌词动效，高光要逐渐消失并且消失速度随歌曲速度而变」）。
+     *
+     * 原来「词唱完之后」的衰减时长是**写死**的（高光 short 140ms / normal 900ms、颜色 120/800ms）：
+     * 快歌里那 900ms 会一路拖到下一句，慢歌里又像被掐掉。现在按**这一句的字速**缩放 ——
+     * 用「平均一个字分到多少毫秒」当歌速的代理（快歌字短、慢歌字长），上下限 0.35~2.2 倍，
+     * 免得极端长音把高光钉在屏幕上、或者快歌一闪就没。
+     *
+     * **用户第 9 轮第 3 条**：这条倍率现在只喂 `cadenzaFadeMs()`（渐出时长那一处），
+     * 旧的 `fadeOutMs`（颜色 560 / 90ms）已随三段曲线一起退休。
+     */
+    const lineChars = Math.max(plan.line.words.length, 1);
+    const speedRatio = clamp(
+      plan.line.durationMs / lineChars / CADENZA_FADE_SPEED_REF_MS,
+      0.35,
+      2.2,
+    );
 
     // 每帧状态的缓存（写进 DOM 之前先比一次，避免无谓的样式失效）。
     const previous: (CadenzaFrame | undefined)[] = new Array<CadenzaFrame | undefined>(
@@ -1194,12 +1386,15 @@ export function CadenzaTheme(props: LyricThemeProps): ReactNode {
       for (const word of words) {
         const element = wordRefs.current[word.index];
         if (element === null || element === undefined) continue;
-        const active = ms >= word.startMs - lookahead && ms <= (instant ? activeEndFallback : word.endMs);
+        const active =
+          ms >= word.startMs - lookahead && ms <= (instant ? activeEndFallback : word.endMs);
         element.style.transform = 'none';
         element.style.filter = 'none';
         element.style.opacity = active ? '1' : '0.82';
         // 第十五轮第 4 条：常态（未唱 / 唱过）= 白，只有当前词拿主题色。
-        const inkOrWord = active ? word.placement.color : paletteRef.current.ink;
+        const inkOrWord = active
+          ? resolvePaintColor(word.placement.color)
+          : resolvePaintColor(paletteRef.current.ink);
         element.style.color = inkOrWord;
         // 可见正文在内层 `.pi-lyriccadenza__inner`，它自己有 `color` 声明（外层 `color` 继承不进去），
         // 所以同一个值再写一份到每词变量上（规则见 lyric-themes.css 的 cadenza 段）。
@@ -1255,13 +1450,12 @@ export function CadenzaTheme(props: LyricThemeProps): ReactNode {
           targetScale = 1;
           targetRotate =
             placement.rotate +
-            placement.passedRotate * easeInOutQuad(clamp((ms - word.endMs) / PASSED_DRIFT_MS, 0, 1));
+            placement.passedRotate *
+              easeInOutQuad(clamp((ms - word.endMs) / PASSED_DRIFT_MS, 0, 1));
           targetBlur = 0;
         } else if (isActive) {
           targetAlpha = 1;
-          targetScale =
-            1.3 *
-            (1 + Math.sin(t * 10 + (word.startMs / 1000) * 5) * 0.04 * motion);
+          targetScale = 1.3 * (1 + Math.sin(t * 10 + (word.startMs / 1000) * 5) * 0.04 * motion);
           targetBlur = 0;
         } else {
           targetAlpha = 0;
@@ -1279,43 +1473,54 @@ export function CadenzaTheme(props: LyricThemeProps): ReactNode {
         const targetY =
           driftFactor * (placement.outwardY * drift * 0.72 + placement.jitterY) +
           Math.cos(t * 1.5 + word.index * 0.4) * motion * 2.5;
-        // 词体混色：词内 = 词进度，词后 = 1 - fadeOut（instant 是 0/1 开关）。
-        let activeMix: number;
-        if (instant) activeMix = isPassed ? 1 : 0;
-        else if (ms < word.startMs) activeMix = 0;
-        else if (ms <= word.endMs)
-          activeMix = clamp((ms - word.startMs) / Math.max(word.endMs - word.startMs, 1), 0, 1);
-        else activeMix = 1 - clamp((ms - word.endMs) / fadeOutMs, 0, 1);
+        // 词体混色（**用户第 9 轮第 3 条**改成「快进 → 保持 → 逐渐消失」三段，见
+        // `cadenzaHighlightMix` 的注释）：唱到它时是实的主题色，唱完之后缓缓回到常态色。
+        const activeMix = cadenzaHighlightMix(
+          ms,
+          word.startMs,
+          activeEnd,
+          cadenzaFadeMs(hint, speedRatio),
+          instant,
+        );
         // 第十五轮第 4 条：常态色从「主题 primary」换成**白**（`ink`）。原来 waiting / passed
-        // 都是 `paletteRef.current.primary`（主题色），现在只有 `activeMix` 接近 1 的当前词才是主题色，
-        // 词内 0→1 淡入主题色、词后 1→0 淡回白 —— 这段插值本身就是用户要的「颜色逐渐淡去」。
-        const fill = mixColor(paletteRef.current.ink, placement.color, activeMix);
+        // 都是 `paletteRef.current.primary`（主题色），现在只有 `activeMix` 接近 1 的当前词才是主题色。
+        // **用户第 9 轮第 3 条**：这段插值现在是「快进 → 保持 → 逐渐消失」三段曲线
+        //（旧写法是「唱到结尾才爬到 1」⇒ 屏上永远只有白字 + 一圈粉晕，主人图 4 那个观感）。
+        // **用户第 9 轮第 3 条**：先落到实色再混（词色是 CSS 变量链时 `mixColor` 会整段 no-op，
+        // 见 effect 开头 `resolvePaintColor` 的注释），光晕也用同一支实色。
+        const fill = mixColor(
+          resolvePaintColor(paletteRef.current.ink),
+          resolvePaintColor(placement.color),
+          activeMix,
+        );
         // 辉光包络：词内一段 + 词后衰减。
         const progress = clamp((ms - word.startMs) / Math.max(word.endMs - word.startMs, 1), 0, 1);
         let envelope = glowEnvelope(hint, progress);
         if (ms > word.endMs) {
-          const after = instant
-            ? 0
-            : hint === 'short'
-              ? (1 - clamp((ms - word.endMs) / 140, 0, 1)) ** 2
-              : 0.9 * (1 - clamp((ms - word.endMs) / 900, 0, 1)) ** 2;
-          envelope *= after;
+          /*
+           * **用户第 9 轮第 3 条**：光晕与字色**共用同一条渐出曲线**（`activeMix`）。
+           *
+           * 旧写法两条曲线各走各的（颜色 560ms×歌速、光晕 620ms×歌速²），于是最常见的中间态是
+           * 「字已经淡回白了、晕还挂着一大圈」—— 主人图 4 里那几颗白字 + 粉团就是这个组合，
+           * 看起来像「高光没有逐渐消失，而是啪一下掉了」。
+           * `instant`（micro 行）保持旧口径：唱完那一下光晕直接归 0（那种行短到做不了补间）。
+           */
+          envelope = instant ? 0 : envelope * activeMix;
         }
         // 指数趋近（新词初值：rotate 目标 +16、scale 0.5、alpha 0、blur 10、glow 0）。
-        const before: CadenzaFrame =
-          previous[index] ?? {
-            alpha: 0,
-            scale: 0.5,
-            rotate: targetRotate + 16,
-            blur: 10,
-            glow: 0,
-            // 第十轮第 6 条（用户 m02362：心象歌词「一抽一抽」）：`after.x/y` 是叠在元素
-            // `left/top = placement.x/y`（:627-628 写好的）之上的**增量**，初值必须是 0。
-            // 旧写法填 `placement.x/y` ⇒ 第一次插值时 transform 再加一遍坐标，元素瞬移几百 px
-            // 再滑回来。plan 每重启一次就重演一次，看起来就是「一抽一抽」。
-            x: 0,
-            y: 0,
-          };
+        const before: CadenzaFrame = previous[index] ?? {
+          alpha: 0,
+          scale: 0.5,
+          rotate: targetRotate + 16,
+          blur: 10,
+          glow: 0,
+          // 第十轮第 6 条（用户 m02362：心象歌词「一抽一抽」）：`after.x/y` 是叠在元素
+          // `left/top = placement.x/y`（:627-628 写好的）之上的**增量**，初值必须是 0。
+          // 旧写法填 `placement.x/y` ⇒ 第一次插值时 transform 再加一遍坐标，元素瞬移几百 px
+          // 再滑回来。plan 每重启一次就重演一次，看起来就是「一抽一抽」。
+          x: 0,
+          y: 0,
+        };
         const after: CadenzaFrame = {
           alpha: before.alpha + (targetAlpha - before.alpha) * visualAmount,
           scale: before.scale + (targetScale - before.scale) * transformAmount,
@@ -1344,7 +1549,10 @@ export function CadenzaTheme(props: LyricThemeProps): ReactNode {
           element.style.opacity = after.alpha.toFixed(3);
         }
         if (Math.abs(after.glow - before.glow) > 0.005) {
-          element.style.textShadow = buildDomTextShadow(placement.color, after.glow * glowIntensity);
+          element.style.textShadow = buildDomTextShadow(
+            resolvePaintColor(placement.color),
+            after.glow * glowIntensity,
+          );
         }
         if (element.style.color !== fill) element.style.color = fill;
         // 第十五轮第 4 条：真正决定**正文**颜色的是内层 `.pi-lyriccadenza__inner`（它自己声明了
@@ -1388,11 +1596,7 @@ export function CadenzaTheme(props: LyricThemeProps): ReactNode {
   if (anchor === undefined || plan === undefined) return null;
 
   const chorus = activeIndex === viewIndex && isChorusLine(lines, anchor.index);
-  const lineProgress = clamp(
-    (positionMs - anchor.timeMs) / Math.max(anchor.durationMs, 1),
-    0,
-    1,
-  );
+  const lineProgress = clamp((positionMs - anchor.timeMs) / Math.max(anchor.durationMs, 1), 0, 1);
   const rootStyle = {
     // 歌曲配色：优先用祖先注入的 `--pi-th-*` 解析出的实色，palette 原值兜底。
     '--pi-cad-primary': paint.primary,
@@ -1444,16 +1648,6 @@ export function CadenzaTheme(props: LyricThemeProps): ReactNode {
               wordRefs.current[index] = element;
             }}
           />
-        ))}
-      </div>
-      <div className="pi-lyriccadenza__sub">
-        {translatedText === undefined || translatedText === '' ? null : (
-          <p className="pi-lyriccadenza__translated">{translatedText}</p>
-        )}
-        {previewLines.map((text, index) => (
-          <p className="pi-lyriccadenza__preview" key={`${index}-${text}`}>
-            {text}
-          </p>
         ))}
       </div>
     </div>

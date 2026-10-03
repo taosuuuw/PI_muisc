@@ -138,6 +138,7 @@ import {
   cameraToCenterOn,
   centeredCamera,
   centerSlotOf,
+  clamp,
   clampCamera,
   collageCellExitTransform,
   COLLAGE_FILL_MS,
@@ -158,10 +159,12 @@ import {
   sameSlot,
   slotKey,
   slotRefOfQueueIndex,
+  viewCenterOf,
   type CollageCamera,
   type CollageGeometry,
   type CollageInstance,
   type CollageSlotRef,
+  type CollageViewCenter,
   type CollageViewport,
 } from './song-collage-geometry';
 import '../styles/song-collage.css';
@@ -220,6 +223,14 @@ export interface SongCollageHandle {
 
 /** 拖拽判定阈值：低于它算「点」，高于它才算「拖」（folia 用 7px，这里留宽一点给手抖）。 */
 const DRAG_TOLERANCE = 8;
+/**
+ * **用户第 7 轮第 1 条**（原话：「铺满之后切播放页需要**交叠淡入**」）：退场放大演完
+ * （`COLLAGE_FILL_MS`，那一格刚好铺满整个窗口）之后，宿主那一层浮层再花这么久**淡出**，
+ * 而播放页在同一时刻就已经挂上来了 —— 两层交叠，不是硬切。
+ * 时长与 `overlays.css` 里 `pi-listoverlay-crossfade-out` 的 340ms 必须同值。
+ * 收浮层（`closePlaylist` / `closeSongs`）必须等它放完，否则淡出会被卸载打断、又变回硬切。
+ */
+const COLLAGE_CROSSFADE_MS = 340;
 /** 惯性：速度上限、低于这个速度直接停、每帧衰减系数（~60fps 下 0.9 → 约 0.35s 滑完）。 */
 const MAX_FLING = 2600;
 const MIN_FLING = 60;
@@ -263,20 +274,63 @@ export const SongCollage = forwardRef<SongCollageHandle, SongCollageProps>(funct
   const closeSongs = useUi((s) => s.closeSongs);
   /** 上面那条「动画放完再切页」的定时器；同一时间只允许挂一个，卸载时清掉。 */
   const enterTimerRef = useRef(0);
+  /** 交叠淡入里「等淡出放完再收浮层」的定时器；同上，同一时间只挂一个。 */
+  const crossfadeTimerRef = useRef(0);
+
+  /**
+   * **用户第 7 轮第 1 条**（原话：「拼贴居中要**算窗口的中心**」）：视口中点在**画布局部坐标**
+   * 里的位置。默认就是画布正中（`viewCenterOf`）；这里量出「窗口中心 − 画布左上角」，
+   * 于是被点开的那一格搬过去之后落在**窗口**正中。
+   *
+   * 为什么每处都现量（而不是只在 resize 时算一次）：画布左上角会因为浮层的入场动画 /
+   * 顶栏高度变化而移动，而 `ResizeObserver` 只报尺寸变化，报不出位移。
+   * 点击那一刻的读数最准，所以 `cameraCenteringSlot` 走的是现量；state 里这一份是给
+   * 「进页面自动挑一格放大」和渲染期兜底用的。
+   */
+  const viewCenterNow = useCallback((viewport: CollageViewport): CollageViewCenter => {
+    const root = rootRef.current;
+    if (root === null || typeof window === 'undefined') return viewCenterOf(viewport);
+    const rect = root.getBoundingClientRect();
+    return {
+      x: clamp(window.innerWidth / 2 - rect.left, 0, viewport.width),
+      y: clamp(window.innerHeight / 2 - rect.top, 0, viewport.height),
+    };
+  }, []);
 
   /**
    * 用户 m00736 第 6 条：退场放大（放大块长到铺满屏幕）演完之后，把界面交回歌曲播放页。
    * 延时用几何层的 `COLLAGE_FILL_MS`，与 `.pi-collage__item--exiting` 那条 transform 过渡同长，
-   * 也与「我的喜欢」宿主自己的 `MinePage.enterPlaying` 一致（都是动画放完才切页，不做额外淡出）。
+   * 也与「我的喜欢」宿主自己的 `MinePage.enterPlaying` 一致。
+   *
+   * **用户第 7 轮第 1 条**（原话：「铺满之后切播放页需要**交叠淡入**」）之后不再硬切：
+   *  1. 先给**宿主那一层浮层**打上 `data-collage-fading`，由 CSS 走 `COLLAGE_CROSSFADE_MS` 淡出；
+   *     找不到浮层（拼贴自己占满整页的宿主）就退回打在拼贴根上。
+   *  2. **同一刻** `navigate('home')`：播放页就在下面挂上来了，正被上面那一层盖着 ——
+   *     「旧的一层淡出」与「新的一页渐显」因此是同时发生的，这才叫交叠。
+   *  3. 淡出放完才收浮层；收早了会把动画打断，又变成一帧硬切。
    * 退场期间用户又点一下 → 这里直接忽略，别排两个定时器。
+   *
+   * 底栏（`.pi-collage-bar`）**不参与**这次淡出：它跟播放页自己那条 `.pi-home__bar` 是同一个
+   * 组件、同一个位置（`BottomBar` 注释：「与歌曲播放页逐像素一致」），而播放页那条在
+   * `navigate('home')` 的**同一刻**就已经在下面了 ⇒ 淡它等于同位置两层各淡一半，毫无收益；
+   * 万一某个宿主不卸载浮层，还会留下一条永远透明的药丸。
    */
   const enterPlayer = useCallback((): void => {
     if (enterTimerRef.current !== 0) return;
     enterTimerRef.current = window.setTimeout(() => {
       enterTimerRef.current = 0;
-      closePlaylist();
-      closeSongs();
+      const root = rootRef.current;
+      const layer =
+        root?.closest('.pi-listoverlay, .pi-songpage-overlay, .pi-settings-overlay') ?? null;
+      if (layer instanceof HTMLElement) layer.dataset.collageFading = 'true';
+      else if (root !== null) root.dataset.collageFading = 'true';
       navigate('home');
+      if (crossfadeTimerRef.current !== 0) window.clearTimeout(crossfadeTimerRef.current);
+      crossfadeTimerRef.current = window.setTimeout(() => {
+        crossfadeTimerRef.current = 0;
+        closePlaylist();
+        closeSongs();
+      }, COLLAGE_CROSSFADE_MS);
     }, COLLAGE_FILL_MS);
   }, [closePlaylist, closeSongs, navigate]);
 
@@ -284,6 +338,12 @@ export const SongCollage = forwardRef<SongCollageHandle, SongCollageProps>(funct
   const worldRef = useRef<HTMLDivElement | null>(null);
 
   const [viewport, setViewport] = useState<CollageViewport>({ width: 0, height: 0 });
+  /**
+   * **用户第 7 轮第 1 条**：视口中点（画布局部坐标）。`null` = 还没量到，各处按画布正中兜底。
+   * 量法与现量的那份共用 `viewCenterNow`，所以「量到的这份」和「点击时用的那份」永远同一套。
+   */
+  const [viewCenter, setViewCenter] = useState<CollageViewCenter | null>(null);
+  const viewCenterRef = useRef<CollageViewCenter | null>(null);
   const [camera, setCamera] = useState<CollageCamera>({ x: 0, y: 0 });
   /**
    * 当前被放大的那一格（6×6 = 808px 的正方形）。`null` = 还没算过（首帧/换尺寸后重新算）。
@@ -325,7 +385,11 @@ export const SongCollage = forwardRef<SongCollageHandle, SongCollageProps>(funct
   hasMoreRef.current = hasMore;
   onNeedMoreRef.current = onNeedMore;
   /** 增量加载：上一次为哪一批歌发过 `onNeedMore` + 发车时间 + 这一批已试过几次（退避用）。 */
-  const needMoreRef = useRef<{ total: number; at: number; tries: number }>({ total: -1, at: 0, tries: 0 });
+  const needMoreRef = useRef<{ total: number; at: number; tries: number }>({
+    total: -1,
+    at: 0,
+    tries: 0,
+  });
   /** 上面那条记账到点后的自检定时器（延迟触发，所以要一份「最新实现」的 ref）。 */
   const needMoreTimerRef = useRef<number | null>(null);
   const maybeRequestMoreRef = useRef<(cam: CollageCamera) => void>(() => {});
@@ -368,7 +432,10 @@ export const SongCollage = forwardRef<SongCollageHandle, SongCollageProps>(funct
 
   const total = songs.length;
   // 首帧还没量到宽度时按桌面档位猜一个，免得世界先按 0.52 铺一遍再跳。
-  const scale = useMemo(() => cameraScaleFor(viewport.width > 0 ? viewport.width : 1280), [viewport.width]);
+  const scale = useMemo(
+    () => cameraScaleFor(viewport.width > 0 ? viewport.width : 1280),
+    [viewport.width],
+  );
   const geometry = useMemo(() => geometryFor(viewport, total, scale), [viewport, total, scale]);
   /**
    * 用户 m00001 第 3 条(B)：派生出「上 / 左的起手补片」。
@@ -437,7 +504,8 @@ export const SongCollage = forwardRef<SongCollageHandle, SongCollageProps>(funct
     const totalNow = songsRef.current.length;
     if (totalNow <= 0) return;
     const now = performance.now();
-    if (needMoreRef.current.total === totalNow && now - needMoreRef.current.at < NEED_MORE_RETRY_MS) return;
+    if (needMoreRef.current.total === totalNow && now - needMoreRef.current.at < NEED_MORE_RETRY_MS)
+      return;
     // 第十八轮第 6 条：`autoMore` 的宿主不等贴边（一批上墙就接着要下一批）；
     // 其余宿主照旧只有「镜头贴到已建内容的边」才要。
     // 用户 m00001 第 3 条(B)：把上 / 左的补片宽度一起传进去，于是向上 / 向左拖到补片尽头
@@ -467,7 +535,10 @@ export const SongCollage = forwardRef<SongCollageHandle, SongCollageProps>(funct
      * 换了一批（`total` 变了）就重新从 4s 起算。
      */
     const wait = sameBatch
-      ? Math.min(NEED_MORE_RETRY_MS * 2 ** Math.min(needMoreRef.current.tries, 3), NEED_MORE_RETRY_MAX_MS)
+      ? Math.min(
+          NEED_MORE_RETRY_MS * 2 ** Math.min(needMoreRef.current.tries, 3),
+          NEED_MORE_RETRY_MAX_MS,
+        )
       : 0;
     if (sameBatch && now - needMoreRef.current.at < wait) return;
     const tries = sameBatch ? needMoreRef.current.tries + 1 : 0;
@@ -598,8 +669,21 @@ export const SongCollage = forwardRef<SongCollageHandle, SongCollageProps>(funct
   /** 「让这一格放大后的新中心落在视口中点」所需的相机位（纯算，不动画）。 */
   const cameraCenteringSlot = useCallback(
     (ref: CollageSlotRef): CollageCamera =>
-      cameraToCenterOn(expandedCenterOf(geometryRef.current, ref), viewportRef.current, geometryRef.current),
-    [],
+      cameraToCenterOn(
+        expandedCenterOf(geometryRef.current, ref),
+        viewportRef.current,
+        geometryRef.current,
+        // **用户第 7 轮第 1 条**：现量一次「窗口中心 − 画布左上角」（画布就是窗口时等于画布正中）。
+        viewCenterNow(viewportRef.current),
+        /*
+         * 再放行「上 / 左的回卷补片」（用户 m00001 第 3 条(B) 那对 pad）：世界左上角外
+         * 本来就铺着补片格，不带上它们的话，点在左上角的格子会被 `clampCamera` 按在角上
+         * 「搬不到窗口中间」——而那正是这一条要的效果。
+         */
+        prerollScreenRef.current.x,
+        prerollScreenRef.current.y,
+      ),
+    [viewCenterNow],
   );
 
   /**
@@ -690,11 +774,11 @@ export const SongCollage = forwardRef<SongCollageHandle, SongCollageProps>(funct
     [cameraCenteringSlot, glideCameraTo],
   );
 
-  useImperativeHandle(
-    ref,
-    () => ({ focusPlaying, playingSlot, focusSong }),
-    [focusPlaying, playingSlot, focusSong],
-  );
+  useImperativeHandle(ref, () => ({ focusPlaying, playingSlot, focusSong }), [
+    focusPlaying,
+    playingSlot,
+    focusSong,
+  ]);
 
   /**
    * 第十六轮第 4 条(b)「逐渐放大填充屏幕」的**视觉**由组件自己完成（宿主只负责
@@ -820,11 +904,14 @@ export const SongCollage = forwardRef<SongCollageHandle, SongCollageProps>(funct
     [paintActive, startFling],
   );
 
-  const handleClickCapture = useCallback((event: { detail: number; stopPropagation: () => void }): void => {
-    if (!suppressClickRef.current || event.detail === 0) return;
-    suppressClickRef.current = false;
-    event.stopPropagation();
-  }, []);
+  const handleClickCapture = useCallback(
+    (event: { detail: number; stopPropagation: () => void }): void => {
+      if (!suppressClickRef.current || event.detail === 0) return;
+      suppressClickRef.current = false;
+      event.stopPropagation();
+    },
+    [],
+  );
 
   /**
    * 点一块 = 播那首歌 + 选中。刻意和 `SongCards` 的 `activate()` 完全一致
@@ -882,6 +969,12 @@ export const SongCollage = forwardRef<SongCollageHandle, SongCollageProps>(funct
         height: Math.max(1, Math.round(rect.height)),
       };
       viewportRef.current = next;
+      // **用户第 7 轮第 1 条**：顺手把「窗口中心 − 画布左上角」量一份（给首帧挑格与渲染兜底）。
+      const center = viewCenterNow(next);
+      viewCenterRef.current = center;
+      setViewCenter((previous) =>
+        previous !== null && previous.x === center.x && previous.y === center.y ? previous : center,
+      );
       setViewport((previous) =>
         previous.width === next.width && previous.height === next.height ? previous : next,
       );
@@ -890,8 +983,18 @@ export const SongCollage = forwardRef<SongCollageHandle, SongCollageProps>(funct
     if (typeof ResizeObserver === 'undefined') return;
     const observer = new ResizeObserver(read);
     observer.observe(root);
-    return () => observer.disconnect();
-  }, []);
+    /*
+     * **用户第 7 轮第 1 条**：浮层那张纸带一条 340ms 的入场动画（`pi-listoverlay-sheet-in`：
+     * 往下 14px + 缩到 0.985），动画没走完时量到的「画布左上角」是歪的，而 `ResizeObserver`
+     * 之后不会因为动画结束再报一次（尺寸变了它才报）。所以落定之后再补量一次。
+     * 只影响首帧挑格与接缝属性；点击那一刻走的是 `viewCenterNow` 现量，本来就准。
+     */
+    const settle = window.setTimeout(read, 420);
+    return () => {
+      window.clearTimeout(settle);
+      observer.disconnect();
+    };
+  }, [viewCenterNow]);
 
   // 首帧落定后再开尺寸过渡（见 SETTLE_MS 的注释）。
   useEffect(() => {
@@ -923,11 +1026,11 @@ export const SongCollage = forwardRef<SongCollageHandle, SongCollageProps>(funct
     );
     cameraRef.current = next;
     paintCamera(next);
-    setCamera((previous) =>
-      previous.x === next.x && previous.y === next.y ? previous : next,
+    setCamera((previous) => (previous.x === next.x && previous.y === next.y ? previous : next));
+    setWaveOrigin(
+      (previous) => previous ?? { x: -next.x / geometry.scale, y: -next.y / geometry.scale },
     );
-    setWaveOrigin((previous) => previous ?? { x: -next.x / geometry.scale, y: -next.y / geometry.scale });
-    const slot = centerSlotOf(next, viewport, geometry);
+    const slot = centerSlotOf(next, viewport, geometry, viewCenterRef.current ?? undefined);
     activeSlotRef.current = slot;
     setActiveSlot((previous) => (sameSlot(previous, slot) ? previous : slot));
   }, [geometry, paintCamera, stopFollow, total, viewport]);
@@ -972,6 +1075,8 @@ export const SongCollage = forwardRef<SongCollageHandle, SongCollageProps>(funct
       stopFollow();
       // 用户 m00736 第 6 条：宿主自己切页/卸载时，别让那条「稍后回播放页」的定时器继续跑。
       if (enterTimerRef.current !== 0) window.clearTimeout(enterTimerRef.current);
+      // 第 7 轮那条交叠淡入的收尾同理：组件走了就别再去收浮层。
+      if (crossfadeTimerRef.current !== 0) window.clearTimeout(crossfadeTimerRef.current);
     },
     [stopFling, stopFollow],
   );
@@ -983,7 +1088,10 @@ export const SongCollage = forwardRef<SongCollageHandle, SongCollageProps>(funct
    * 免得入场延迟先按 0 播一遍、下一秒冻住起点又重播。
    */
   const centerSlot =
-    activeSlot ?? (viewport.width > 0 && total > 0 ? centerSlotOf(camera, viewport, geometry) : null);
+    activeSlot ??
+    (viewport.width > 0 && total > 0
+      ? centerSlotOf(camera, viewport, geometry, viewCenter ?? undefined)
+      : null);
 
   const items = useMemo<CollageInstance[]>(() => {
     if (total <= 0 || viewport.width <= 0 || waveOrigin === null) return [];
@@ -997,7 +1105,8 @@ export const SongCollage = forwardRef<SongCollageHandle, SongCollageProps>(funct
   }
 
   const pixelScale =
-    geometry.scale * (typeof window === 'undefined' ? 1 : Math.max(1, window.devicePixelRatio || 1));
+    geometry.scale *
+    (typeof window === 'undefined' ? 1 : Math.max(1, window.devicePixelRatio || 1));
 
   /**
    * 第十六轮第 4 条(c)：世界里的槽位总数（含为了让世界铺满视口而取模回卷出来的重复格）。
@@ -1018,6 +1127,15 @@ export const SongCollage = forwardRef<SongCollageHandle, SongCollageProps>(funct
       data-collage-rendered={items.length}
       data-collage-has-more={hasMore === true ? 'true' : 'false'}
       data-collage-scale={geometry.scale}
+      /**
+       * **用户第 7 轮第 1 条**的机器接缝：视口中点在画布局部坐标里的位置。
+       * 画布就是窗口时它等于 `画布宽高 / 2`（老行为）；塞进浮层正文格时会偏成
+       * 「窗口中心 − 画布左上角」。冒烟探针拿它 + 那一格的矩形证明「搬到了窗口正中」。
+       */
+      data-collage-view-center={
+        viewCenter === null ? '' : `${Math.round(viewCenter.x)}:${Math.round(viewCenter.y)}`
+      }
+      data-collage-crossfade-ms={COLLAGE_CROSSFADE_MS}
       /** 用户 m00001 第 3 条(B)：世界左上角外补了几块回卷格（列x行），给探针/调试看。 */
       data-collage-preroll={`${preroll.cols}x${preroll.rows}`}
       data-collage-fill-ms={COLLAGE_FILL_MS}
@@ -1066,12 +1184,17 @@ export const SongCollage = forwardRef<SongCollageHandle, SongCollageProps>(funct
             // folia 的封面按 `max(rect) × 相机缩放 × DPR` 取图：小片别拉原图，大片别糊。
             // 取 64 的整数倍，避免同一张卡因为四舍五入反复换 URL 重新下载。
             const wanted = Math.max(item.width, item.height) * pixelScale;
-            const cover = coverAt(song.album?.coverUrl, Math.min(768, Math.max(192, Math.round(wanted / 64) * 64)));
+            const cover = coverAt(
+              song.album?.coverUrl,
+              Math.min(768, Math.max(192, Math.round(wanted / 64) * 64)),
+            );
             // 标题字号跟着卡片走（folia 的 `LatticeTitle` 是按卡片宽度缩字号的）；歌手沿用 folia 的固定小号字。
             const copySize = isCenter
               ? Math.round(Math.min(56, Math.max(26, item.width * 0.062)))
               : Math.round(Math.min(30, Math.max(13, Math.min(item.width, item.height) * 0.062)));
-            const inset = Math.round(Math.min(32, Math.max(8, Math.min(item.width, item.height) * 0.045)));
+            const inset = Math.round(
+              Math.min(32, Math.max(8, Math.min(item.width, item.height) * 0.045)),
+            );
             const style = {
               left: item.x,
               top: item.y,

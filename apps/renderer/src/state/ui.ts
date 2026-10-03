@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import type { Playlist } from '@pi/shared';
+import { DEFAULT_ACCENT_COLOR, parseHexColor, type AccentMode } from '../lib/accent';
 import type { Point } from '../lib/drag-snap';
 import type { NavId } from '../components/NavDrawer';
 
@@ -108,6 +109,51 @@ function persistUiStyle(style: UiStyle): void {
   }
 }
 
+/**
+ * 应用主题色（用户第二十一轮第 5 条）也存本机：`pi.accent`，内容是
+ * `{"mode":"sky|mono|custom","color":"#rrggbb"}`。
+ *
+ * 和 `uiStyle` 同一个道理（见上面那段注释）：为一个纯前端的配色偏好去扩 `packages/ipc`
+ * 的通道与主进程的 patch 白名单不划算。真正把它变成 CSS 变量的是 `App.tsx` 的 `useAccent`，
+ * 换算函数在 `lib/accent.ts`。
+ */
+export interface AccentPrefs {
+  mode: AccentMode;
+  /** 自定义档的颜色；`sky` / `mono` 两档不读它，但仍然留着（切回去还在）。 */
+  color: string;
+}
+
+const ACCENT_KEY = 'pi.accent';
+
+function readStoredAccent(): AccentPrefs {
+  const fallback: AccentPrefs = { mode: 'sky', color: DEFAULT_ACCENT_COLOR };
+  if (typeof window === 'undefined') return fallback;
+  try {
+    const raw = window.localStorage.getItem(ACCENT_KEY);
+    if (raw === null) return fallback;
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== 'object' || parsed === null) return fallback;
+    const record = parsed as { mode?: unknown; color?: unknown };
+    const mode: AccentMode =
+      record.mode === 'mono' || record.mode === 'custom' ? record.mode : 'sky';
+    const color =
+      typeof record.color === 'string' && parseHexColor(record.color) !== null
+        ? record.color
+        : DEFAULT_ACCENT_COLOR;
+    return { mode, color };
+  } catch {
+    return fallback;
+  }
+}
+
+function persistAccent(prefs: AccentPrefs): void {
+  try {
+    window.localStorage.setItem(ACCENT_KEY, JSON.stringify(prefs));
+  } catch {
+    /* 同 uiStyle：写不进去也不该崩 */
+  }
+}
+
 interface UiState {
   loginOpen: boolean;
   openLogin: () => void;
@@ -120,6 +166,42 @@ interface UiState {
   /** 当前页面。跳页一律走 `navigate`，它会顺手收起抽屉与环形菜单。 */
   nav: NavId;
   navigate: (id: NavId) => void;
+  /**
+   * 「从别的页回到播放页」的那一下的时间戳（用户第二十一轮第 3 条）。
+   * `0` = 还没发生过；`App.tsx` 用它算一个 0.5s 的过渡窗口，超时自己失效。
+   */
+  homeArriveAt: number;
+  /**
+   * 这一下「回播放页」是**哪一路**来的（用户第二十三轮第 2 条）。
+   *
+   * 两路的收尾方式不一样：
+   * - `'page'`：整页被换掉（平凡档的歌单页 / 先锋档的封面轮播浮层都是这种），旧页面**没有**
+   *   留下一层能淡出的东西 ⇒ 靠那层薄幕把「换页」这一帧盖过去。
+   * - `'overlay'`：歌曲展示浮层自己会退场淡出（`SongListOverlay` 的 `data-closing`），
+   *   播放页就在它下面 ⇒ 那已经是一次交叉淡出，**再叠一层薄幕只会把两边一起糊住**，
+   *   所以这一路不铺薄幕。
+   */
+  homeArriveKind: 'page' | 'overlay';
+  /**
+   * 这一下「回播放页」是**从哪一页**离开的（用户第二十八轮）。
+   *
+   * 为什么非要记它：`navigate('home')` 把 `nav` 改成 `home` 与 `homeArriveAt` 是**同一次**
+   * 状态落地，等 `App` 去判「刚离开的是谁」时，`nav` 已经变成 `home` 了 —— 判据必须有一个
+   * 能活过那一拍的记录。先锋档的歌单封面层（`.pi-pllist`）自己会先播完 300ms 的淡出、
+   * 320ms 后才真正换页，所以这一路**不需要**再铺那层兜底薄幕（铺了就是「背景先糊一下」，
+   * 正是用户这一轮说的闪）。记在 state 而不是 `useRef`：它要在整个 0.56s 的到达窗口里都成立，
+   * ref 会被下一次 render 覆盖掉。
+   */
+  homeArriveFrom: NavId;
+  /**
+   * 主动声明「这一下是回播放页」（用户第二十二轮第 4 条）。
+   *
+   * 为什么不能只靠 `navigate('home')`：**歌曲展示浮层**（`SongListOverlay`：歌单曲目 /
+   * 每日推荐 / 歌手 / 专辑那些）是画在播放页**之上**的浮层，`nav` 从头到尾都是 `home`——
+   * 从浮层点底栏回播放页时，`navigate('home')` 那一次调用里「旧 nav 也是 home」，
+   * 判不出「刚回来」这件事。所以让底栏自己调这个 action 明确声明一次。
+   */
+  arriveHome: (kind?: 'page' | 'overlay') => void;
   /** 播放器主页右侧面板。 */
   homePanel: HomePanel;
   setHomePanel: (panel: HomePanel) => void;
@@ -233,6 +315,14 @@ interface UiState {
    */
   uiStyle: UiStyle;
   setUiStyle: (style: UiStyle) => void;
+  /**
+   * 应用主题色（用户第二十一轮第 5 条）。`sky` = 默认天蓝、`mono` = 黑白、
+   * `custom` = 用 `accentColor` 现算。真正落到 CSS 变量上的是 `App.tsx` 的 `useAccent`。
+   */
+  accentMode: AccentMode;
+  accentColor: string;
+  setAccentMode: (mode: AccentMode) => void;
+  setAccentColor: (color: string) => void;
   /** 在平凡 / 先锋之间翻转（PI 圆键左划走这里）。 */
   toggleUiStyle: () => void;
 
@@ -279,10 +369,44 @@ export const useUi = create<UiState>((set) => ({
   closeLogin: () => set({ loginOpen: false }),
 
   nav: 'home',
+  homeArriveAt: 0,
+  // 第二十三轮第 2 条：缺省按「换页」那一档处理（要铺薄幕），只有浮层自己会退场时才改成 overlay。
+  homeArriveKind: 'page',
+  // 第二十八轮：缺省当「从播放页到播放页」，于是「刚离开的那一页」不会误判成有旧内容可淡出。
+  homeArriveFrom: 'home',
   // 跳页不再顺手收环形菜单（那东西本轮已删）；但要收掉搜索浮层，否则跳完页它还盖在上面。
   // 第十六轮第 6 条：跳页同时把空白处点出来的 PI 键与它的卡片收掉（键只属于刚才那一页）。
+  //
+  // 第二十一轮第 3 条（用户：「从歌单页点击进度条部件回到歌曲播放页的加个过渡动画」）：
+  // 跳页本身还是瞬时的，但**「从别的页回到播放页」这一下**要记一个时间戳（`homeArriveAt`），
+  // 让 `App.tsx` 在那 0.5s 内给播放页挂一层过渡（薄幕淡出；「旧画面自己淡出」那几条见
+  // `styles/global.css` 的 `.pi-page-leaving` / `pi-listoverlay-crossfade-out` /
+  // `::view-transition-old(root)`）。原来还有一条沉浸式背景的「绽开」，第二十七轮已删。
+  // 记时间戳而不是记布尔：动画自然结束，不需要谁来清状态，也不会因为连点而叠出多条计时器。
   navigate: (id) =>
-    set({ nav: id, navOpen: false, searchOpen: false, quickPos: null, quickPanel: 'none' }),
+    set((state) => ({
+      nav: id,
+      navOpen: false,
+      searchOpen: false,
+      quickPos: null,
+      quickPanel: 'none',
+      ...(id === 'home' && state.nav !== 'home'
+        ? {
+            homeArriveAt: Date.now(),
+            homeArriveKind: 'page' as const,
+            homeArriveFrom: state.nav,
+          }
+        : {}),
+    })),
+  // 用户第二十二轮第 4 条：歌曲展示浮层那条路上 `nav` 一直是 `home`，只能由调用方声明。
+  // 用户第二十三轮第 2 条：顺带声明这一次是哪一路（浮层自己会退场淡出，就不铺薄幕了）。
+  arriveHome: (kind = 'page') =>
+    set((state) => ({
+      homeArriveAt: Date.now(),
+      homeArriveKind: kind,
+      // 底栏那一路 `nav` 还是**旧页**（真正的跳转被推迟了三帧），所以这里记到的正是「刚离开的那一页」。
+      homeArriveFrom: state.nav,
+    })),
   homePanel: 'none',
   setHomePanel: (homePanel) => set({ homePanel }),
 
@@ -407,5 +531,20 @@ export const useUi = create<UiState>((set) => ({
       const uiStyle: UiStyle = state.uiStyle === 'avant' ? 'plain' : 'avant';
       persistUiStyle(uiStyle);
       return { uiStyle };
+    }),
+
+  // 应用主题色（用户第二十一轮第 5 条）：初值从 localStorage 捞；改档位时顺手把「天蓝」
+  // 那枚默认色填进 `accentColor`（第一次点「自定义」是从默认天蓝开始调的，不是从空白开始）。
+  accentMode: readStoredAccent().mode,
+  accentColor: readStoredAccent().color,
+  setAccentMode: (accentMode) =>
+    set((state) => {
+      persistAccent({ mode: accentMode, color: state.accentColor });
+      return { accentMode };
+    }),
+  setAccentColor: (accentColor) =>
+    set((state) => {
+      persistAccent({ mode: state.accentMode, color: accentColor });
+      return { accentColor };
     }),
 }));

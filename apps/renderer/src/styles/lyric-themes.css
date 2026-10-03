@@ -154,28 +154,68 @@
 
 /* 行进场：normal {opacity 0, scale .9, blur 10px} → {1, 1, 0}；出场反过来放大 + 抹开。 */
 @keyframes pi-partita-line-in {
-  from { opacity: 0; transform: scale(0.9); filter: blur(10px); }
-  to { opacity: 1; transform: scale(1); filter: blur(0); }
+  from {
+    opacity: 0;
+    transform: scale(0.9);
+    filter: blur(10px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+    filter: blur(0);
+  }
 }
 
 @keyframes pi-partita-line-in-fast {
-  from { opacity: 0.35; transform: scale(0.96); filter: blur(4px); }
-  to { opacity: 1; transform: scale(1); filter: blur(0); }
+  from {
+    opacity: 0.35;
+    transform: scale(0.96);
+    filter: blur(4px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+    filter: blur(0);
+  }
 }
 
 @keyframes pi-partita-line-out {
-  from { opacity: 1; transform: scale(1); filter: blur(0); }
-  to { opacity: 0; transform: scale(1.1); filter: blur(20px); }
+  from {
+    opacity: 1;
+    transform: scale(1);
+    filter: blur(0);
+  }
+  to {
+    opacity: 0;
+    transform: scale(1.1);
+    filter: blur(20px);
+  }
 }
 
 @keyframes pi-partita-line-out-fast {
-  from { opacity: 1; transform: scale(1); filter: blur(0); }
-  to { opacity: 0; transform: scale(1.04); filter: blur(10px); }
+  from {
+    opacity: 1;
+    transform: scale(1);
+    filter: blur(0);
+  }
+  to {
+    opacity: 0;
+    transform: scale(1.04);
+    filter: blur(10px);
+  }
 }
 
 @keyframes pi-partita-line-out-micro {
-  from { opacity: 1; transform: scale(1); filter: blur(0); }
-  to { opacity: 0; transform: scale(1.02); filter: blur(6px); }
+  from {
+    opacity: 1;
+    transform: scale(1);
+    filter: blur(0);
+  }
+  to {
+    opacity: 0;
+    transform: scale(1.02);
+    filter: blur(6px);
+  }
 }
 
 /* 呼吸浮动：y [0, -d, 0, d×0.45, 0]、scale [1, 1.01, 1, 0.995, 1]，ease-in-out 无限。 */
@@ -184,11 +224,21 @@
 }
 
 @keyframes pi-partita-float {
-  0% { transform: translateY(0) scale(1); }
-  25% { transform: translateY(calc(var(--pi-float-d, 10px) * -1)) scale(1.01); }
-  50% { transform: translateY(0) scale(1); }
-  75% { transform: translateY(calc(var(--pi-float-d, 10px) * 0.45)) scale(0.995); }
-  100% { transform: translateY(0) scale(1); }
+  0% {
+    transform: translateY(0) scale(1);
+  }
+  25% {
+    transform: translateY(calc(var(--pi-float-d, 10px) * -1)) scale(1.01);
+  }
+  50% {
+    transform: translateY(0) scale(1);
+  }
+  75% {
+    transform: translateY(calc(var(--pi-float-d, 10px) * 0.45)) scale(0.995);
+  }
+  100% {
+    transform: translateY(0) scale(1);
+  }
 }
 
 /* 行盒子：一行云阶的**楼梯包围盒**（第十一轮，用户 m03279 第 4 条：从「多根竖列、列内叠词」
@@ -205,7 +255,21 @@
 }
 
 /* 一块云阶 = 一个台阶：横排的短块 + 底下的刻度线；x / y / rotate 由行内变量给。
-   `translate(-50%, -50%)` 让 (left, top) 说的是**块中心**，跟 JS 的矩形（中心 + 宽高）对齐。 */
+   `translate(-50%, -50%)` 让 (left, top) 说的是**块中心**，跟 JS 的矩形（中心 + 宽高）对齐。
+
+   **用户第 7 轮第 2 条**（原话：「同一页的引导线不会放大缩小而是保持出现的位置和大小」）：
+   `width` 由 JS 写死的 `--pi-partita-guide-w`（只按**布局字号**算过一次）决定，而**不是**由内容撑开。
+   改之前这个盒子是收缩到内容的，而当前块的字号会被放大 1.25~1.6 倍（第十四轮第 6 条）
+   ⇒ 盒子跟着变宽 ⇒ 挂在 `left: 0 / right: 0` 上的竖刻度与 `calc(100% + 36px)` 的横基线
+   一起被撑大，高光每往前挪一块，整页的线就缩放一次。
+
+   **用户第 8 轮第 1 条**（原话：「新的引导线的出现不应改把原有的引导线挤开……我希望的是每个引导线
+   出现之前就划好了位置不会互相挤兑」）把**高度**也一起冻住：`height` 同样来自 JS 的
+   `--pi-partita-guide-h`（行高 1.22 × 布局字号）。改之前高度是被字撑开的，而刻度线挂在盒子的
+   下边缘（`bottom: -16px`）⇒ 一块刚失去高光、字号缩回原大小时**它的线会往上窜一截**
+   （用户图 1 → 图 2 里最上面那条线及其歌词就是这么被「挤上去」的）。
+   现在宽高都是定值：字变大时让这一行**往四周溢出**，线停在原地 ——
+   「放大只发生在字上，线是不动的标尺」。 */
 .pi-lyricpartita__col {
   position: absolute;
   top: 50%;
@@ -214,6 +278,8 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
+  width: var(--pi-partita-guide-w, auto);
+  height: var(--pi-partita-guide-h, auto);
   /* 故意不写 padding / min-width：外接矩形是按 `measureTextWidth` 的真实字宽算的，
      盒子上任何多余的留白都会让实际占位比算出来的大，「不相交」就不成立了。 */
   transform: translate(-50%, -50%) translate3d(var(--pi-chunk-x, 0px), var(--pi-chunk-y, 0px), 0)
@@ -239,7 +305,117 @@
   font-size: var(--pi-partita-font, clamp(2.5rem, 5.5vw, 4.5rem));
 }
 
+/* --- 高光交接的时序（用户第 5 轮第 3 条 + 第 6 轮第 2 条） ---
+ *
+ * 用户原话：「不同行之间的歌词高光切换要**流畅**，**一次只能有一个字是高光**」（第 5 轮）、
+ * 「高光不是一整行消除，而是**在一行上就只有一个字可以有高光**」（第 6 轮）。
+ *
+ * 旧写法：当前块的 `--pw-color` 从强调色切回常态白（和被点亮）都用**同一条**
+ * `--pi-lyric-fade-ms: 900ms`。于是高光从 A 块挪到 B 块时，A 的「强调色 → 白」与 B 的「白 → 强调色」
+ * 两条过渡**同时各跑 900ms** —— 近一秒里两块都挂在强调色上，屏上就是「两个高光」。
+ *
+ * 现在改成**接力**（旧的一档先松手、新的一档等同样长再点亮），并且分三级：
+ *   · **块级**（字号 / 放大）：块成为 / 失去「当前块」时交接 —— `--pi-partita-block-*`；
+ *   · **字级字色**（高光本身）：由**字素自己**的 `active` 态驱动 —— `--pi-partita-hot-*`；
+ *   · **字级辉光**（光晕尾巴）：`--pi-partita-glow-*`，**渐隐比字色长得多**。
+ *     第 6 轮把高光的载体从一整块收到一个字素之后，计时也必须跟着落到字素这一级，
+ *     否则「同块内换字」会走块的时序（两个字一起亮 200ms）。
+ * ⇒ 任一时刻**最多一处**挂着高光（字色这一路仍然严格接力）。
+ *
+ * **用户第 8 轮第 2 条**（原话：「现在高光和辉光时间太短一下子就过去了，应该有一个渐变的动画」）：
+ * 交接时长改成**跟着这一颗字自己的时值走**（行内 `--pi-pw-hot-ms` / `-delay`，由
+ * `PartitaTheme.tsx` 的 `partitaHotMsOf` 算：`clamp(时值 × 0.3, 110ms, 340ms)`，渐入 = 渐出 = 等待
+ * 都用它）。慢歌取到 340ms（看得见的渐变），快歌收到 110ms。
+ *
+ * 为什么不能写死一个「更长」的常数：字色是「一次只能有一个字是高光」那条判据的载体
+ *（第 5 / 6 轮的要求，冒烟按 computed color 的饱和度逐帧量）。接力制里一颗字从渐入到渐出
+ * 的窗口 ≈ 3 倍交接时长，写死 380/420ms 时它会比快歌的字素还长 —— 两三颗字同时挂在渐隐中的
+ * 强调色上（实测上限读到 3 块 ✗）。跟着时值走之后 `3 × hot ≤ 时值` 恒成立（单测钉住），
+ * 于是任一瞬间至多一颗字在渐入或渐出：既渐变、又不破那条老要求。
+ *
+ * **辉光**（`text-shadow`）不受这个限制：亮起 320ms、**渐隐 1100ms** —— 唱过的字上那圈光会留
+ * 一小会儿再化掉（判据量的是字色，光晕尾巴再长也不会让两颗字同时算高光）。
+ *
+ * 注意 `--pi-lyric-fade-ms`（900ms）是**六套主题共用**的，不许在这里改；这里只覆盖云阶自己的这一档。
+ */
+.pi-lyricpartita__col {
+  --pi-partita-block-ms: var(--pi-partita-color-out-ms, 260ms);
+  --pi-partita-block-delay: 0ms;
+}
+
+.pi-lyricpartita__col[data-current='true'] {
+  --pi-partita-block-ms: var(--pi-partita-color-in-ms, 240ms);
+  --pi-partita-block-delay: var(--pi-partita-color-out-ms, 260ms);
+}
+
+.pi-lyricpartita__word {
+  /* 字色 / 辉光：**优先吃这一颗字自己的行内时值**（`--pi-pw-hot-ms` = 渐入、`--pi-pw-hot-delay`
+   * = 等待、`--pi-pw-hot-out` = 渐出，由 `PartitaTheme.tsx` 的 `partitaHotMsOf` /
+   * `partitaHotOutMsOf` 按时值算，见那段注释）；出场行（整行按「已唱」画、没有逐字时值）
+   * 退到下面这两档固定兜底。渐出那一档 480ms 是「颜色逐渐淡去」那条判据的地板。 */
+  --pi-partita-hot-ms: var(--pi-pw-hot-out, var(--pi-partita-out-ms, 480ms));
+  --pi-partita-hot-delay: 0ms;
+  --pi-partita-glow-ms: var(--pi-partita-glow-out-ms, 1100ms);
+}
+
+.pi-lyricpartita__word[data-word-state='active'] {
+  --pi-partita-hot-ms: var(--pi-pw-hot-ms, var(--pi-partita-color-in-ms, 240ms));
+  --pi-partita-hot-delay: var(--pi-pw-hot-delay, var(--pi-partita-color-out-ms, 260ms));
+  --pi-partita-glow-ms: var(--pi-partita-glow-in-ms, 320ms);
+}
+
 /* --- 字素三态（数值见 PartitaTheme.tsx 头注释） --- */
+
+/**
+ * **用户本轮第 1 条**：「以单词为单位放大」—— 缩放在这一层（词容器）做。
+ *
+ * `.pi-lyricpartita__atom` 就是**一个词**（CJK 一个字；拉丁 / 西里尔整词，见
+ * `partitaLayout.buildAtoms`）。把 `scale` 放在词容器上而不是每个字素上，词内字母的间距
+ * 会**按比例一起放大**（整词变大）；放在字素上则每个字母绕自身中心放大、间距纹丝不动，
+ * 视觉上就是「单词里的字母各自放大」。
+ *
+ * `transform-origin: 50% 62%` 取在字的重心略偏下处（比几何中心低一点），放大时词看起来
+ * 是「从基线附近长起来」而不是「从正中撑开」。
+ */
+.pi-lyricstage[data-theme='partita'] .pi-lyricpartita__atom {
+  display: inline-block;
+  vertical-align: bottom;
+  transform-origin: 50% 62%;
+  /* 未唱：整词缩到 0.5（与字素那一层的 0.5 是同一支动画，只是换了载体）。 */
+  transform: scale(0.5);
+  transition: transform 0.5s cubic-bezier(0.34, 1.3, 0.5, 1);
+}
+
+.pi-lyricstage[data-theme='partita'] .pi-lyricpartita__atom[data-word-state='active'] {
+  /* 兜底值必须与 `partitaLayout.ts` 的 `PARTITA_ACTIVE_SCALE` 一致：外接矩形是按它
+     算「这个词放大后占多宽」的（组件把同一个常数写成行内变量）。 */
+  transform: scale(var(--pw-active-scale, 1.2));
+}
+
+.pi-lyricstage[data-theme='partita'] .pi-lyricpartita__atom[data-word-state='passed'] {
+  /* 唱过 = 常态大小。**用户本轮第 1 条**的「唱完回落」就发生在这一层。 */
+  transform: scale(1);
+}
+
+/**
+ * **用户（本轮）第 1 条**：「图 1 是一句歌词字与字间的正常间隙……明显太挤了」。
+ *
+ * 云阶一个块里排 1~4 个**原子**（中文一个字一个原子），此前它们之间只靠 JSX 里那个半角空格
+ * `' '` 撑着 —— 在 700 字重下只剩一两个像素，块内的字就糊成一片。这里按**流光的同一条口径**
+ * 补 **0.24em**（上一版 0.1em 还是偏紧）：`+` 只命中**相邻的两个原子**，所以块内首字、以及
+ * 西文词内那些字素（它们在同一个 `.pi-lyricpartita__atom` 里）都不受影响；块与块之间本来就是
+ * 绝对定位（`--pi-chunk-x/y`），不吃这条。
+ *
+ * 上限约束：`partitaLayout` 按 `PARTITA_SPACE_EM = 0.55em` 估原子间隙，而 DOM 里那个半角空格
+ * 只有 ≈0.26em，所以这条 margin 不能超过 ≈0.29em，否则实际宽度会超过布局估计、块可能顶出舞台。
+ */
+.pi-lyricstage[data-theme='partita']
+  .pi-lyricpartita__row
+  > .pi-lyricpartita__atom
+  + .pi-lyricpartita__atom {
+  margin-left: 0.24em;
+}
+
 .pi-lyricstage[data-theme='partita'] .pi-lyricpartita__word {
   display: inline-block;
   /* 字号由 JS 用真实字宽 / 舞台高宽拟合后写到 `--pi-partita-font`（行元素上）；
@@ -252,37 +428,45 @@
    * 这里的兜底也换成同一支白；层次靠不透明度（未唱 0 / 已唱 0.82），不靠灰。 */
   color: var(--pw-color, var(--pi-lyric-ink, #fff));
   opacity: 0;
+  /* 字素这一层只剩**位移 + 旋转**（词内的错落）：缩放整支挪到词容器上了。 */
   transform: translate3d(var(--pw-wait-x, 0px), var(--pw-wait-y, 0px), 0)
-    rotate(var(--pw-wait-rot, 0deg)) scale(0.5);
+    rotate(var(--pw-wait-rot, 0deg));
   filter: blur(10px);
   transition:
     opacity 0.1s linear,
     transform 0.5s cubic-bezier(0.34, 1.3, 0.5, 1),
     filter 0.4s ease,
-    /* 第十五轮第 4 条：当前块往下走时，强调色**逐渐**淡回常态白（不是瞬间跳色）。 */
-    color var(--pi-lyric-fade-ms, 900ms) ease-out;
+    /* 第十五轮第 4 条 + **用户第 5/6 轮**：字级高光（字色 / 辉光）按字素自己的 `--pi-partita-hot-*`
+     * 交接；块级放大按块上的 `--pi-partita-block-*`（时序说明见上面那段注释）。
+     * 辉光走自己那条更慢的曲线（第 8 轮：亮起 380ms / 渐隐 1100ms）。 */
+    color var(--pi-partita-hot-ms, var(--pi-lyric-fade-ms, 900ms)) ease-out
+      var(--pi-partita-hot-delay, 0ms),
+    text-shadow var(--pi-partita-glow-ms, 1100ms) ease-out var(--pi-partita-hot-delay, 0ms),
+    font-size var(--pi-partita-block-ms, 420ms) ease-out var(--pi-partita-block-delay, 0ms);
 }
 
 .pi-lyricstage[data-theme='partita'] .pi-lyricpartita__word[data-word-state='active'] {
   opacity: 1;
   filter: blur(0);
-  /* 兜底值必须与 `partitaLayout.ts` 的 `PARTITA_ACTIVE_SCALE` 一致：外接矩形是按它
-     算「当前字素放大后占多宽」的（组件会把同一个常数写成行内变量）。 */
-  transform: translate3d(var(--pw-x, 0px), var(--pw-y, 0px), 0) rotate(var(--pw-rot, 0deg))
-    scale(var(--pw-active-scale, 1.2));
+  /* 缩放不在这里（在词容器 `.pi-lyricpartita__atom` 上）。 */
+  transform: translate3d(var(--pw-x, 0px), var(--pw-y, 0px), 0) rotate(var(--pw-rot, 0deg));
 }
 
 .pi-lyricstage[data-theme='partita'] .pi-lyricpartita__word[data-word-state='passed'] {
   opacity: 0.82;
   filter: blur(0);
-  transform: translate3d(var(--pw-x, 0px), var(--pw-y, 0px), 0)
-    rotate(var(--pw-passed-rot, 0deg)) scale(var(--pw-scale, 1));
+  transform: translate3d(var(--pw-x, 0px), var(--pw-y, 0px), 0) rotate(var(--pw-passed-rot, 0deg));
   transition:
     opacity 0.2s linear,
     transform 0.5s cubic-bezier(0.34, 1.3, 0.5, 1),
     filter 0.4s ease,
-    /* 第十五轮第 4 条：唱过之后颜色继续往常态白淡（与上一档同长，接得上）。 */
-    color var(--pi-lyric-fade-ms, 900ms) ease-out;
+    /* 第十五轮第 4 条 + **用户第 5/6 轮**：与上面那条同源（唱过之后颜色继续往常态白淡，
+     * 但高光交接仍按「字级 / 块级」两套时序走，任一时刻至多一处挂着高光）。
+     * **第 8 轮**：字色 420ms 松手、辉光另走 1100ms 的渐隐尾巴（这段尾巴正是「渐变」）。 */
+    color var(--pi-partita-hot-ms, var(--pi-lyric-fade-ms, 900ms)) ease-out
+      var(--pi-partita-hot-delay, 0ms),
+    text-shadow var(--pi-partita-glow-ms, 1100ms) ease-out var(--pi-partita-hot-delay, 0ms),
+    font-size var(--pi-partita-block-ms, 420ms) ease-out var(--pi-partita-block-delay, 0ms);
 }
 
 /* --- 引导线：竖线（左右各 ±8px，scaleY 0→1）+ 横基线（scaleX 0→1），0.4s ease-out --- */
@@ -310,8 +494,12 @@
   transition: transform 0.4s ease-out;
 }
 
-.pi-lyricpartita__guide::before { left: calc(50% - 8px); }
-.pi-lyricpartita__guide::after { right: calc(50% - 8px); }
+.pi-lyricpartita__guide::before {
+  left: calc(50% - 8px);
+}
+.pi-lyricpartita__guide::after {
+  right: calc(50% - 8px);
+}
 
 .pi-lyricpartita__guide[data-guide='passed'] {
   color: color-mix(in srgb, var(--pi-text) 22%, transparent);
@@ -338,7 +526,9 @@
   color: color-mix(in srgb, var(--pi-text) 14%, transparent);
   transform: scaleX(0);
   transform-origin: center;
-  transition: transform 0.4s ease-out, color 0.4s ease-out;
+  transition:
+    transform 0.4s ease-out,
+    color 0.4s ease-out;
   pointer-events: none;
 }
 
@@ -383,20 +573,12 @@
   }
 }
 
-/* 译文：贴在这一行下面（col 的底边），字号按任务书 clamp(1.05rem, 2.2vw, 1.2rem)。 */
-.pi-lyricpartita__translated {
-  position: absolute;
-  bottom: 0.25rem;
-  left: 50%;
-  max-width: 90%;
-  transform: translateX(-50%);
-  font-size: clamp(1.05rem, 2.2vw, 1.2rem);
-  font-weight: 400;
-  line-height: 1.4;
-  color: var(--pi-text-tertiary);
-  text-align: center;
-  white-space: nowrap;
-}
+/*
+ * 云阶自己那层译文退休（**用户第 8 轮第 2 条**：「所有的歌词动效的翻译歌词都设置在进度条部件的上面，
+ * 并且一次只显示一句」）：第 6 轮在这里补的 `.pi-lyricpartita__sub` 定位规则已删 ——
+ * 译文现在由 `LyricStage` 统一渲染（`lyric-stage.css` 的 `.pi-lyricstage__sub`，绝对贴底 + 让开进度条），
+ * 六套主题共用同一条位置规则，一次只显示一句。
+ */
 
 /* ------------------------------------------------------------------ *
  * 1.5) 心象 = cadenza —— 第十五轮第 4 条（常态白 / 高亮主题色 / 逐渐淡回白）
@@ -489,13 +671,21 @@
 }
 
 @keyframes pi-tilt-block-in {
-  from { opacity: 0; }
-  to { opacity: 1; }
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 
 @keyframes pi-tilt-block-out {
-  from { opacity: 1; }
-  to { opacity: 0; }
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
 }
 
 /* 断出来的每一段：普通段 400 字重 / 0.08em 字距；斜体段 300 字重 / italic / 0.15em。 */
@@ -536,23 +726,47 @@
 }
 
 @keyframes pi-tilt-part-in {
-  from { opacity: 0; transform: translateY(20px); }
-  to { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 @keyframes pi-tilt-part-out {
-  from { opacity: 1; transform: translateY(0); }
-  to { opacity: 0; transform: translateY(-12px); }
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-12px);
+  }
 }
 
 @keyframes pi-tilt-part-in-italic {
-  from { opacity: 0; transform: translateY(24px) scale(0.92); }
-  to { opacity: 1; transform: translateY(0) scale(1); }
+  from {
+    opacity: 0;
+    transform: translateY(24px) scale(0.92);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 
 @keyframes pi-tilt-part-out-italic {
-  from { opacity: 1; transform: translateY(0) scale(1); }
-  to { opacity: 0; transform: translateY(-16px) scale(0.95); }
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-16px) scale(0.95);
+  }
 }
 
 /* --- 字素：错峰淡入（delay = 视觉序号 × 0.04s / 0.05s），斜体段的字从 ±yOffset×2 落到 ±yOffset --- */
@@ -584,7 +798,18 @@
   color: var(--pi-tilt-normal, var(--pi-th-primary));
 }
 
-.pi-lyrictilt__part[data-italic='true'] .pi-lyrictilt__word[data-word-state='active'] {
+/* **用户第 8 轮第 3 条**（原话：「其中斜体的歌词有一定概率有颜色」）：斜体段**只有抽中签的**
+ * 才用主题强调色。抽签在 TS 里做（`seededFraction(行时间戳 + 段序号)`，确定性、重渲染不抖），
+ * 这里只认 `data-tinted` 这个标记。抽签概率见 `TiltTheme.tsx` 的 `TILT_ITALIC_TINT_CHANCE`。
+ *
+ * **用户第 10 轮第 3 条**（原话：「我们 app 的斜体带颜色的歌词表现如图 3 所示，正确的表现应该
+ * 如图 4 所示」）：图 3 里只有**正在唱的那一两个字**是蓝的、其余仍是白；图 4 里**整段**斜体歌词
+ * 都是那支强调色。根因就是上一版把 `data-tinted` 只挂到了 `[data-word-state='active']` 那一个选择器上
+ * ⇒ 一支强调色被拆成「逐字跳的高光」。现在**抽中签的斜体段整段上色**（同段每个字、不分状态）。
+ *
+ * 特异性（别被上面的 active 规则盖掉）：`.pi-lyricstage[data-theme='tilt'] .pi-lyrictilt__part[...]`
+ * 是 5 个类/属性选择器 > active 那条的 4 个 ⇒ 段色对段内**所有**字生效，包括正在唱的那个。 */
+.pi-lyricstage[data-theme='tilt'] .pi-lyrictilt__part[data-italic='true'][data-tinted='true'] {
   color: var(--pi-tilt-italic, var(--pi-th-accent));
 }
 
@@ -608,15 +833,8 @@
     color-mix(in srgb, currentColor 38%, transparent);
 }
 
-/* 译文：倾诉的正文本来就大，译文只做一行小字垫在下面（任务书没给数值）。 */
-.pi-lyrictilt__translated {
-  margin: 0.35rem 0 0;
-  font-size: clamp(0.95rem, 1.8vw, 1.15rem);
-  font-weight: 400;
-  letter-spacing: 0.04em;
-  color: var(--pi-text-tertiary);
-  text-align: center;
-}
+/* 译文那一档退休（**用户第 8 轮第 2 条**：所有主题的译文都收归 `LyricStage` 的统一字幕层，
+   放进度条上方、一次只显示一句）。原来这里是 `.pi-lyrictilt__translated` 的样式。 */
 
 /* ------------------------------------------------------------------ *
  * 3) 时计 = pendolo
@@ -735,7 +953,9 @@
   opacity: 0.12;
   transform-origin: 0 50%;
   /* 第十五轮第 4 条：一句从「焦点」变回非焦点时，主题色按六套主题共用的时长**逐渐**淡回白。 */
-  transition: color var(--pi-lyric-fade-ms, 900ms) ease, font-size 0.42s ease;
+  transition:
+    color var(--pi-lyric-fade-ms, 900ms) ease,
+    font-size 0.42s ease;
   will-change: transform, opacity;
 }
 
@@ -801,9 +1021,18 @@
 }
 
 @keyframes pi-pendolo-halo {
-  from { transform: scale(1.012); opacity: 0.55; }
-  55% { transform: scale(1.026); opacity: 1; }
-  to { transform: scale(1.045); opacity: 0.9; }
+  from {
+    transform: scale(1.012);
+    opacity: 0.55;
+  }
+  55% {
+    transform: scale(1.026);
+    opacity: 1;
+  }
+  to {
+    transform: scale(1.045);
+    opacity: 0.9;
+  }
 }
 
 /* 进度小圆点：0.42em，沿一条 12em 的隐性轨道由 `--pi-pendolo-progress` 推过去。 */
@@ -821,18 +1050,9 @@
   pointer-events: none;
 }
 
-/* 译文：焦点 2vmin / 其它 1.5vmin（= 短边 800px 时的 16 / 12px，同样吃 `--pi-pendolo-font-scale`）。 */
-.pi-lyricpendolo__translated {
-  font-size: calc(clamp(12px, 1.5vmin, 24px) * var(--pi-pendolo-font-scale, 1));
-  line-height: 1.2;
-  color: var(--pi-text-tertiary);
-  opacity: 0.8;
-}
-
-.pi-lyricpendolo__slot[data-lyric-focus='true'] .pi-lyricpendolo__translated {
-  font-size: calc(clamp(16px, 2vmin, 32px) * var(--pi-pendolo-font-scale, 1));
-  opacity: 0.92;
-}
+/* 时计槽位里的译文退休（**用户第 8 轮第 2 条**：所有主题的译文都收归 `LyricStage` 的统一字幕层，
+   放进度条上方、一次只显示一句）。原来这里是 `.pi-lyricpendolo__translated` 与
+   `.pi-lyricpendolo__slot[data-lyric-focus='true'] .pi-lyricpendolo__translated` 两档字号。 */
 
 /* ------------------------------------------------------------------ *
  * 减少动效：动画全关，但**必须把被动画「托着」的可见性补回来**，

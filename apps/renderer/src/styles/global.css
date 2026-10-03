@@ -282,7 +282,9 @@ input {
 }
 .pi-navball[data-dragging='true'] {
   cursor: grabbing;
-  box-shadow: var(--pi-glass-highlight), 0 14px 34px rgba(31, 84, 148, 0.28);
+  box-shadow:
+    var(--pi-glass-highlight),
+    0 14px 34px rgba(31, 84, 148, 0.28);
 }
 
 .pi-navdrawer__scrim {
@@ -386,6 +388,193 @@ input {
   padding: 0;
   overflow: hidden;
 }
+
+/* ---- 从歌单页回到播放页的过渡（用户第二十一轮第 3 条） ----------------------------
+ *
+ * 原话：「从歌单页点击进度条部件回到歌曲播放页的加个过渡动画」。
+ * 那一下的真实动作是「歌单页整个被换掉、播放页接管」（平凡档是 `PAGES[nav]` 换组件、
+ * 先锋档是那层封面轮播浮层收掉），换页本身是瞬时的。
+ *
+ * 用户第二十七轮：「我感觉是沉浸式背景『绽开』这个设置导致的闪一下，把它去掉」——
+ * 所以这里原来那第二条（`[data-arrive='true'] .pi-immersive` 的 0.52s 绽开动画）
+ * **已经整条删掉**：回播放页不再让沉浸式背景缩放/提透明度，一上来就是常态。
+ * 现在这一路上唯一的动作就是「旧画面淡出」（见下面 `pi-page-leaving` 与
+ * `::view-transition-old(root)`），薄幕 `pi-page-arrive-veil` 只留作没有可淡出旧层时的兜底。
+ *
+ * 时长与 `App.tsx` 的 `HOME_ARRIVE_MS`（560ms）对齐；`prefers-reduced-motion`
+ * 下一起关掉（见文件末尾那段）。
+ */
+/*
+ * 用户第二十三轮第 2 条：「从歌曲页薄幕淡出回到歌曲播放页，无论是浅色还是深色模式，
+ * 表现都像闪了一下」。
+ *
+ * 根因就是这一层原来的写法：`background: var(--pi-bg)` + `from { opacity: 0.92 }`。
+ * 换页那一帧它**一上来就把整屏压成 0.92 个纯底色**（浅色就是一片白、深色就是一片黑），
+ * 然后再淡下去 —— 用户看到的是「画面忽然被底色盖住、再亮回来」，两下都是硬切，就是那个「闪」。
+ *
+ * 改成**磨砂**：底色只留 10%（几乎不着色），主要靠 `backdrop-filter` 把「刚接管的那一页」
+ * 糊住再放开。于是这一下的观感是「整屏化开」而不是「底色闪一下」，浅色深色都成立
+ * （不再引入任何与主题相反的色块）。时长与曲线维持原来那档（0.52s ease-out），
+ * 与 `App.tsx` 的 `HOME_ARRIVE_MS` 对齐。
+ */
+.pi-page-arrive-veil {
+  position: fixed;
+  inset: 0;
+  z-index: 36;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--pi-bg) 10%, transparent);
+  /*
+   * 磨砂写在**基础样式**上，keyframes 只收 `opacity`。
+   * 为什么不像上一版那样把 `backdrop-filter` 也放进 keyframes：实测那样写的话
+   * `getComputedStyle(veil).backdropFilter` 在动画途中读回来是 `none` —— 判据（「这一层
+   * 必须真的是磨砂」）就没法客观验证，而且「模糊半径从一开始就在、只是整层在淡出」这件事
+   * 本来也更好预测：t=0 是「糊住但几乎不着色」，t=0.52s 时整层透明、模糊一起消失。
+   *
+   * ⚠️ **只写标准属性、不写 `-webkit-backdrop-filter`**：两个都写时压缩器会当成重复声明，
+   * 只留后者（实测构建产物里标准属性整条消失），于是 Chromium 的 `getComputedStyle`
+   * 读回来是 `none`、判据永远判红。Chromium 76 起就认不带前缀的写法，这里用标准属性。
+   */
+  backdrop-filter: blur(16px) saturate(1.06);
+  animation: pi-page-arrive-veil 0.52s ease-out both;
+}
+
+@keyframes pi-page-arrive-veil {
+  /*
+   * 起点 0.6 而不是 1：换页那一帧整屏只是「轻磨砂 + 10% 底色」，再淡到全透明。
+   * 改造前是 `from { opacity: 0.92 }` 配 `background: var(--pi-bg)` —— 一上来就是一整屏
+   * 纯底色（浅档闪白、暗档闪黑），那才是用户说的「闪一下」。现在同一时刻的主导视觉是
+   * **模糊**（柔和、无方向），色彩只占 10%，所以两种配色下都不会闪。
+   */
+  from {
+    opacity: 0.6;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+/*
+ * 与改造前的区别只有一处、但就是「闪」的那一处：**起点不再是 0.92 个纯底色的平涂**，
+ * 而是一层**磨砂**（10% 底色 + 18px 模糊）。浅色 / 深色下看到的都是「整屏化开」，
+ * 而不是「先被一片白/黑盖住，再亮回来」。
+ */
+
+/*
+ * **换页的交叉淡出**（用户第二十四轮第 1 条：「歌单选择页回去也会闪一下，看能不能用之前的
+ * 方式解决一下」）。
+ *
+ * 上面那层薄幕是「旧内容已经没了、只能盖一层」的兜底；这一条是真正的手法：把**刚离开的那一页**
+ * 再挂 360ms（`App.tsx` 的 `usePageLeave`），包在这层里自己淡出去。播放页在它下面一直渲染着，
+ * 所以这是一次真正的交叉淡出 —— 与歌曲浮层那套（`data-closing`）同一个思路。
+ *
+ * `z-index: 30`：盖住新页与它的底栏（固定定位），但低于登录 / 抽屉 / 搜索浮层；
+ * `pointer-events: none` 是必须的 —— 退场期间交互早就该归新页了。
+ */
+.pi-page-leaving {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  pointer-events: none;
+  /*
+   * **先原地停住 0.2s，再淡 0.36s**（用户第二十五轮第 2 条定的形，第二十七轮起更稳）。
+   *
+   * 逐**合成帧**亮度实测（`.tmp-r21/smoke-r25d.log`）：
+   * `84 84 84 84 → 36 39 49 57 67 73 80 87 92 97 101 104 107 …`
+   * —— 换页那一帧不是「白闪」，而是**先掉到很暗、再一路爬回来**：那一刻播放页的沉浸背景
+   * 自己也正在「绽开」（`opacity: 0.55 → 1`，0.52s），旧页同一时刻又在半透明，
+   * 两边一起半透明 ⇒ 露出底下的暗色底 ⇒ 屏幕上出现一个**暗谷**。
+   *
+   * 两手都上了：这里让退场层带着 `0.2s` 延迟（这段时间它**满不透明地原地停着**，
+   * `both` 填充保证停在 `from { opacity: 1 }`），延迟与淡出加起来 0.56s、与
+   * `App.tsx` 的 `PAGE_LEAVE_MS = 640` 对齐；另一手是第二十七轮把沉浸背景那条绽开
+   * **整条删掉**（用户直接点名的那一条，见文件上半部分）。于是现在屏幕从「旧页」单调溶到
+   * 「一上来就是常态的新页」，中间没有任何会变暗的东西。
+   */
+  animation: pi-page-leaving 0.36s cubic-bezier(0.4, 0, 0.2, 1) 0.2s both;
+  /*
+   * **这一层不加任何底色**（第二十五轮试过、第二十七轮撤掉）。
+   *
+   * 试过的两种写法都会坏事，因为副本是**重新挂载**的、内容要一两帧才上屏：
+   *   · 直接 `background: var(--pi-bg)`：挂上那一帧内容还没画出来，实底把下面还亮着的
+   *     真页面挡住 ⇒ 逐帧亮度 `95 → 35`；
+   *   · 改成延后 0.03s 生效的 `::before` 实底：本想「先透明、等新页画好再挡」，可**新页那一帧**
+   *     它已经挡住了，而副本的内容这会儿也未必画完 ⇒ 同样出现一帧 35
+   *     （`smoke-r27.log`：`105 105 104 → 35 → 57 69 …`）。
+   *
+   * 结论：这一层就该是**纯透明**的 —— 预挂期间靠下面还亮着的真页面顶着，换页那一拍靠
+   * `::view-transition-old(root)` 把旧画面当纹理淡出。任何自己画底的写法都只会多制造一次暗帧。
+   */
+}
+/* ---- 换页的 View Transition（用户第二十五轮第 2 条） ------------------------------- *
+ *
+ * 换页那一瞬 Chromium 会拆掉旧页的合成层、再建新页的，中间有两帧整屏只剩底色
+ * （逐帧亮度实测 `89 89 89 → 35 35 → 83 …`）。DOM 层再怎么提前挂副本都盖不住那两帧，
+ * 所以真正的换页交给 View Transition：旧画面先截成一张纹理，新页面画好后再让纹理**单向淡出** ——
+ * 正是用户要的「只需要淡出就可以」。
+ *
+ * 新画面**不做任何淡入**（`animation: none`）：避免两边同时半透明又出现暗谷（第二十四轮踩过）。
+ * 起点延迟 `0.06s` 给播放页一点点落位时间，然后 0.42s 线性淡出。
+ */
+::view-transition-old(root) {
+  animation: pi-vt-old-out 0.42s ease-in-out 0.06s both;
+}
+
+::view-transition-new(root) {
+  animation: none;
+}
+
+@keyframes pi-vt-old-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+/*
+ * **退场的那一页不许重播入场动画**（用户第二十五轮第 2 条：「还是有闪一下，只需要淡出就可以」）。
+ *
+ * 这一层是「刚离开那一页」的**重新挂载**（React 没法把已经卸载的页面连状态一起搬过来），
+ * 于是页面里那些「进场」动画（拼贴墙的格子入场、卡片的浮现……）会在这一层重新放一遍 ——
+ * 用户看到的就是退场期间画面自己在**动**一下，那就是「闪」。
+ * 这里把这一层里的一切动画按住不动（自身那 0.44s 的淡出不在内部，不受影响），
+ * 它就是一帧静止画面干净地淡出去。
+ */
+.pi-page-leaving * {
+  animation: none !important;
+}
+
+/*
+ * 先锋档那条路：封面卡片层由 `App` 再挂 520ms、带着 `data-leaving` 播收场。
+ * 同理 —— 里面的卡片流不许重播入场，整层静帧淡出。
+ * （`.pi-pllist` 自己的收场动画挂在它**自己**身上，`*` 选不到，所以不会连它一起按掉。）
+ */
+.pi-pllist[data-leaving='true'] * {
+  animation: none !important;
+}
+
+@keyframes pi-page-leaving {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+/*
+ * **沉浸式背景的「绽开」整条删掉**（用户第二十七轮：「我感觉是沉浸式背景『绽开』这个设置
+ * 导致的闪一下，把它去掉」）。
+ *
+ * 原来这里是 `[data-arrive='true'] .pi-immersive { animation: pi-immersive-arrive 0.52s }`：
+ * 回播放页时，那层沉浸式背景从 `opacity: 0.92 + scale(1.02)` 收到常态 —— 缩放在 0.52s 里
+ * 慢慢落定，观感上整张背景都在「动一下」。逐帧亮度也显示换页那一拍它是参与者
+ * （`.tmp-r21/smoke-r25e.log`：`95 95 95 95 → 35 35 → 86 100 …`），用户这次的判断与观测一致。
+ *
+ * 于是这一条连同它自己那条 keyframes 一起删掉：回播放页现在只有「旧画面淡出」这一个动作，
+ * 沉浸式背景**一上来就是常态**，不再缩、不再提透明度。`data-arrive` 保留（薄幕那条兜底还要用）。
+ */
 .pi-page-title {
   margin: 0 0 4px;
   font-size: 22px;
@@ -523,7 +712,9 @@ input {
   backdrop-filter: var(--pi-glass-blur);
   -webkit-backdrop-filter: var(--pi-glass-blur);
   border-top: 1px solid var(--pi-glass-border);
-  box-shadow: var(--pi-glass-highlight), 0 -8px 28px rgba(31, 84, 148, 0.1);
+  box-shadow:
+    var(--pi-glass-highlight),
+    0 -8px 28px rgba(31, 84, 148, 0.1);
 }
 .pi-playerbar__now {
   display: flex;
@@ -564,11 +755,13 @@ input {
   width: 40px;
   height: 40px;
   background: var(--pi-primary);
-  color: #fff;
+  /* 主色底上的字一律读 `--pi-on-primary`（用户第二十一轮第 5 条：主色可换成黑白/自定义，
+     写死白字会在「暗档近白主色」下消失）。 */
+  color: var(--pi-on-primary, #fff);
 }
 .pi-iconbtn--primary:hover:not(:disabled) {
   background: var(--pi-primary-hover);
-  color: #fff;
+  color: var(--pi-on-primary, #fff);
 }
 .pi-iconbtn[aria-pressed='true'] {
   color: var(--pi-primary);
@@ -648,10 +841,14 @@ input {
 .pi-nowplaying__empty-cover {
   display: grid;
   place-items: center;
-  color: #fff;
+  color: var(--pi-on-primary, #fff);
   font-size: 34px;
   font-weight: 700;
-  background: linear-gradient(140deg, var(--pi-primary), #9ed3ff);
+  background: linear-gradient(
+    140deg,
+    var(--pi-primary),
+    color-mix(in srgb, var(--pi-primary) 45%, #ffffff)
+  );
 }
 .pi-nowplaying__title {
   margin: 6px 0 0;
@@ -684,7 +881,7 @@ input {
 .pi-btn[aria-pressed='true'] {
   background: var(--pi-primary);
   border-color: var(--pi-primary);
-  color: #fff;
+  color: var(--pi-on-primary, #fff);
 }
 .pi-lyrics {
   display: grid;
@@ -718,12 +915,12 @@ input {
 .pi-btn--primary {
   background: var(--pi-primary);
   border-color: var(--pi-primary);
-  color: #fff;
+  color: var(--pi-on-primary, #fff);
 }
 .pi-btn--primary:hover {
   background: var(--pi-primary-hover);
   border-color: var(--pi-primary-hover);
-  color: #fff;
+  color: var(--pi-on-primary, #fff);
 }
 
 .pi-account {
@@ -856,12 +1053,35 @@ input {
   border-radius: 10px;
   object-fit: cover;
   background: var(--pi-bg-subtle);
-  transition: transform 160ms ease, box-shadow 160ms ease;
+  transition:
+    transform 160ms ease,
+    box-shadow 160ms ease;
 }
 .pi-plcard__cover--empty {
   display: grid;
   place-items: center;
   color: var(--pi-text-tertiary);
+}
+/*
+ * 「每日推荐」那张卡的封面（用户第二十一轮第 2 条）：每日推荐是伪歌单、上游没有封面，
+ * 所以用前几首歌的专辑封面拼一张 2×2（`lib/cover.ts` 的 `dailyCoverUrls` 会把不足四张的
+ * 循环补满，所以这里永远是四个格）。
+ * `overflow: hidden` + 与基础封面同款圆角：小图自己不再各自圆角，内侧那条 1px 缝就是拼图的格线。
+ */
+.pi-plcard__cover--mosaic {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  overflow: hidden;
+  background: var(--pi-bg-subtle);
+}
+.pi-plcard__cover--mosaic img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  /* 拼图小图不参与「悬停抬起」的过渡（整体那张 .pi-plcard__cover 已经给了）。 */
+  transition: none;
 }
 .pi-plcard:hover .pi-plcard__cover {
   transform: translateY(-2px);
@@ -1111,7 +1331,9 @@ input {
   backdrop-filter: var(--pi-glass-blur);
   -webkit-backdrop-filter: var(--pi-glass-blur);
   border: 1px solid var(--pi-glass-border);
-  box-shadow: var(--pi-glass-highlight), 0 4px 14px rgba(31, 84, 148, 0.1);
+  box-shadow:
+    var(--pi-glass-highlight),
+    0 4px 14px rgba(31, 84, 148, 0.1);
 }
 .pi-iconbtn--glass {
   width: 36px;
@@ -1217,6 +1439,16 @@ input {
 }
 .pi-setting:last-child {
   padding-bottom: 0;
+}
+/*
+ * 竖排变体（用户第二十二轮第 2 条：自定义主题色那一栏要放一整块取色面板）：
+ * 标题在上、控件整宽在下。基础 `.pi-setting` 是「左标题 / 右控件」的横排，
+ * 面板宽度只有 200 多像素时手柄不好拖，所以这一栏改成竖排。
+ */
+.pi-setting--stack {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
 }
 .pi-setting__title {
   display: block;
@@ -1406,7 +1638,9 @@ input {
   touch-action: none;
 }
 .pi-dock[data-dragging='true'] {
-  box-shadow: var(--pi-glass-highlight), 0 18px 40px rgba(31, 84, 148, 0.26);
+  box-shadow:
+    var(--pi-glass-highlight),
+    0 18px 40px rgba(31, 84, 148, 0.26);
 }
 .pi-dock__grip {
   position: absolute;
@@ -1947,7 +2181,10 @@ input {
 .pi-orb[data-dragging='true'] .pi-orb__ball {
   cursor: grabbing;
   transform: scale(1.06);
-  box-shadow: var(--pi-glass-highlight), var(--pi-glass-edge), 0 16px 36px rgba(31, 84, 148, 0.3);
+  box-shadow:
+    var(--pi-glass-highlight),
+    var(--pi-glass-edge),
+    0 16px 36px rgba(31, 84, 148, 0.3);
 }
 
 /* ---- 点球的互动反馈（m06982 第 3 条）-------------------------------- */
@@ -2055,7 +2292,11 @@ input {
   border-radius: 999px;
   opacity: 0;
   pointer-events: none;
-  background: linear-gradient(0deg, var(--pi-primary), color-mix(in srgb, var(--pi-primary) 30%, transparent));
+  background: linear-gradient(
+    0deg,
+    var(--pi-primary),
+    color-mix(in srgb, var(--pi-primary) 30%, transparent)
+  );
   transition: opacity 0.2s ease;
 }
 .pi-orb[data-snapped='left'] .pi-orb__stripbar,
@@ -2073,7 +2314,11 @@ input {
 .pi-orb[data-snapped='bottom'] .pi-orb__stripbar {
   transform: scaleX(var(--pi-progress, 0));
   transform-origin: 0 50%;
-  background: linear-gradient(90deg, var(--pi-primary), color-mix(in srgb, var(--pi-primary) 30%, transparent));
+  background: linear-gradient(
+    90deg,
+    var(--pi-primary),
+    color-mix(in srgb, var(--pi-primary) 30%, transparent)
+  );
 }
 /* 指到细条上会变粗一点，暗示「可以拉出来」（16 → 12，跟着主干一起收细） */
 .pi-orb[data-snapped='left'] .pi-orb__ball:hover,
@@ -2090,7 +2335,14 @@ input {
   font-size: 17px;
   font-weight: 700;
   letter-spacing: 0.5px;
-  background: linear-gradient(160deg, #8fd8ff 0%, #35a7f5 45%, #0b6fd0 100%);
+  /* 用户第二十二轮第 1 条：品牌字（球心 PI / 空态大 PI）的渐变不再写死天蓝，
+     改成由 `--pi-primary` 现算——主色换黑白/自定义时它们跟着走。 */
+  background: linear-gradient(
+    160deg,
+    color-mix(in srgb, var(--pi-primary) 55%, #ffffff) 0%,
+    var(--pi-primary) 45%,
+    color-mix(in srgb, var(--pi-primary) 70%, #000000) 100%
+  );
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
@@ -2234,7 +2486,10 @@ input {
 .pi-orb__item[data-active='true'] {
   color: var(--pi-primary);
   background: color-mix(in srgb, var(--pi-primary) 14%, var(--pi-glass-bg-strong));
-  box-shadow: var(--pi-glass-highlight), var(--pi-glass-edge), 0 12px 28px rgba(31, 155, 255, 0.24);
+  box-shadow:
+    var(--pi-glass-highlight),
+    var(--pi-glass-edge),
+    0 12px 28px rgba(31, 155, 255, 0.24);
 }
 /* 指到时图标上移，给下面的文字让位 */
 .pi-orb__icon {
@@ -2305,7 +2560,9 @@ input {
   color: var(--pi-text-tertiary);
 }
 .pi-orb__cover[data-hover='true'] {
-  box-shadow: var(--pi-glass-highlight), 0 12px 28px rgba(31, 155, 255, 0.28);
+  box-shadow:
+    var(--pi-glass-highlight),
+    0 12px 28px rgba(31, 155, 255, 0.28);
 }
 .pi-orb[data-dragging='true'] .pi-orb__cover {
   cursor: grabbing;
@@ -2346,7 +2603,13 @@ input {
   font-weight: 800;
   letter-spacing: 8px;
   line-height: 1;
-  background: linear-gradient(165deg, #a5e2ff 0%, #35a7f5 44%, #0a6ed0 100%);
+  /* 同 `.pi-quick-orb__logo`：由 `--pi-primary` 现算（用户第二十二轮第 1 条）。 */
+  background: linear-gradient(
+    165deg,
+    color-mix(in srgb, var(--pi-primary) 52%, #ffffff) 0%,
+    var(--pi-primary) 44%,
+    color-mix(in srgb, var(--pi-primary) 68%, #000000) 100%
+  );
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
@@ -2773,7 +3036,8 @@ input {
   height: 40px;
   border-radius: 50%;
   overflow: hidden;
-  color: #fff;
+  /* 主色底上的图标读 `--pi-on-primary`（用户第二十一轮第 5 条：主色可换成黑白/自定义）。 */
+  color: var(--pi-on-primary, #fff);
   background: var(--pi-primary);
   /* 用户 m00736 第 3 条：常态**不占行内位置**——用负 margin 把 40px 让出来（省下的宽度由
      `--pi-bar-width` 一起减掉），但 offsetWidth / offsetHeight 仍是 40×40（冒烟第十六轮⑥
@@ -2835,7 +3099,7 @@ input {
   box-shadow: 0 6px 16px color-mix(in srgb, var(--pi-primary) 34%, transparent);
 }
 .pi-home__play:hover {
-  color: #fff;
+  color: var(--pi-on-primary, #fff);
   /* 第十六轮第 5 条：键在静置态就是主色实心圆（参考图那颗键），所以悬停要**更深**才有反馈。 */
   background: var(--pi-primary-deep);
 }
@@ -2926,6 +3190,10 @@ input {
 .pi-collage-bar > .pi-home__bar {
   pointer-events: auto;
 }
+/* 第 7 轮那条「交叠淡入」**故意不动这条底栏**：它跟播放页自己那条 `.pi-home__bar` 是同一个
+   组件、同一个位置（`BottomBar` 注释：「与歌曲播放页逐像素一致」），而播放页那条在
+   `navigate('home')` 的同一刻就已经在下面了 —— 淡它等于同位置两层各淡一半，零收益，
+   还多个「某个宿主不卸载浮层就留下一条永远透明的药丸」的风险。 */
 /* 第十六轮第 6 条后半段（用户 m07538）：「在歌曲队列拼贴展示页面，滚轮向下滚打开搜索
    检索歌单里的歌曲，输入关键字自动定位到歌曲拼贴位置」。
    这条搜索条钉在拼贴视图顶端，用和底栏同一套玻璃皮肤；搬动镜头交给
@@ -3337,6 +3605,17 @@ input {
   pointer-events: auto;
   transform: translateX(-50%) scale(1.3, 1.5);
 }
+/*
+ * 拖动中：弹层锁在浮出态（用户第二十二轮第 3 条「音量条不能用鼠标线性调节」）。
+ * 这条弹层只有 16px 宽，指针稍微一偏就掉出 `:hover`、`pointer-events` 变回 none，
+ * 滑块被「甩掉」——读起来就是「拖不动/不成线性」。按下期间由 `data-dragging` 顶住，
+ * 抬手（或指针取消）立刻交还给原来的 `:hover` 规则。
+ */
+.pi-home__volume[data-dragging='true'] .pi-home__volpop {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateX(-50%) scale(1.3, 1.9);
+}
 .pi-home__volrange {
   /* 第十三轮第 5 条（用户 m04663）：「音量条要在音量键的上面，现在是像图 2 一样有错位」。
      先按原样量了一遍：**弹层盒子本身是居中的**（`getBoundingClientRect` 中心与音量键逐像素
@@ -3352,39 +3631,86 @@ input {
   height: 16px;
   /* 半个自身尺寸的负外边距：59 ÷ 2 = 29.5（跟着上面那条 70% 一起缩，中心仍然钉在弹层中心）。 */
   margin: -8px 0 0 -29.5px;
-  appearance: none;
-  -webkit-appearance: none;
   background: transparent;
   transform: rotate(-90deg);
   cursor: pointer;
-}
-.pi-home__volrange::-webkit-slider-runnable-track {
-  /* 第十四轮第 1 条（用户 m05281）：「音量条重新设计去掉那个蓝色小球而变成细长一条」。
-     球没了 ⇒ 已调音量不能再靠滑块位置表示，改由轨道自身的主色填充（rotate(-90deg) 之后
-     `left center` 就是底端，填充从下往上长）；轨道也从 4px 收细到 3px。
-     第十五轮第 9 条：粗细改由变量给（停键 3px / 停在条上 6px），所以这里读 `--pi-vol-thick`。 */
-  height: var(--pi-vol-thick, 3px);
+  /* 指针事件自己处理（`components/VolumeSlider.tsx`）：不让浏览器把拖动当成触摸滚动/缩放。 */
+  touch-action: none;
   border-radius: 999px;
-  background-color: color-mix(in srgb, var(--pi-divider) 70%, transparent);
-  background-image: linear-gradient(var(--pi-primary), var(--pi-primary));
-  background-repeat: no-repeat;
-  background-position: left center;
-  background-size: calc(var(--pi-volume, 0) * 100%) 100%;
+  /* 键盘焦点：整条轨道外面描一圈（原来这一档靠原生 range 自带的 focus 环）。 */
+  outline: none;
 }
-.pi-home__volrange::-webkit-slider-thumb {
-  appearance: none;
-  -webkit-appearance: none;
-  /* 「细长一条」：从 10×10 的蓝圆球换成一枚 14×3 的细长胶囊，与轨道同厚，
-     视觉上就是那根线上的一小段（不再是球），hover 时整个部件放大 1.3 倍好抓。
-     第十五轮第 9 条：指针移到条本身时轨道加粗到 6px，滑块跟着一起加粗加宽（14→18px），
-     所以宽/高都读变量。 */
-  width: var(--pi-vol-thumb, 14px);
+.pi-home__volrange:focus-visible {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--pi-primary) 55%, transparent);
+}
+
+/*
+ * 用户第二十二轮第 3 条：轨道 / 已播量 / 滑块从 `::-webkit-slider-*` 伪元素换成三个真元素
+ * （理由是原生 range 的「落点 → 值」非线性，见 `components/VolumeSlider.tsx` 的注释）。
+ * 三个都绝对定位在轨道中线上，粗细与长度继续读弹层那两枚变量 `--pi-vol-thick` / `--pi-vol-thumb`，
+ * 所以第十五轮那两档悬停（3px / 6px、14px / 18px）与冒烟读数逐字不变。
+ */
+.pi-home__volrange-track,
+.pi-home__volrange-fill {
+  position: absolute;
+  top: 50%;
+  border-radius: 999px;
+  transform: translateY(-50%);
+  /* 两个装饰元素都不吃指针：整条 16px 宽的盒子都是滑块的抓取区。 */
+  pointer-events: none;
+}
+.pi-home__volrange-track {
+  left: 0;
+  width: 100%;
   height: var(--pi-vol-thick, 3px);
-  margin-top: 0;
-  border: none;
+  background-color: color-mix(in srgb, var(--pi-divider) 70%, transparent);
+}
+.pi-home__volrange-fill {
+  /* 第十四轮第 1 条（用户 m05281）：「去掉那个蓝色小球而变成细长一条」⇒ 已调音量由轨道自身的
+     主色填充表达（rotate(-90deg) 之后 `left` 就是底端，填充从下往上长）。 */
+  left: 0;
+  width: calc(var(--pi-volume, 0) * 100%);
+  height: var(--pi-vol-thick, 3px);
+  background: var(--pi-primary);
+}
+/*
+ * 滑块挂在**填充的末端**上（用户第二十三轮第 1 条）。
+ *
+ * 原来的写法是「独立一支 14px 的胶囊，左端按 `--pi-volume × (轨道 − 滑块)` 定位」——
+ * 定位用的是滑块**整支**的行程，而填充只有 `--pi-volume × 轨道` 那么长，于是音量低于
+ * 14/59 ≈ 24% 时滑块一定**探出填充之外**（5% 时探出十几像素）。一截主色块翘在已经到底的
+ * 体积条外面，正是用户给的图 1：「拖到底上面仍有残余显示」。
+ *
+ * 现在改成填充的伪元素：它的位置**就是值的位置**（不存在探出），宽度取 `min(满宽, 填充宽)`
+ * ——音量很小时它跟着填充一起短，音量过了 24% 才回到满宽。`data-silent` 一起涂透明，
+ * 所以「静音 / 归零」时整条只剩那根细轨道。
+ */
+.pi-home__volrange-fill::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: min(var(--pi-vol-thumb, 14px), 100%);
+  height: 100%;
   border-radius: 999px;
   background: var(--pi-primary);
-  box-shadow: none;
+}
+
+/*
+ * 音量条「到底」= 滑块不涂色（用户第十九轮第 2 条「静音了音量条显示不是到底」+
+ * 第二十轮第 1 条「音量条手动调节调不到底」——同一个毛病，两条入口）。
+ *
+ * 根因：滑块（`--pi-vol-thumb` 那截小胶囊）与「已播量」用的是**同一个** `var(--pi-primary)`。
+ * `--pi-volume` 归零时轨道填充确实归零了，但滑块自己仍是一截蓝的，看上去就是
+ * 「音量还剩一点、没到底」。所以只要这条音量条是空的（静音 **或** 音量真的是 0），
+ * 就把滑块涂透明：整条轨道只剩那根细线，从顶到底贯通；拖回去（或取消静音）时
+ * `data-silent` 一翻，滑块自己回来。
+ * 抓手：`[data-home-volrange][data-silent='true']`，冒烟按它截音量弹层的像素数蓝点。
+ */
+.pi-home__volrange[data-silent='true'] .pi-home__volrange-fill,
+.pi-home__volrange[data-silent='true'] .pi-home__volrange-fill::after {
+  background: transparent;
 }
 
 /* 第九轮第 2 条：原来「点播放页唤出的那层遮罩 + 四角按钮」已经整块删掉，
@@ -3437,7 +3763,10 @@ input {
   .pi-home__bar,
   .pi-home__play,
   .pi-home__volbtn,
-  .pi-home__volpop {
+  .pi-home__volpop,
+  /* 第二十一轮第 3 条那条「回播放页」的薄幕同样关掉（它会变成一闪）。
+     沉浸式背景的绽开已在第二十七轮整条删除，这里不再需要为它留位。 */
+  .pi-page-arrive-veil {
     transition: none;
     animation: none;
   }
@@ -3455,7 +3784,13 @@ input {
   gap: 2px;
   scrollbar-width: none;
   mask-image: linear-gradient(to bottom, transparent 0, #000 14%, #000 86%, transparent 100%);
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 14%, #000 86%, transparent 100%);
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 14%,
+    #000 86%,
+    transparent 100%
+  );
 }
 .pi-lyrics::-webkit-scrollbar {
   display: none;
@@ -3818,5 +4153,3 @@ input {
   color: var(--pi-text-tertiary);
   font-size: 12.5px;
 }
-
-

@@ -172,7 +172,11 @@ function pickItalicIndex(partCount: number, seed: number): number {
     if (seededFraction(seed * 1000 + 100 + i) < 0.35) candidates.push(i);
   }
   if (candidates.length === 0) return -1;
-  const pick = clamp(Math.floor(seededFraction(seed * 1000 + 200) * candidates.length), 0, candidates.length - 1);
+  const pick = clamp(
+    Math.floor(seededFraction(seed * 1000 + 200) * candidates.length),
+    0,
+    candidates.length - 1,
+  );
   return candidates[pick] ?? -1;
 }
 
@@ -189,7 +193,12 @@ function fontSizesFor(
     const lastIndex = parts.length - 1;
     const last = parts[lastIndex];
     const previous = parts[lastIndex - 1];
-    if (last !== undefined && previous !== undefined && last.length <= 2 && last.length * 2 <= previous.length) {
+    if (
+      last !== undefined &&
+      previous !== undefined &&
+      last.length <= 2 &&
+      last.length * 2 <= previous.length
+    ) {
       sizes[lastIndex] = (sizes[lastIndex] ?? normalPx) * 1.18;
     }
   }
@@ -204,11 +213,7 @@ function partText(part: readonly number[], words: readonly StageWord[]): string 
   return text;
 }
 
-function buildPlan(
-  line: StageLine,
-  containerWidth: number,
-  fontScale: number,
-): TiltPartPlan[] {
+function buildPlan(line: StageLine, containerWidth: number, fontScale: number): TiltPartPlan[] {
   const words = line.words;
   if (words.length === 0) return [];
   const seed = line.timeMs;
@@ -256,7 +261,8 @@ function buildPlan(
   parts.forEach((part, partIndex) => {
     const italic = partIndex === italicIndex;
     const rawSize = sizes[partIndex] ?? normalPx;
-    const fontPx = rawSize * Math.max(italic ? SCALE_FLOOR_ITALIC : SCALE_FLOOR_NORMAL, globalScale);
+    const fontPx =
+      rawSize * Math.max(italic ? SCALE_FLOOR_ITALIC : SCALE_FLOOR_NORMAL, globalScale);
     const yOffset = italic ? fontPx / 6 : 0;
     const glyphs: TiltGlyphPlan[] = part.map((wordIndex) => {
       const word = words[wordIndex];
@@ -286,19 +292,32 @@ interface TiltBlockProps {
   readonly states: readonly WordState[] | undefined;
   readonly active: boolean;
   readonly phase: 'enter' | 'exit';
-  readonly translatedText: string | undefined;
   readonly registerWord: (index: number, element: HTMLElement | null) => void;
 }
 
-function TiltBlock({
-  plan,
-  line,
-  states,
-  active,
-  phase,
-  translatedText,
-  registerWord,
-}: TiltBlockProps): ReactNode {
+/**
+ * **用户第 8 轮第 3 条**（原话：「其中斜体的歌词有一定概率有颜色」）：斜体段抽中签才上强调色。
+ * 概率取 0.5（一半的斜体段有颜色、另一半保持常态），抽样用行时间戳 + 段序号喂
+ * `seededFraction` —— 确定性，重渲染 / 每一帧都不会变来变去。
+ *
+ * **用户第 10 轮第 3 条**（原话：「我们 app 的斜体带颜色的歌词表现如图 3 所示，正确的表现应该
+ * 如图 4 所示」）：抽中签之后是**整段**斜体歌词都上那支强调色（图 4），不是只有正在唱的那一两个字
+ * （图 3）。这条只在 CSS 里落地：`lyric-themes.css` 的
+ * `.pi-lyricstage[data-theme='tilt'] .pi-lyrictilt__part[data-italic='true'][data-tinted='true']`
+ * 给整段上色；这里的抽签逻辑一个字没改。
+ */
+const TILT_ITALIC_TINT_CHANCE = 0.5;
+
+/**
+ * 某一段斜体歌词这一行抽中没抽中（**用户第 8 轮第 3 条**）。
+ * 确定性：同一行 + 同一段序号永远同一个答案，重渲染 / 每一帧都不会变。
+ * 非斜体段一律返回 false（永不入色）。导出只为单测钉「约一半中签」。
+ */
+export function tiltPartTinted(lineTimeMs: number, partIndex: number, italic: boolean): boolean {
+  return italic && seededFraction(lineTimeMs + partIndex * 131) < TILT_ITALIC_TINT_CHANCE;
+}
+
+function TiltBlock({ plan, line, states, active, phase, registerWord }: TiltBlockProps): ReactNode {
   return (
     <div
       className="pi-lyrictilt__block"
@@ -314,6 +333,8 @@ function TiltBlock({
             key={`${partIndex}-${part.text}`}
             className="pi-lyrictilt__part"
             data-italic={part.italic}
+            // 第 8 轮：只有抽中的斜体段才上色（CSS 认这个标记）。
+            data-tinted={tiltPartTinted(line.timeMs, partIndex, part.italic)}
             style={{ fontSize: `${part.fontPx.toFixed(2)}px` }}
           >
             {part.glyphs.map((glyph) => (
@@ -339,9 +360,6 @@ function TiltBlock({
           </div>
         ))}
       </div>
-      {translatedText === undefined || translatedText === '' ? null : (
-        <p className="pi-lyrictilt__translated">{translatedText}</p>
-      )}
     </div>
   );
 }
@@ -353,11 +371,12 @@ function TiltBlock({
  * `--pi-tilt-glow` / `--pi-tilt-scale` 直接写到 DOM 上（不 setState）。
  */
 export function TiltTheme(props: LyricThemeProps): ReactNode {
-  const { lines, translated, activeIndex, viewIndex, leavingIndex, positionMs, theme } = props;
+  const { lines, activeIndex, viewIndex, positionMs, playing, theme } = props;
   const rootRef = useRef<HTMLDivElement>(null);
   const wordRefs = useRef<(HTMLElement | null)[]>([]);
   const size = useElementSize(rootRef);
-  const clock = usePositionClock(positionMs);
+  // **用户第 5 轮第 2 条**：暂停时不外推（否则会先走几步再猛地回到暂停位置）。
+  const clock = usePositionClock(positionMs, playing ?? true);
   const reduced = usePrefersReducedMotion();
   const anchor = lines[viewIndex];
   // 设置的动效参数：字号进 buildPlan 的上限换算，帧率上限进下面的 rAF。
@@ -378,14 +397,14 @@ export function TiltTheme(props: LyricThemeProps): ReactNode {
       ),
     [plan],
   );
-  const leaving =
-    leavingIndex === null || leavingIndex === undefined || leavingIndex === viewIndex
-      ? undefined
-      : lines[leavingIndex];
-  const leavingPlan = useMemo(
-    () => (leaving === undefined ? [] : buildPlan(leaving, size.width, fontScale)),
-    [leaving, size.width, fontScale],
-  );
+  /*
+   * **用户第 8 轮第 3 条**（原话：「倾述的歌词动效，不要一次性显示两行，而是一行结束再显示第二行」）：
+   * 这里原来还渲染 `lines[leavingIndex]`（上一行）跟新行**同时**在场演交叉淡出 ——
+   * 两句叠在一屏上，正是用户说的「一次性显示两行」。现在只画**当前这一行**：
+   * 上一行在 `LyricStage` 换行的那一刻就没了，新行进来时屏上只有它一句。
+   * 代价说清楚：倾诉因此没有「上一行淡出」的过渡，最后一眼是硬的换行 ——
+   * 这正是用户要的「一行结束再显示第二行」。
+   */
 
   useEffect(() => {
     if (reduced || wordTimes.length === 0) return undefined;
@@ -408,7 +427,8 @@ export function TiltTheme(props: LyricThemeProps): ReactNode {
         const elapsed = now - word.startMs;
         let glow: number;
         if (elapsed <= 0) glow = 0.25;
-        else if (elapsed <= durationMs) glow = 0.25 + 0.75 * Math.sin((elapsed / durationMs) * (Math.PI / 2));
+        else if (elapsed <= durationMs)
+          glow = 0.25 + 0.75 * Math.sin((elapsed / durationMs) * (Math.PI / 2));
         else glow = Math.max(0.25, 1 - (elapsed - durationMs) / (1.2 * durationMs));
         const progress = clamp(elapsed / durationMs, 0, 1);
         const intensity = Math.sin(progress * Math.PI);
@@ -442,18 +462,6 @@ export function TiltTheme(props: LyricThemeProps): ReactNode {
         } as CSSProperties
       }
     >
-      {leavingPlan.length === 0 ? null : (
-        <TiltBlock
-          key={`out-${leaving?.index ?? -1}-${leaving?.timeMs ?? 0}`}
-          plan={leavingPlan}
-          line={leaving ?? anchor}
-          states={undefined}
-          active={false}
-          phase="exit"
-          translatedText={undefined}
-          registerWord={registerWord}
-        />
-      )}
       <TiltBlock
         key={`in-${anchor.index}-${anchor.timeMs}`}
         plan={plan}
@@ -461,7 +469,6 @@ export function TiltTheme(props: LyricThemeProps): ReactNode {
         states={states}
         active={activeIndex === viewIndex}
         phase="enter"
-        translatedText={translated.get(anchor.timeMs)}
         registerWord={registerWord}
       />
     </div>

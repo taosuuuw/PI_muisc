@@ -4,6 +4,7 @@ import { BottomBar } from '../components/BottomBar';
 import { NeedsLogin } from '../components/NeedsLogin';
 import { Icon } from '../components/Icons';
 import { PlaylistGrid } from '../components/PlaylistGrid';
+import { dailyCoverUrls } from '../lib/cover';
 import { useAccount, useMyPlaylists, usePersonalizedPlaylists, useRecommend } from '../lib/queries';
 import { useUi } from '../state/ui';
 
@@ -59,6 +60,11 @@ export function PlaylistPage({ tab }: PlaylistPageProps): ReactNode {
      和歌手 / 专辑一样：点一首歌 = 把这一份列表当播放队列（见 `components/SongListOverlay.tsx`）。 */
   const daily = useRecommend(isRecommend);
   const dailyCount = daily.data?.tracks.length;
+  /*
+   * 每日推荐是伪歌单、上游没有封面（用户第二十一轮第 2 条：「每日推荐歌单没有封面，修一下」），
+   * 所以照网易云的做法拿前几首歌的专辑封面拼一张 2×2（见 `lib/cover.ts` 的 `dailyCoverUrls`）。
+   */
+  const dailyCovers = dailyCoverUrls(daily.data?.tracks, 4);
 
   const dailyCard = (
     <button
@@ -66,12 +72,21 @@ export function PlaylistPage({ tab }: PlaylistPageProps): ReactNode {
       className="pi-plcard"
       data-daily-card="true"
       data-daily-count={dailyCount}
+      data-daily-cover={dailyCovers.length}
       onClick={() => openSongs({ kind: 'daily', id: 0, title: '每日推荐' })}
       title="每日推荐"
     >
-      <div className="pi-plcard__cover pi-plcard__cover--empty">
-        <Icon name="music" size={26} />
-      </div>
+      {dailyCovers.length > 0 ? (
+        <div className="pi-plcard__cover pi-plcard__cover--mosaic" data-daily-mosaic="true">
+          {dailyCovers.map((url, index) => (
+            <img key={`${url}-${index}`} src={url} alt="" loading="lazy" draggable={false} />
+          ))}
+        </div>
+      ) : (
+        <div className="pi-plcard__cover pi-plcard__cover--empty">
+          <Icon name="music" size={26} />
+        </div>
+      )}
       <span className="pi-plcard__name">每日推荐</span>
       <span className="pi-plcard__meta">
         {dailyCount === undefined ? '每天零点换一批' : `每天零点换一批 · ${dailyCount} 首`}
@@ -97,7 +112,9 @@ export function PlaylistPage({ tab }: PlaylistPageProps): ReactNode {
                 <PlaylistGrid playlists={items} onOpen={openPlaylist} leading={dailyCard} />
               </>
             ) : (
-              <div className="pi-placeholder">还没有收藏的歌单。在网易云里收藏一个，这里就会出现。</div>
+              <div className="pi-placeholder">
+                还没有收藏的歌单。在网易云里收藏一个，这里就会出现。
+              </div>
             )
           ) : (
             <PlaylistGrid

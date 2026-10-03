@@ -29,18 +29,31 @@
  * 证据、修法与「退场为什么不再有白帧」都写在 `playlist-cards.css` 第 3 节开头的注释里。
  * 这里只把收场的两处重入兜底补齐（`alive` 的挂载复位 + 定时器里先解掉吞键盘）。
  */
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
 import type { Playlist } from '@pi/shared';
 import { errorMessage } from '../bridge';
+import { dailyCoverUrls } from '../lib/cover';
 import { isLikedPlaylist, withLikedFirst } from '../lib/playlists';
 import { useAccount, useMyPlaylists, usePersonalizedPlaylists, useRecommend } from '../lib/queries';
 import { useUi } from '../state/ui';
 import { Icon, type IconName } from './Icons';
 import { SongCards, type SongCardModel } from './SongCards';
 
-/** 收场动画时长（用户 m00736 第 7 条 b）。要 ≥ `playlist-cards.css` 里 `pi-pllist-out` /
- *  `pi-pllist-fold` 那 240ms，多留 20ms 等最后一帧落定，然后才真正跳转（React 才卸载这一层）。 */
-const EXIT_MS = 260;
+/**
+ * 收场时长（ms）。用户第二十六轮：「先锋模式下歌单选择页退回到歌曲播放页的过渡动画，
+ * 直接套用歌单歌曲页退回歌曲播放页的动画就可以了吧，都是淡出」—— 于是收场换成
+ * `overlays.css` 那条 `pi-listoverlay-crossfade-out`（300ms），这里跟着它走：
+ * 比 300ms 略宽一点，保证动画放完才真正卸载。
+ */
+const EXIT_MS = 320;
 
 /** 收场动画进行中（模块级）。放模块作用域，是为了让下面那个「收场期间吞掉键盘」的监听能在
  *  **模块求值时**就挂上 window —— 必须早于 `ShortcutLayer.tsx` 里 `useEffect` 挂的那个
@@ -71,7 +84,26 @@ const HEADS: Record<PlaylistNav, { label: string; icon: IconName }> = {
   'playlist:recommend': { label: '推荐歌单', icon: 'compass' },
 };
 
-export function PlaylistCoverflowOverlay({ nav }: { nav: PlaylistNav }): ReactNode {
+export function PlaylistCoverflowOverlay({
+  nav,
+  closing = false,
+}: {
+  nav: PlaylistNav;
+  /**
+   * 「这一层正在收场」由**外面**指名（用户第二十四轮第 1 条、第二十六轮收口）。
+   *
+   * 本层自己的 `leave()` 只在「点空白 / Esc」那条路上跑（它推迟真正的跳转，好把动画放完）。
+   * 但**点底栏那个药丸**回播放页走的是 `BottomBar` → `navigate('home')`，nav 立刻变、
+   * React 当场卸载这一层 —— 动画根本没机会播，用户看到的就是「歌单选择页回去闪一下」。
+   *
+   * 用户第二十六轮的判断是对的：这一路**直接套用歌单歌曲页那套**（`SongListOverlay`）就行，
+   * 两边都只是淡出。所以这里不再自造动画，改成同一个口径 —— 挂 `data-closing`，
+   * 由 `overlays.css` 那条 `pi-listoverlay-crossfade-out`（300ms ease-out）淡出；
+   * 而 `App` 那边把它挂在**同一个树位置**上继续渲染，所以是**同一个实例**，
+   * 不会重新挂载、也不会重播卡片入场（这正是歌曲页浮层能做到「只是淡出」的原因）。
+   */
+  closing?: boolean;
+}): ReactNode {
   const account = useAccount();
   const loggedIn = account.data?.loggedIn === true;
   const navigate = useUi((s) => s.navigate);
@@ -80,7 +112,8 @@ export function PlaylistCoverflowOverlay({ nav }: { nav: PlaylistNav }): ReactNo
   const mine = useMyPlaylists(loggedIn && nav === 'mine:playlists');
   const starred = useMyPlaylists(loggedIn && nav === 'playlist:star');
   const personalized = usePersonalizedPlaylists(nav === 'playlist:recommend', 30);
-  const source = nav === 'playlist:recommend' ? personalized : nav === 'playlist:star' ? starred : mine;
+  const source =
+    nav === 'playlist:recommend' ? personalized : nav === 'playlist:star' ? starred : mine;
 
   const playlists = useMemo((): Playlist[] => {
     if (nav === 'playlist:recommend') return personalized.data?.playlists ?? [];
@@ -104,6 +137,9 @@ export function PlaylistCoverflowOverlay({ nav }: { nav: PlaylistNav }): ReactNo
   const openSongs = useUi((s) => s.openSongs);
   const daily = useRecommend(isRecommend);
   const dailyCount = daily.data?.tracks.length;
+  // 用户第二十一轮第 2 条：每日推荐是伪歌单、没有上游封面，拿第一首歌的专辑封面当卡片封面
+  // （平凡档那张卡是 2×2 拼图，这里只有一格，所以只取第一张；见 `lib/cover.ts`）。
+  const dailyCover = dailyCoverUrls(daily.data?.tracks, 1)[0] ?? null;
 
   /*
    * 每张卡片的显示数据（`SongCards` 的卡片模式）。`data-pl-cover-card` 是给自动化认卡的抓手，
@@ -123,17 +159,16 @@ export function PlaylistCoverflowOverlay({ nav }: { nav: PlaylistNav }): ReactNo
         key: RECOMMEND_DAILY_KEY,
         title: '每日推荐',
         meta: dailyCount === undefined ? '每天零点换一批' : `每天零点换一批 · ${dailyCount} 首`,
-        coverUrl: null,
+        coverUrl: dailyCover,
         data: { 'data-daily-card': 'true', 'data-daily-count': dailyCount },
       },
       ...list,
     ];
-  }, [dailyCount, isRecommend, playlists]);
+  }, [dailyCount, dailyCover, isRecommend, playlists]);
 
   /** 卡片流里的下标 → 真实歌单（推荐面第 0 张是每日推荐那张哨兵卡）。 */
   const playlistAt = useCallback(
-    (index: number): Playlist | undefined =>
-      playlists[isRecommend ? index - 1 : index],
+    (index: number): Playlist | undefined => playlists[isRecommend ? index - 1 : index],
     [isRecommend, playlists],
   );
 
@@ -231,8 +266,11 @@ export function PlaylistCoverflowOverlay({ nav }: { nav: PlaylistNav }): ReactNo
       data-pl-list="true"
       data-pl-list-nav={nav}
       data-pl-list-count={playlists.length}
-      /* 用户 m00736 第 7 条 b：收场这一小段挂着它，CSS 播淡出 + 收拢，同时把卡片流关掉。 */
+      /* 用户 m00736 第 7 条 b：收场这一小段挂着它，CSS 播淡出 + 收拢，同时把卡片流关掉。
+         用户第二十六轮：**外面指名**的那一路（点底栏）改成歌曲页浮层同一个口径 —— 只挂
+         `data-closing`，走 `pi-listoverlay-crossfade-out` 那条纯淡出，不再叠「收拢」。 */
       data-leaving={leaving ? 'true' : 'false'}
+      data-closing={closing ? 'true' : undefined}
       onClick={(event) => {
         // 只有点到这层模糊底本身（卡片流盒子之外）才退回播放页；卡片冒泡上来的不算。
         // 与 `SearchOverlay` 的空白退出同口径（`event.target === event.currentTarget`）。

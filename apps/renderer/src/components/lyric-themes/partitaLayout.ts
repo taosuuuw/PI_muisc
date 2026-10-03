@@ -46,18 +46,29 @@ const PARTITA_HEIGHT_BUDGET_RATIO = 0.8;
 /** 整条楼梯相对舞台中心再上移舞台高的这个比例（参考图略偏上，且给译文字幕留空）。 */
 const PARTITA_STAIR_UP_BIAS_RATIO = 0.03;
 
-/** 基准字号 = `clamp(舞台宽 × 0.055, 40, 72) × fontScale`，逐档 ×0.86，下限 20px。 */
-const PARTITA_FONT_SPAN_RATIO = 0.055;
+/**
+ * 基准字号 = `clamp(舞台宽 × 0.072, 40, 120) × fontScale`，逐档 ×0.86，下限 20px。
+ *
+ * **用户第 6 轮第 2 条**（原话：「图 3 是现在云阶的歌词布置，图 2 是应该实现的歌词布置效果，即不同行
+ * 歌词有大有小，但是**占据中间视野而不是缩成一团**」）：0.055 / 上限 72 是第十一轮按当时的参考图定的，
+ * 在 1478 宽的窗口上正好被 72 的上限卡住（`0.055 × 1478 = 81 > 72`），于是整条楼梯只有 ~72px 字、
+ * 挤在画面中央一小团里。新口径按用户的图 2 反推：那张图里最大的块 ≈ 110px 字（窗口 ≈1500 宽），
+ * 所以 `0.072 × 1500 ≈ 108`；上限抬到 120 只对超宽窗口生效。
+ *
+ * 「放得下」仍然由下面那条逐档缩字号 + 块数扫描兜底：字号起点抬高后，长句会自动退档，不会溢出。
+ */
+const PARTITA_FONT_SPAN_RATIO = 0.072;
 const PARTITA_FONT_SPAN_MIN_PX = 40;
-const PARTITA_FONT_SPAN_MAX_PX = 72;
+const PARTITA_FONT_SPAN_MAX_PX = 120;
 /** 字号逐档缩小的比例（任务书指定：沿用原实现）。 */
 export const PARTITA_FONT_SHRINK_STEP = 0.86;
 /** 字号下限（任务书指定）。 */
 export const PARTITA_FONT_MIN_PX = 20;
 /**
  * 字号最多试几档（安全上限，正常用不满）——必须够大到能踩到 20px 下限：
- * 最大基准字号 = `72 × fontScale(≤1.3)` = 93.6px，`0.86^11 ≈ 0.19` → `93.6 × 0.19 = 17.8 ≤ 20`，
- * 所以第 12 档就是下限那一档（`0.86^15 ≈ 0.10`，16 档留足了余量）。
+ * 最大基准字号 = `120 × fontScale(≤1.3)` = 156px，`0.86^14 ≈ 0.12` → `156 × 0.12 = 18.7 ≤ 20`，
+ * 所以第 15 档就是下限那一档（16 档留了一档余量；第 6 轮把上限从 72 抬到 120 之后，
+ * 档数**必须**跟着从 12 抬到 16，否则长句再也退不到 20px 下限）。
  * 之前是 10 档：从 93.6px 只能退到 `93.6 × 0.86^9 = 24.1px`，**根本到不了 20px 下限**，
  * 于是长句在「每块 4 个字素」还放得下的字号档上就被判成放宽档，白留了 4px 的字号。
  */
@@ -397,8 +408,7 @@ function buildCandidate(
     // 「当前字素放大 1.2 倍」往外伸的量（缩放是绕字素自身中心做的）。
     const activePad = ((PARTITA_ACTIVE_SCALE - 1) * widestAtom) / 2;
     const baseWidth = contentWidth + 2 * activePad + 2 * wordJitterX + 2 * wordRotPad;
-    const baseHeight =
-      PARTITA_ACTIVE_SCALE * rowHeight + 2 * wordJitterY + 2 * wordRotPad;
+    const baseHeight = PARTITA_ACTIVE_SCALE * rowHeight + 2 * wordJitterY + 2 * wordRotPad;
     drafts.push({
       baseWidth,
       baseHeight,
@@ -474,13 +484,10 @@ function buildCandidate(
   }
   // 刻度线还往外伸：`__baseline` 左右各 18px、`__guide` 往下 16px。判定要把它们算上，
   // 否则「矩形不相交 + 在预算内」成立了，线却会贴着（甚至爬出）舞台边。
-  const needWidth = 2 * Math.max(Math.abs(left) + PARTITA_GUIDE_OVERHANG_X, Math.abs(right) + PARTITA_GUIDE_OVERHANG_X);
-  const needHeight =
+  const needWidth =
     2 *
-    Math.max(
-      Math.abs(high),
-      Math.abs(low + PARTITA_GUIDE_OVERHANG_Y),
-    );
+    Math.max(Math.abs(left) + PARTITA_GUIDE_OVERHANG_X, Math.abs(right) + PARTITA_GUIDE_OVERHANG_X);
+  const needHeight = 2 * Math.max(Math.abs(high), Math.abs(low + PARTITA_GUIDE_OVERHANG_Y));
   return {
     fontPx,
     blocks,
@@ -519,7 +526,11 @@ export function layoutPartitaLine(options: PartitaLayoutOptions): PartitaLayoutP
   const availHeight = Math.max(stageHeight * PARTITA_HEIGHT_BUDGET_RATIO - 2 * upBias, 120);
 
   const baseFont =
-    clamp(stageWidth * PARTITA_FONT_SPAN_RATIO, PARTITA_FONT_SPAN_MIN_PX, PARTITA_FONT_SPAN_MAX_PX) *
+    clamp(
+      stageWidth * PARTITA_FONT_SPAN_RATIO,
+      PARTITA_FONT_SPAN_MIN_PX,
+      PARTITA_FONT_SPAN_MAX_PX,
+    ) *
     fontScale *
     (atoms.length > PARTITA_LONG_LINE_ATOMS ? PARTITA_LONG_LINE_FONT : 1);
 
@@ -538,16 +549,8 @@ export function layoutPartitaLine(options: PartitaLayoutOptions): PartitaLayoutP
 
   // 块数随行长度自适应（**不**钉死在 4）：常规目标 2~3 个字素一块，
   // `minBlocks` 是「每块 ≤ 4 个字素」时至少需要的块数，用于区分首选解与放宽档。
-  const desiredBlocks = clamp(
-    Math.ceil(atoms.length / PARTITA_ATOMS_PER_BLOCK),
-    1,
-    atoms.length,
-  );
-  const minBlocks = clamp(
-    Math.ceil(atoms.length / PARTITA_MAX_ATOMS_PER_BLOCK),
-    1,
-    atoms.length,
-  );
+  const desiredBlocks = clamp(Math.ceil(atoms.length / PARTITA_ATOMS_PER_BLOCK), 1, atoms.length);
+  const minBlocks = clamp(Math.ceil(atoms.length / PARTITA_MAX_ATOMS_PER_BLOCK), 1, atoms.length);
   const surfaceOf = (plan: PartitaLayoutPlan): PartitaLayoutPlan => ({
     ...plan,
     availWidth,

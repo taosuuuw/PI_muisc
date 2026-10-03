@@ -986,6 +986,284 @@ export interface MusicSource {
 
 ---
 
+### 4.25 m04987 第二十五版改版：流光英文整词成组 + 图 1 式高光与外辉光 + 图 2 式逐字错落；浮名镜头锚点 0.42→0.5 真跟高亮句，唱过的行褪回常态色
+
+用户原话：「1. 流光歌词动效，对英语单词不是一个字母一个字母往外冒，而是整个单词往外冒。歌词高光以及辉光要如图1所示的效果，
+并且一行歌词不是整齐的一行而是如图2所示。歌词冒出来是是带旋转的。2. 浮名的歌词动效，镜头中心要跟着高亮的歌词走。
+如图3所示，一行歌词有颜色高亮后褪去颜色回到初始色（白/黑）。」
+
+- **流光（classic）**
+  · `apps/renderer/src/components/LyricStage.tsx`：`StageLine` 新增 `atoms / atomStarts / atomEnds`（状态二分的单位从字素换成原子）；
+    `buildStageAtoms(words, lineIndex)` 把**连续西文字素并成一个「词原子」**（`don't`、`well-known`、`hello,` 各算一个词），
+    CJK 一字一原子、空白变成 spacer 原子（不带 `data-*`）；`wordStatesFor` → `atomStatesFor`。
+  · 逐字错落：`scatterFor(lineIndex, atomIndex)` 用 `scatterNoise`（`Math.imul` 位混洗，**确定性、不用 Math.random**）
+    给每个原子摇出 |y| ∈ [0.05, 0.15]em、|tilt| ∈ [2.2, 5.4]°，中文另有 ±0.05em 横向抖动，词间空白加宽到 [0.38, 0.54]em。
+    tilt 上界是算出来的：入场角最大 6° + 5.4° = 11.4° < 12°，既有的 `spinOk` 探针红线（`worst <= 12`）不被打破。
+  · `apps/renderer/src/styles/lyric-stage.css`：新增 `--pi-lyric-hot`（主题高亮色）、`--pi-word-glow-strong/soft`（60% / 32%）；
+    高亮字改成主题高亮色 + **三层 `text-shadow`**（`0 0.06em` 贴缘 + 两层外辉光，就是图 1 那种晕开的光），
+    常态字仍是 `--pi-lyric-ink` 且不带影；基态/入场/退场 transform 把「入场角 + 静止 tilt」相加；reduced-motion 里再关一次 `text-shadow`。
+    **没有硬编码图 1 的红色** —— 那支 MV 的红是它自己的主题色，这里取 `--pi-th-primary`。
+  · 测试：`apps/renderer/src/components/lyric-stage.test.ts` 新增 8 例（整词一原子 / 空格 ≥0.38em / 整词一起亮 / yrc 补空格 /
+    相邻西文原子之间必有空格原子 / 确定性 / 幅度有界 / `SPIN_WORST_DEG + 5.4 ≤ 12`），夹具 `'ab'` 换 `'甲乙'`（时序均分，原 4 条断言一字未改）⇒ **22 files / 424 tests**。
+- **浮名（fume）**
+  · `apps/renderer/src/components/lyric-themes/FumeTheme.tsx:247 const CAMERA_FOCUS_Y = 0.5`（原 0.42）。
+    相机**目标本来就是**当前句中心（`resolveFocus` 返回 `block.y + block.height * 0.5`），差的只是这个视口锚点 ——
+    改完高亮句从「偏上 114px」变成贴住窗口中心（实测中心 369px vs 窗口 386px）。
+  · 「高亮后褪回常态色」本来就在（`FUME_PASSED_FADE_MS = 900`、`element.style.color = mixColor(palette.primary, palette.ink, passedFade)`）；
+    真正踩坑的是**验收口径**：常态色是逐块按各自背景算的（深底给纯白 `#ffffff`、米黄底给对比度 3 的墨色 `#2c251c`），
+    所以「已唱过 vs 还没唱到」两组比饱和度/色差不成立，第一版 `<0.12` 的绝对饱和度门槛更是错的（`#2c251c` 自身饱和度就是 0.364，两版都误报了 ✗）。
+- **探针（`apps/desktop/src/main/index.ts`）**
+  · 新增 `fumeCamOk`：取 `[data-mood-theme="fume"]` 根上 `data-active-index` 对应的 `.pi-lyricfume__block`，
+    6×220ms 采样它与窗口中心的偏差取最小值，判据 `<= 60px`。
+  · 新增 `fumeFadeOk`：按「已唱过 / 正在唱」两组字素的众数色算 **RGB 距离 ≥ 30**（离主题高亮色）且 **Δ饱和度 ≥ 0.1**，与配色无关。
+  · 新增 `lyricWordOk`：几何法判「英文被拆开」（相邻两原子同一父元素、前者以字母结尾后者以字母开头、横向间隙 < 4px 记一次），
+    并要求高亮字带 `text-shadow`；顺带报「拉丁词原子数」。
+  · 三条都进了 **M3 渲染层验收**的合取与日志尾串；另给「球拖到暗槽末端」探针的两处读数各加 140ms 延帧（r37 那一跑出现过
+    「轻划 12px 读 slide=58、划到底 90px 读 slide=0」的两头对调值 —— 渲染层是 rAF 写属性的，发完鼠标事件立刻读会读到上一帧）。
+  · 证据图：`docs/m3r32-lyric-fume.png`（高亮句贴住窗口中心、下一行已是常态墨色）、`docs/m3r32-lyric-classic.png`（连拍三张挑有高光的那张）。
+- **实测（平凡档 `.tmp-r37-plain.log`；`PLAIN_EXIT=1` 仍只是既有的 `UI #3 页面上没有第 3 行歌`）**
+  · `浮名镜头跟着高亮句 ✓（高亮句中心=369px 窗口中心=386px｜6 次采样里最小偏差=17px（容差 60px））`
+  · `浮名高亮褪回常态色 ✓（已唱过=#2c251c（饱和度 0.364，8 个字素）｜还没唱到=#ffffff（0.000，12 个字素）｜正在唱=#255cc1（0.808）｜离主题高亮色=174）`
+  · `流光整词与高光辉光 ✓（字素=13 英文被拆开的相邻对=0｜高亮字=2 带辉光=2｜高亮字影=color(srgb 0.172549 0.145098 0.109804 / 0.6) 0px）`
+  · `逐字旋转 ✓（字=13 歪着的=13 最大角=7.9°）`、`冒字带旋转 ✓`；`M3 本轮九条：③⑤⑥b①④ ✓`；`第十八轮总闸 → 通过`。
+  · 未过的只有**与本轮无关**的 `十六轮十四项总闸`：①「球拖到暗槽末端」那一格（见上，r36 同一探针是 ✓，判定为竞态）。本轮按用户要求只跑了平凡档。
+  · 说明：`docs/m3-lyric-classic.png` 仍是 9/28 的旧图 —— `PI_SMOKE_SPIN=1` 时 classic 的成品图写到 `docs/m3r14-lyric-classic-spin.png`。
+
+### 4.26 用户 m05660：歌词动效对齐 folia-major（四条）
+
+- **用户原话（四条）**：①「歌词动效都要学习参考 https://github.com/chthollyphile/folia-major 的实现」②「流光的歌词要有符合封面主题颜色的辉光，如图1所示。并且歌词不是直接冒出，而是旋转着冒出」③「浮名的歌词高光要像图2所示一样，当前进度对应的歌词有高光和深色，然后逐渐褪去颜色和过去进度的歌词一样变成原色。并且镜头中心要跟着当前进度高亮的歌词移动」④「测试只测涉及改动的部分，除非改动牵扯到了其他地方」。
+- **folia 参考（子代理实读 raw 源码；`mods/visualizer52hz/` 是 Pixi.js 的 52Hz 主题）**
+  · 入场按字素、**不做位移/旋转补间**：每个字素一个 container，内装两张同色精灵 `base α=0.3` / `lit α=0→1`；`lit.α = easeOutCubic(p)`、`scale = glyph.scale × (1 + 0.12·sin(πp))`（前后归零的对称弹跳），单字时长 `clamp(0.12, 0.45, 词长)`；整行淡入 0.45s，**同时挂歌曲钟与墙钟**（暂停也能淡完）。
+  · 高光 = lit 精灵的画布阴影 `ctx.shadowBlur = 字号 × 0.45`（取 accent 色），无 bloom、无发光滤镜。据此给本项目流光补一层**按字号缩放**的外扩 `0.45em`（`--pi-word-glow-bloom: 38%`，121px 字号下 ≈ 54px），并把贴缘层提到 92%、中段 82%、软层 32%→52%。
+  · 错落是确定性的：`createRandom(hashString(line.fullText))` = FNV-1a(0x811c9dc5 / 0x01000193) 播种 mulberry32，只与行文本有关；字素抖动权重 CJK 1、拉丁 0.2 ⇒ 汉字 ±0.11em / ±4.3°、拉丁 ±0.022em / ±0.86°。
+  · **两处有意与 folia 不同**：folia 的主题色是把歌词前 2000 字交 LLM 生成（不是封面取色），而用户第 2 条明确要「符合封面主题颜色」（本项目走 `extractCoverPalette` + `deriveThemeColors`）；folia 的 52Hz **没有镜头系统**（文字固定居中），用户第 3 条的「镜头跟高亮句」是本项目浮名自己的机制。
+- **落地改动**
+  · **默认打开逐字旋转**：入场旋转此前只在设置项 `classicWordSpin` 打开时生效，而它默认 `false`（`packages/shared/src/index.ts:444`）⇒ 用户默认根本看不到「旋转着冒出」。改成默认 `true`（`apps/desktop/src/main/services.ts:274` 的 `DEFAULT_LYRIC_TUNING` 浅合并，让老设置文件也同步生效）。
+  · **旋转幅度与时值**：`apps/renderer/src/components/LyricStage.tsx:688 SPIN_ANGLES = [-14, 11, -8.5, 13.5, -12, 7, -10, 9]`（原 ±6°）；`--pi-word-spin-ms` 420→560ms（short 260→340ms、micro 180→240ms），入场缓动 `cubic-bezier(0.16,1,0.3,1)` → `cubic-bezier(0.3,0.86,0.36,1)`（让字变清晰时还在转）；探针 `spinOk` 与单测上界 12°→20°。
+  · **高亮色改取封面 accent**：`apps/renderer/src/styles/lyric-stage.css:131 --pi-lyric-hot: var(--pi-th-accent, var(--pi-th-primary, var(--pi-primary-deep)))`。真因：`apps/renderer/src/lib/cover-palette.ts:581-589` 在亮色底上把 `primary` 压成近黑的深色（实测 rgb(44,37,28)，与常态 ink rgb(26,29,36) 几乎一样 ⇒ 高亮与辉光**肉眼看不见**），accent（`:590-598`）才是那支鲜艳封面色（实测 rgb(37,92,193)）。
+  · **浮名「高光 + 深色 → 逐渐褪回原色」**：`apps/renderer/src/components/lyric-themes/FumeTheme.tsx` 新增 `ACTIVE_DARK_MIX = 0.26`（正在唱的字素先往黑混 26% 得到深色字身，辉光仍取亮色）与 `GLYPH_GLOW_ALPHA_FLOOR/SPAN = 0.5/0.5`；正在唱的起笔与唱过的 trail 都从这一档深色淡向常态色。
+  · **探针口径修正**：本轮唯一的 ✗ 是探针自己造的 —— `apps/desktop/src/main/index.ts` 的「歌词常态白与高亮色」探针一次性取 NodeList，行切换后 React 摘掉的旧字素留在快照里，而 Chromium 对**已脱离文档**的元素 `getComputedStyle().color` 返回空串（r39 读数「常态众数色= 与 ink 一致=否（占 0.57）」，分母 23 里 13 个是尸体节点）⇒ 循环里加 `if (!el.isConnected) continue;`，元素计数只算活节点。
+- **实测（平凡档 `.tmp-r38-plain.log`；`PI_SMOKE_UI=1 PI_SMOKE_SHOT_THEMES=1 PI_SMOKE_SPIN=1`；`PLAIN_EXIT=1` 仍只因既有的 `UI #3 页面上没有第 3 行歌`）**
+  · `歌词常态白与高亮色（classic）：元素=12 个（{"passed":6,"active":1,"waiting":5}）｜常态众数色=rgb(26, 29, 36) 与 ink 一致=是（占 0.64）｜高亮色=rgb(34, 73, 145) 与常态不同=是｜常态 color 过渡=1100ms 渐变=是 → ✓`
+  · `流光整词与高光辉光 ✓（字素=13 英文被拆开的相邻对=0｜高亮字=2 带辉光=2｜高亮字影=oklab(0.498388 -0.025631 -0.167037 / 0.878853)）`
+  · `逐字旋转 ✓（字=13 歪着的=13 最大角=18.6°｜根 data-word-spin=true）`、`冒字带旋转 ✓（冒字最多=3｜挂到入场关键帧的=12）`
+  · `浮名镜头跟着高亮句 ✓（高亮句中心=366px 窗口中心=386px｜6 次采样最小偏差=20px）`、`浮名高亮褪回常态色 ✓（已唱过=#2c251c｜正在唱=#255cc1｜离主题高亮色=174・更接近灰阶=是）`
+  · 总闸：`十六轮十四项总闸 → 通过`（含 `拖到槽末端=true`、`切歌弹名片=true`）、`第十八轮总闸 → 通过`、`M3 渲染层验收 → 通过`、`M3 本轮九条 ✓`。
+  · 证据图：`docs/m3r32-lyric-classic-2.png`（「溶けて」是该封面推导出的 accent 蓝 + 明显外辉光，其余字常态墨色且逐字高低/倾斜错落）、`docs/m3r32-lyric-fume.png`（高亮句贴住窗口中心、下一行已是常态墨色）。
+  · 按用户第 ④ 条**只跑了平凡档**（改动只覆盖 classic 与 fume 两套主题 + 桌面探针）；`tsc` 两包 0 错、`vitest --pool=threads` 22 files / 424 tests、两次 build 0。
+
+---
+
+### 4.27 用户 m06084：流光「从远处一边旋转一边飞到位」+ 浮名暗色高亮取封面主题色（唱完褪回白）+ 间奏前歌词进度滞后（三条）
+
+- **用户原话（三条）**：①「流光旋转着冒出并没有实现，并且歌词的冒出不是在原地冒出，而是好像从远处旋转来到歌词处如图2，图3的"の"所示」②「如图1暗色模式下浮名的歌词不应该高亮成原色（白色），而是高亮成粉色，然后高亮结束后褪色成白色，之前的歌词都应该是白色，这一行进度未到的歌词是粉色」③「间奏前的歌词进度总是会滞后，调整一下」。
+- **第 1 条真因：上一轮的「旋转」只在原地转 + 原地放缩，字本身没有位移**（`classicWordSpin` 开关本身是开的 —— `.smoke-profile/data/settings.json:24` 与 `packages/shared/src/index.ts:444` 都是 `true`）。飞入是一支**确定性**的入场位移，与错落共用同一套噪声：
+  · `apps/renderer/src/components/LyricStage.tsx:236-257` 的 `StageAtom` 新增 `flyY`（纵向起点，负值 = 从上方飞来）/ `flyX`（横向起点）/ `flyMs`（这一颗自己的入场时长）。
+  · 幅度：`:463 FLY_Y_MIN_EM = 0.8` + `:464 FLY_Y_SPAN_EM = 0.7` ⇒ |flyY| ∈ [0.8, 1.5]em（121px 字号下 ≈ 97~181px，「远处」的主体）；`:475 FLY_X_SPAN_EM = 0.2` × `:477 FLY_X_PULL_MIN = 0.55`~`FLY_X_PULL_SPAN = 0.45` ⇒ |flyX| ∈ [0.11, 0.2]em 且**永不为 0**，符号按**词序号**左右交替（不是按原子序号，否则相邻两词飞行途中会互相靠拢、可能撞上「英文被拆开」那条探针判据）。
+  · 时长：`:486 FLY_MIN_MS = 110` / `:487 FLY_MAX_MS = 680` / `:488 FLY_WINDOW_RATIO = 0.9`，`:491 function flyMsFor(windowMs)` 按**这一颗自己的高亮窗口**取 0.9 倍并夹在 [110, 680]ms —— 动画是默认 `fill-mode: none`，`active → passed` 翻转时会被摘掉，所以必须短于自己的窗口。
+  · CSS：`apps/renderer/src/styles/lyric-stage.css:436 @keyframes pi-lyricstage-word-spin-in` 四帧 —— `from` = 全程位移（`translate(var(--pi-word-from-x), var(--pi-word-from-y))`）+ `rotate(calc(spin + tilt))` + `scale(0.5)` → `45%`（位移余 0.34、角余 `tilt + spin*0.45`）→ `82%`（位移余 0.03、角**反向过冲** `tilt - spin*0.22`、`scale(1.36)`）→ `to`（与 active 规则逐字相同）；`:489` 的动画时长是 `var(--pi-word-fly-ms, var(--pi-word-spin-ms, 620ms))`（没内联变量时才落到 620/400/280ms 三档）。
+  · **未唱那一格（`:320-324`）的 transform 与关键帧 0% 逐字相等**（连 `--pi-word-from-x/y` 与 `scale(0.5)` 都写上）—— 否则状态翻转时过渡会抢走 transform、把飞入整段吃掉。
+  · 飞入**无条件生效**（`:488-490` 挂在 `[data-theme='classic'] [data-word-state='active']` 上）：设置项只决定「转多大」，关掉旋转也照样从远处飞来；`prefers-reduced-motion` 下不飞不转。
+  · 单测 `apps/renderer/src/components/lyric-stage.test.ts:302-328` 钉住幅度、时长与「短于自己的高亮窗口」，并单独钉横向符号左右交替。
+- **第 2 条：暗档下浮名的当前句要用封面主题色，唱完褪回白** —— `apps/renderer/src/components/lyric-themes/FumeTheme.tsx`：
+  · `:515 const DARK_SURFACE_LUMINANCE = 0.42;` + `:518 function isDarkSurface(surface)`（阈值与 `types.ts:639` 的 `ensureContrast` 同源同值；`surface === null` 算亮档，所以无 DOM 的单测逐位等于改造前）。
+  · `FumePaint` 新增三支色（`:544 pending` / `:556 fadeTo`，连 `hot` 一起）：`:584 pending: dark ? accent : ink`、`:586 fadeTo: dark ? primary : ink`，`hot` 是 `dark ? accent : primary` ⇒ 暗档下「当前句高亮 = 封面 accent」、「未唱到的落点 = accent」、「唱完的终点 = primary（原色）」，亮档逐位不变。
+  · **踩到的坑（务必记住）**：`types.ts:308-326 parseRgb` 只认 `rgb()/rgba()`、**不认 `#rrggbb`**，而 `mixColor`（`types.ts:336-345`）任一端解析失败就**原样返回第一个实参** —— `FUME_INK = '#ffffff'` 正是 hex ⇒ `mixColor(x, palette.ink, f)` 是 no-op（拿 ink 当淡出终点，整句唱完会永远停在主题色、褪不成白）。这就是新增 `fadeTo` 的原因；同理 `mixColor(x, '#000000', ACTIVE_DARK_MIX)` 也从未生效（既有行为，本轮没顺手改）。
+- **第 3 条真因：间奏那种离群大间隔被当成了「这句要唱这么久」** —— `LyricStage.tsx:105 function gapCapMs(lines, nextGreater)`：先算全曲「下一句严格更晚的时间戳 − 本行起点」的**下中位数**（`:117`），再 `Math.max(SPREAD_MIN_MS = 1200, median * SPREAD_GAP_FACTOR = 2.5)` 当封顶值，`:665` 处套用到每一行 ⇒ 间奏前的最后一句不再被拉到间奏结束，进度条不再「卡在那儿等」。单测 `lyric-stage.test.ts:81`「间奏前那一句不会被拉到间奏结束（用户 m06084 第 3 条：歌词进度滞后）」。
+- **实测（平凡档；按用户 m05660 第 ④ 条的惯例只跑平凡档，但因为第 2 条说的是暗档，两跑都要）**：`.tmp-m06084-light.log`（36142B）与 `.tmp-m06084-dark.log`（36188B），`LIGHT_EXIT=1`/`DARK_EXIT=1` 仍只因既有的 `UI #3 页面上没有第 3 行歌`；两跑都是 `M3 渲染层验收 → 通过`、`十六轮十四项总闸 → 通过`（含 `拖到槽末端=true`、`切歌弹名片=true`）、`第十八轮总闸 → 通过`、`M3 本轮九条 ✓`（暗档这一跑顺带证明这套改动在暗主题下不破坏任何既有门禁）。
+  · 亮档：`流光逐字旋转用在冒出来的字上：冒字最多=2 个｜挂到入场关键帧的=13 个｜关键帧名=pi-lyricstage-word-spin-in|…（4 个）→ ✓`（飞入关键帧挂在每一颗正在冒的字上）；`流光整词与高光辉光 ✓（字素=13｜高亮字=2 带辉光=2｜高亮字影=color(srgb 0.145098 0.360784 0.756863 / 0.92)）`；`逐字旋转 ✓（字=13 歪着的=13 最大角=18.6°）`；`歌词常态白与高亮色（classic）✓（常态众数色=rgb(26,29,36) 与 ink 一致=是（占 0.64）｜高亮色=rgb(37,92,193)）`；`浮名镜头跟着高亮句 ✓（偏差 18px／容差 60px）`、`浮名高亮褪回常态色 ✓（已唱过=#2c251c｜正在唱=#255cc1｜离主题高亮色=174・更接近灰阶=是）`。
+  · 暗档（**第 2 条的正题**）：`浮名高亮褪回常态色：已唱过=#f3f0ec（饱和度 0.029，8 个字素）｜还没唱到=#ffffff（0.000，12 个字素）｜正在唱=#6591e1（饱和度 0.551）｜离主题高亮色=171・更接近灰阶=是 → ✓`；`歌词常态白与高亮色（fume，只记录）：--pi-lyric-ink=#fff｜元素=21 个（{"passed":20,"active":1}）｜常态众数色=rgb(255,255,255)（占 0.6）｜高亮色=rgb(101,145,225)` —— 暗档下「当前句 = 该封面推导出的蓝（不是白）」「唱完 = 白」，正是用户图 1 那个「高亮成主题色、褪回原色」的形状（图 1 是粉封面 ⇒ 那首歌就是粉色）；同跑 `classic` 高亮色 `rgb(143,175,233)`、`partita` `rgb(134,168,231)`、`pendolo` `color(srgb 0.352941 0.713726 1)`，常态色一律 `rgb(255,255,255)`。
+  · 证据图：`docs/m3r33-lyric-classic-light.png`（**抓到进场中途那一帧**：「淡く光」三颗字带明显倾角与上下错位地出现、后半个词还没出来 —— 第 1 条的「从远处一边旋转一边来」的人眼证据）、`docs/m3r33-lyric-classic-light-2.png` / `-3.png`（同组连拍）、`docs/m3r33-lyric-fume-dark.png`（暗档浮名：当前句唱完已褪成白 `#f3f0ec`、其余行也是白）。
+  · **照实说**：①第 2 条的成品图只抓到「唱完褪成白」那一帧（探针采样结束到截图之间有 1.6s，高亮那一颗已经过去了）—— 「当前句是封面主题色」是探针读数证明的，不是图；②第 3 条没有专门的冒烟探针，靠的是 `lyric-stage.test.ts:81` 那条单测与 `gapCapMs` 的下中位数口径；③`tsc` 两包 0 错、`vitest --pool=threads` 22 files / 429 tests、两次 build 0。
+
+### 4.28 用户 m06476 / m06716：流光飞入「起点夹到歌词框内缘 + 整段都看得见 + 自旋」+ 浮名句内「唱过的回原色、没唱到的才有主题色」（两条）
+
+- **用户原话（m06476 两条）**：①「流光的歌词从远处来的效果，远处并没有那么远，并且动画卡顿但是应该要流畅生动，并且有自旋」②「如图1所示，浮名的歌词当前进度前的歌词部分应该回到原色，进度还没到的歌词部分应该有颜色」。m06475 的报错图是暗底上一整行**全是粉**的浮名歌词（句内全停在主题色、回不到原色）。
+- **m06716 澄清（我回问后）**：①的「远处」=「从远处从小变大加自旋，并且这个远处就是歌词字体的边框位置，现在的飞行距离太远了」⇒ 起点要夹在**歌词框内缘**，不是飞到框外（框外那段不可见，所以上一轮看起来只剩「原地从小变大 + 自转」）。
+- **第 ① 条（流光飞入）**
+  · 起点夹取（新增纯函数，可单测）：`apps/renderer/src/components/LyricStage.tsx:644-649 export interface FlyFrameBox`、`:664-669 export function clampFlyToFrame(intendedPx, availablePx)`（**只缩不放**、符号不变、非有限或 `availablePx<=0` ⇒ 0）、`:679-706 export function frameRunwayPx(centerX, centerY, dirX, dirY, frame)`（射线与矩形四边最近交点，`dirX===0` 那侧取 `Infinity`）、`:722-733 layoutBoxIn(el, ancestor)`（走 `offsetLeft/offsetTop` + `offsetParent` 链，**故意不用 `getBoundingClientRect`**：rect 含自身 transform ⇒ 自我反馈、每轮再缩一截且抖动）、`:744-753 sharedOffsetParent`（`__viewport` 是 `position:static`、本身不是 `offsetParent`，取共享定位祖先当原点）、`:767-798 clampWaitingFlyToFrame(frame, atoms)`（只夹 `[data-word-state="waiting"]`，`scale<1` 才把 `--pi-word-from-x/y` 写回去）。
+  · 挂钩：`:1161-1166` 字 span 加 `data-atom-index={index}`、`:1235-1239 const frameRef`、`:1437-1473 useLayoutEffect`（`!smooth` 直接返回；`ResizeObserver` 盯框，没有则退 `window resize`；deps `[smooth, anchorIndex, stageLines]`）、`:1573 <div className="pi-lyricstage__viewport" ref={frameRef}>`。
+  · **框为什么选 `__viewport`**：classic 全仓没有画出来的纸面框（带 `paper` 的只有 `--pi-fume-paper-*`，`apps/renderer/src/styles/lyric-moods.css:191-192`，那是浮名）；`[data-theme='classic']` 是 `position:absolute; inset:0`（`apps/renderer/src/styles/lyric-stage.css:108`）⇒ 拿根节点/`__stage` 当框就等于「框 = 窗口」，用户明确不要；`__viewport`（`lyric-stage.css:200-206`，`display:grid; place-items:center`，高 = 行盒）才是紧包当前这一行的那层。实测框 = **1154×115px** ⇒ 位移 ≈ 57px（0.61em，正是行盒内缘）。
+  · **「整段都看得见」**：原来未唱格是 `opacity:0` + `filter:blur(10px)`（`lyric-stage.css:335`），翻 `active` 靠过渡显形，而 classic active 规则**自己没写 transition** ⇒ 沿用共用 `:366` 的 `opacity 100ms` / `filter 200ms`，飞行却有 100~620ms ⇒ 200ms 的短飞整段航程都埋在淡入里，显形时已接近落点，看着就是「原地冒出来」。现在 classic active 规则（`:571-593`）显式写两支、且按**该字自己的** `--pi-word-fly-ms` 取比例：`--pi-word-reveal-ms = fly × 0.18`、`--pi-word-unblur-ms = fly × 0.26`（620ms ⇒ 112/161ms；100ms ⇒ 18/26ms）。写在 classic 规则而非共用 `:366`：过渡取的是**目标状态**的声明，动共用那条等于顺手改 tilt/pendolo/partita；`transform` 那支逐字保留 ⇒ 未唱格 transform 与关键帧 0% 逐字相等 ⇒ 该支无值变、过渡起不来、飞入轨迹一字未动。
+  · **自旋**：`FLY_ROLL_MIN_DEG = 150` + `FLY_ROLL_SPAN_DEG = 150` ⇒ |roll| ∈ [150,300]°，经 `--pi-word-roll`（`LyricStage.tsx:996`）进关键帧；`lyric-stage.css:459-516 @keyframes pi-lyricstage-word-spin-in` 的 `from` = `translate3d(calc(x + from-x), calc(y + from-y), 0) rotate(calc(roll + spin + tilt)) scale(0.5)` → 45% → 82%（反向过冲）→ `to`（与 active 规则逐字相同）。
+  · **卡顿真因**：旧 `flyMsFor = clamp(window × 0.9, 110, 680)` 在微窗口（110ms）下**零余量**，动画在 `active → passed` 翻转时被截断（看着像掉帧）⇒ 改成 `FLY_MIN_MS=100` / `FLY_MAX_MS=620` / `FLY_WINDOW_RATIO=0.6` + `FLY_SAFE_MS=40`（不变量 `flyMs ≤ windowMs − 40`）；并补 `will-change: transform, opacity` + `backface-visibility: hidden` + `translate3d(...)` 强制合成层（4 层 `text-shadow` 里 0.45em ≈ 54px 的辉光，在 121~192px 字号、`scale(0.5→1.4)` 下每帧重栅格化）。
+  · 单测 `apps/renderer/src/components/lyric-stage.test.ts:438` 新 describe 5 条（`:446` 余量大 ⇒ 原样返回、`:456` 余量小 ⇒ 夹到 ±available 且符号不变、`:465` 0/负/NaN/Infinity ⇒ 0 不出 NaN、`:481` `frameRunwayPx` 四向 + 斜向 + 退化、`:496` 121.4px 字号 × `box(0,0,1480,148)` 端点落在框内 ±1px）；**原有 26 条一条未改**（意图仍 |flyY| ∈ [1.9,3.4]em、|flyX| ∈ [0.25,0.55]em、`flyMs` ∈ [100,620]、|roll| ∈ [150,300]°）。
+- **第 ② 条（浮名句内回原色）**
+  · **真因**：`paintActiveGlyphs` 里句内**唱过的**字素走 colour trail，终点色原本是 `palette.pending`（暗档 = 那支粉）⇒ 整句在唱的过程中一直粉、回不到原色（`TRAIL_MIX_FLOOR = 0.18` → `+ p × TRAIL_MIX_SPAN 0.82`，`p = clamp(trailSec / trailDurationSec, 0, 1) ** TRAIL_EXPONENT 1.35`，trail 时长 = `lineDurationMs / 1000 × (hero ? 0.42 : 0.52)` 夹在 0.45~1.45s）。
+  · **改法**：`apps/renderer/src/components/lyric-themes/FumeTheme.tsx:1694 export function fumeTrailColor(clumpColor: string, palette: FumePaint, p: number): string` = `mixColor(mixColor(clumpColor, '#000000', ACTIVE_DARK_MIX), palette.fadeTo, TRAIL_MIX_FLOOR + p * TRAIL_MIX_SPAN)`，`:1758 fill = fumeTrailColor(clump.color, palette, p)` ⇒ 终点改成 `palette.fadeTo`（暗档 = `primary` 常态色）。亮档 `fadeTo === pending === ink` 且是 hex ⇒ `mixColor` 是 no-op，**逐位等于改造前**。
+  · **辉光跟着收回**（原来只把颜色淡回原色、留着主题色光晕，看上去仍「没回原色」）：`:1747 let trailFade = 1;`、`:1759 trailFade = 1 - p;`、`:1764 glow = (GLYPH_GLOW_BASE + fontPx * GLYPH_GLOW_PER_FONT) * eased * glowBoost * trailFade`。
+  · 单测 `apps/renderer/src/components/lyric-themes/FumeTheme.test.ts` 新增「句内『已经唱过』的字素落点色 = 常态色（暗档回到主色、不是那支粉）」：`parseRgb(fumeTrailColor(DARK.accent, dark, 1))` === `dark.fadeTo` 且 ≠ `dark.pending`、p=0 时 ≠ `fadeTo`、`mixColor('rgb(1,2,3)', light.fadeTo, 1) === 'rgb(1,2,3)'`（亮档 hex no-op）而 `dark.fadeTo` 是真混色。
+- **实测（平凡档、暗档，`.tmp-m06476-dark.log`；`DARK_EXIT=1` 仍只因既有的 `UI #3 页面上没有第 3 行歌`）**
+  · `M3 渲染层验收 → 通过`、`十六轮十四项总闸 → 通过`（含 `拖到槽末端=true`、`切歌弹名片=true`）、`第十八轮总闸 → 通过`、`M3 本轮九条 ✓`。
+  · **新探针证实夹取真的生效**：`流光「远处」夹到歌词框内缘（用户 m06716，只记录）：未唱字=6｜带 --pi-word-from-y 的=6｜|from-y|=0.61~0.61em（散布意图 1.9~3.4em）｜|from-x|=0.06~0.14em（散布意图 0.25~0.55em）｜被夹小的字=6 个｜歌词框=1154×115px` ⇒ 6 个未唱字全部从 1.9~3.4em 的意图被夹到 0.61em（行盒内缘）。
+  · `逐字旋转效果复测 ✓（已落定的字=1 歪着的=1 最大角=3.6°｜自旋幅度(--pi-word-roll 起始角)=295.1°｜采样期间飞行中最大合成角=179.2°（只观测）｜该帧飞行中/未唱被跳过=13）`、`流光逐字旋转用在冒出来的字上 ✓（冒字最多=2 个｜挂到入场关键帧的=11~12 个｜关键帧名=pi-lyricstage-word-spin-in）`。
+  · 浮名：`浮名高亮褪回常态色 ✓（已唱过=#f3f0ec 饱和度 0.029，8 个字素｜还没唱到=#ffffff 0.000，12 个字素｜正在唱=#6591e1 0.551｜离主题高亮色=171）` —— `正在唱` 是**饱和的封面色** ⇒ 证明暗档下 `isDarkSurface()` 为真、`hot = accent`（若为假，这里会是近白 `primary`），也就同时证明 `pending = accent`（未唱到的落点有色）与 `fadeTo = primary`（唱完回原色）这两支都在生效路径上。
+  · **句内探针（只记录）仍读 0.000**：`句内字素=5｜前半=0.000｜后半=0.000｜后半 − 前半=0.000`。**照实说**：没量到「句内两色并存」那一瞬。已查明浮名的 `data-active` 是**全曲确定性选出的 hero 块**（`FumeTheme.tsx:1026`，注释写明是为兼容歌词轨道探针才写的属性），不是正在唱的那一行 ⇒ 采样打偏；改成逐帧轮扫全部 `[data-lyric-line]`、并把采样起点提到行首（`await delay(120)`）后仍为 0.000。第 ② 条因此以**单测 + 跨行褪色探针**为准。
+  · 证据图：`docs/m3r34-lyric-classic-dark.png`（**抓到「瞬」飞行途中那一帧**：偏离自己槽位往左上、半透明（显形过渡未完）、带 accent 蓝辉光，而下一颗「き」已经落位 ⇒ 飞入从框边起、整段可见）、`docs/m3r34-lyric-classic-dark-2.png` / `-3.png`（同组连拍）、`docs/m3r34-lyric-fume-dark.png`。
+  · `tsc` 两包 0 错、`vitest --pool=threads` 22 files / **437 tests**、两次 build 0；按用户第 ④ 条的惯例只跑平凡档。
+
+### 4.29 用户 m06899：流光自旋幅度收小（150~300° → 10~20°）+ 浮名句内「唱过的回原色 / 没唱到的才带色」（真因：远端一支平铺色 + 混色写到 hex 上等于没写）+ 验收流程缩短（三条）
+
+用户原话（m06899）：「1.流光自旋太卡顿了，幅度也太大，10-20 度就差不多。 2.如图1所示，进度已过的歌词部分有变成原色吗？这一行歌词进度未到的歌词部分有颜色你做到了吗？你究竟看到没有？像图二一样，左边是渐变褪色，右边是渐变加深。 3.测试太长了，缩短流程，只测我们修改的歌词动效是否达到效果，除非修改的内容牵扯到了其他问题。」
+
+**① 流光自旋幅度 ±150~300° → ±10~20°**（`apps/renderer/src/components/LyricStage.tsx`）：
+- `:517 FLY_ROLL_MIN_DEG = 10`、`:518 FLY_ROLL_SPAN_DEG = 10`（原 `150`/`150`）⇒ 每字的入场自转 |roll| ∈ [10,20]°，方向仍按原子序号左右交替。`:509-516` 的注释改写：近一圈的自转每帧要重栅格化那张带四层 `text-shadow`（含 `0.45em` 外扩辉光）的字形层，是「卡顿」的主因；加上错落角 |tilt| ≤ 5.4° 与 |spin| ≤ 14°，飞行途中合成角上限 ≈ 20+14+5.4 ≈ 39°（实测 25~30°）。
+- 同步改注释：`apps/renderer/src/styles/lyric-stage.css:348`（未唱格 transform 那支 `--pi-word-roll` 的说明）、`:440-441`（关键帧合成角上限）、`:472`、`:519`；单测 `apps/renderer/src/components/lyric-stage.test.ts:326-327`（≥10 / ≤20）、`:346`、`:366-375`（it 标题与两条断言）同步。
+
+**② 浮名句内两色渐变**（`apps/renderer/src/components/lyric-themes/FumeTheme.tsx`）：
+- 真因两条：(a) 句内「进度还没到」那一段原来是**一支平铺色** `palette.pending`（暗档 = accent），所以整句从头到尾一个颜色；(b) `types.ts:308-326 parseRgb` 只认 `rgb()`/`rgba()`，而 `:1530` / `:1695` / `:1751` 三处「往黑混的深色字身」写的是 `'#000000'`（hex）⇒ `mixColor` 直接原样退回第一个实参，m05660 要的「深色字身」**从未生效**。
+- 改动：三处 `'#000000'` → `'rgb(0, 0, 0)'`；`FumePaint` 新增 `lead`（远端淡色）＝ `buildFumePaint` 里的 `lead: mixColor(accent, dark ? primary : 'rgb(255, 255, 255)', LEAD_TINT_MIX)`（亮档故意写成 `rgb()` 白，因为 hex 会被 `mixColor` 无视）；新导出纯函数 `fumeLeadColor(palette, remainingMs)`（`leadT = clamp(remainingMs / LEAD_TINT_MS, 0, 1)`，`remainingMs <= 0` 直接给 `hot`）⇒ 未唱那一段「越远越淡、越靠播放头越重」；常量 `LEAD_TINT_MS = 900`、`LEAD_TINT_MIX = 0.5`；trail 收紧 `TRAIL_DURATION_MIN 0.45→0.3`、`TRAIL_DURATION_MAX 1.45→1.0`、`TRAIL_RATIO_HERO 0.42→0.3`、`TRAIL_RATIO_BODY 0.52→0.34`、`TRAIL_MIX_FLOOR 0.18→0.28`（`TRAIL_MIX_SPAN`/`TRAIL_EXPONENT` 未动）⇒「唱过的」在 0.3~1.0s 内真的淡回 `fadeTo`。`pending`/`fadeTo`/`hot` 三支一字未动 ⇒ 亮档仍逐位等于改造前，`FumeTheme.test.ts:138` 那条旧断言照旧成立。
+- 新单测：`apps/renderer/src/components/lyric-themes/FumeTheme.test.ts:198` 起（远端 = `lead`、≠ `hot`、可被 `parseRgb` 解析、还剩 300ms 落在两者之间、`remainingMs ≤ 0` 直接 `hot`、暗档远端饱和度更低、亮档远端更亮）。
+
+**③ 验收流程缩短**（`apps/desktop/src/main/index.ts`）：新增环境变量 `PI_SMOKE_THEMES=classic,fume`（只跑指定主题子集）与 `PI_SMOKE_LYRIC_ONLY=1`（歌词主题段跑完就印一行摘要并 `app.exit(0)`，跳过后面几千行与歌词无关的探针）。实测日志从 ~37KB 降到 ~15.9KB、一轮（两包 build + 冒烟）从十几分钟降到分钟级。
+
+实测读数（平凡档、暗档，`.tmp-m06899-dark.log`；`DARK_EXIT=1` 仍只因既有的 `UI #3 页面上没有第 3 行歌`）：
+- `逐字旋转效果复测 ✓（已落定的字=1 歪着的=1 最大角=2.5°｜自旋幅度(--pi-word-roll 起始角)=19.7°｜采样期间飞行中最大合成角=37.4°（只观测）｜该帧飞行中/未唱被跳过=13）` ⇒ 第 ① 条的幅度真落了（上一跑同一行是 `295.1°`）。
+- `流光「远处」夹到歌词框内缘 ✓／未唱字=6｜|from-y|=0.61~0.61em（散布意图 1.9~3.4em）｜被夹小的字=6 个｜歌词框=1154×115px`（上一轮 m06716 的改动，本轮未被破坏）。
+- `浮名高亮褪回常态色 ✓（已唱过=#f3f0ec 饱和度 0.029，8 个字素｜还没唱到=#ffffff 0.000，12 个字素｜正在唱=#6591e1 0.551｜离主题高亮色=171）`。
+- **照实说**：句内探针（只记录、不进判据）这一跑仍读 `句内字素=10｜前半=0.551｜后半=0.551｜后半 − 前半=0.000｜最左=最右=rgb(101,145,225)` —— 虽然已把采样挂到「等句中」那条循环上，两侧仍是同一支 accent（饱和度的 HSV 口径对「同一色相压暗」不敏感，而句内那 10 个字素恰好都落在「正在唱 / 刚到」的一侧）。第 ② 条因此以**纯函数单测（51 tests 全过）+ 跨行褪色探针**为准，句内渐变请在播放器里直接看。
+- `tsc`（renderer）0 错、聚焦 `vitest --pool=threads FumeTheme lyric-stage` = 2 files / 51 tests 全过、两次 build 0；按用户第 ③ 条只跑平凡档、只跑改动涉及的主题。
+
+### 4.30 用户 m00001 / m00002：浮名「镜头始终把高亮句压在正中 + 高亮离开迅速褪回原色 + 右边等待段渐变加深」（三条）
+
+用户原话（m00002）：「1.浮名的歌词动效，镜头中心要跟着高亮歌词移动，始终使其位于中心。高亮从歌词离开后，歌词迅速开始渐变褪色到原色（白色/黑色）。高亮歌词右边的歌词要如图1所示等待渐变加深颜色。」
+
+**① 镜头把它压在正中**（`apps/renderer/src/components/lyric-themes/FumeTheme.tsx`）：
+
+- **焦点取「文字」的中心，不取块框中心**：新增 `textBoxOf()`（按块缓存一次「该块全部 `.pi-lyricfume__glyph` 的并集外接框」，量不到就**不缓存**、下一帧重试；刻意不用 `Range`、也不量 `.pi-lyricfume__text`——后者含 `display: block` 的译文行，会把并集撑大），`resolveFocus()` 返回它的中心。原来的块框是**排版列宽**，hero 块跨两列（`paperWidth ≈ 1.95 视口宽` ⇒ 框 ≈ 0.98 视口宽），短句文字只占框左边一小截 ⇒ 框居中了、字却停在左半屏。
+- 锚点 `CAMERA_FOCUS_Y` **0.42 → 0.5**，并**整条拆掉「缩放后的纸面必须盖住视口」那条守卫**（`frameCameraOffset` / `clampCameraOffset` → `focusCameraOffset`）：曲首第一行（`y ≈ 0`）正是被它钉在窗口顶部。纵向不再夹取（`world` 本来没有底色，纸面出画露的是沉浸式背景）；横向只留第十一轮第 1 条那条「当前句**文字**比视口宽时钉住左缘」，且判据从块框换成文字外接框。`paintStatic`（静态渲染 / 减少动效）与 rAF 同源改法。
+
+**② 高亮离开后迅速褪回原色**：
+
+- 块级淡出 `FUME_PASSED_FADE_MS` **900 → 260ms**；逐字素 colour trail 从 `[0.3, 1.0]s` 收到 **`[0.2, 0.45]s`**；重绘窗口改用 `FUME_PASSED_TRAIL_MS = max(FUME_PASSED_FADE_MS, TRAIL_DURATION_MAX × 1000)`，且「唱过」相位**继续走** `paintActiveGlyphs`（旧版在那里调 `paintPassedGlyphs`，把字素内联色打回 `inherit` ⇒ 整句先跳成热色再随块级渐变淡一遍）。
+- **真坑**：`FUME_INK` 原来是 hex `'#ffffff'`，而 `mixColor` / `parseRgb`（`lyric-themes/types.ts:308-326`）只认 `rgb()` / `rgba()`，任一端解析失败就**原样返回第一个实参** ⇒ 暗档「淡成白」整段是 no-op，唱过的字永远停在主题色上。改成 `'rgb(255, 255, 255)'`，并让 `FumePaint.fadeTo` 两种底色都取 `ink`（暗档 = 白、亮档 = 对比度兜底后的墨色）—— 不再绕道 `primary`。
+
+**③ 高亮句右边「等待」段的渐变加深要看得见**：
+
+- 句内「进度还没到」的字素原来被压到 `WAIT_ALPHA_HERO/BODY`（0.06 / 0.035 —— 那是**整块还没唱到**时贴在纸上的淡印子）⇒ `fumeLeadColor()` 那道「越靠近播放头越深」的颜色渐变等于被洗掉。新增 `LEAD_ALPHA_FAR_HERO/BODY = 0.5 / 0.4`，按 `leadT = clamp((glyph.startMs − ms) / LEAD_TINT_MS, 0, 1)` 插值到 `PRINT_FRONT_ALPHA = 0.82`，与颜色的深浅同相：远端最淡、打印前沿最重。
+
+**探针与成品图**（`apps/desktop/src/main/index.ts`）：`fumeCamOk` 改成「按 `data-active-index` 换句即重新等、只判同一句连续 ≥2 次采样、横纵都量、容差 40px」（旧版取 6 次里的最小值 ⇒ 只要蹭到过中心就绿，等于没测「始终」）；`fumeFadeOk` 改成**自校准**两条（基准 = 「还没唱到」那些块的 `palette.ink`，与进度无关；被测 = 「已唱过且不是最新一句」的块）。拍浮名成品图前新增「等镜头落定再拍」（连续两帧进容差，最多 3s，**只记录不进判据**）—— 原来那一格紧跟在「曲尾缩镜」探针之后，会把镜头恢复途中的过渡帧写成成品图。
+
+实测读数（`PI_SMOKE_UI=1 PI_SMOKE_SHOT_THEMES=1 PI_SMOKE_THEMES=fume PI_SMOKE_LYRIC_ONLY=1`，带登录态）：
+
+- `浮名镜头跟着高亮句·始终居中（用户 m00002 第 1 条）：同句采样 9 次｜横向最差偏差=3px 纵向最差偏差=9px（容差 40px） → ✓`
+- `浮名高亮褪回常态色（用户 m00002 第 1 条 / m00380）：唱过（非最新一句）=#ffffff（7 个字素）｜还没唱到=#ffffff（12 个字素）｜两者色差=0｜离正在唱那块的块色=249（>=30 才算褪掉高亮）｜收敛用时：观测 9 句、最慢 0 帧×220ms → ✓`
+- `浮名成品图取景：高亮句中心偏差=横 2px / 纵 3px｜落定=是`（新增的那一段）；`浮名字形不出框 ✓`
+- 人眼证据：`docs/m3-lyric-fume.png`（高亮句压住窗口正中；左半句「今ならちゃんと」已回常态白、右半句「言葉にできるから」是逐字加深的 `lead` 色）与 `docs/m3r32-lyric-fume.png`（同一条从探针那 10 次采样后直接拍的那一帧）。
+- `pnpm typecheck` **14/14**、`vitest` **22 files / 438 tests**；`FumeTheme.test.ts` 新增 6 例（`buildFumePaint` 亮/暗两档、`fumeLeadColor` 的远端/中段/播放头三段、`fumeTrailColor` 落点 = `fadeTo`）。
+
+**照实说**：①句内「进度之前 / 进度还没到」的饱和度探针仍是**只记录**（HSV 饱和度对「同色相压暗」不敏感，且采到的那一帧常落在播放头一侧），第 ③ 条以**纯函数单测 + 块诊断（`L21/active` 行给出 `l#acc1e7`）+ 成品图**为准；②本轮只跑浮名一套主题（`PI_SMOKE_THEMES=fume`），其余五套的成品图沿用上一轮。
+
+### 4.31 用户本轮：浮名「右边等待段要浅色 · 高亮后才加深 · 褪色快慢跟镜头速度」+ 流光「自旋冒出 / 高亮放大 / 平滑缩回且不自旋」（两条，附两张参考图）
+
+用户原话：「1.如图1所示是现在的浮名的歌词动效，高亮的字右边有一部分是原色的，有一部分是渐变色。我希望右边歌词部分是如图2所示的浅色，高亮后颜色变深，高亮过去逐渐褪色。褪色速度由镜头移速调整 2.流光的歌词动效应该是高亮的字带自旋冒出，高亮时放大，高亮过去后恢复原大小。冒出带自旋，从放大变回原大小没有自旋。过渡动画都是流畅自然的。参考学习 folia-major 的实现」
+
+**① 浮名**（`apps/renderer/src/components/lyric-themes/FumeTheme.tsx`）
+
+- **「右边有一部分是原色」的真因**：亮底上 `hot` 取的是 `primary`，而 `deriveThemeColors` 在亮底上把 primary 压成**近黑**（实测本曲 `rgb(44,37,28)`，与常态墨色 `rgb(26,29,36)` 几乎一样）——而 `hot` 正是等待段近端（`fumeLeadColor` 的目标色）与「正在唱」那一档的落点色 ⇒ 图 1 里那片「原色」就是它。
+- `hot` **两种底色都取 `accent`**（封面那支鲜艳色）；`lead`（等待段远端）改成 `mixColor(accent, 底色, LEAD_TINT_MIX = 0.55)`（拿不到底色才退回旧口径）——**混底色**在暗底上得到图 2 那种暗橄榄、在亮底上得到一层淡彩，两种底色都读得出「这是一支有颜色的字、只是还没轮到它」。
+- 新增 `LEAD_DEEP_MAX = 0.55`：等待段最深只走到主题色的一半多一点（`FumePaint.pending` 就是这个点），剩下那 45% 留给「正在唱」那一档（`fill = mix(pending, hotDeep, (1 − LEAD_DEEP_MAX) × eased)`）⇒「浅 → 深」是一条**连续曲线**，播放头扫过时那颗字刚好在那里加深。
+- 等待段亮度 `0.5 / 0.4 → 0.72 / 0.62`：浅由**颜色与底色的混合比例**承担，透明度只负责「读得清」（两处一起压就是图 1 右边那团灰）。
+- 「褪色速度跟镜头速度」那条（上一轮接入的 `FUME_TRAIL_SPEED_*`：逐帧读弹簧屏幕速度、一阶低通、除以 320px/s 当速率倍率）**逐字保留**。
+
+**② 流光**（`apps/renderer/src/styles/lyric-stage.css`）
+
+- **「缩回原大小」根本没补间（真 bug）**：入场动画原来写的是 `animation-fill-mode: both`——**摘掉一支带 fill 的动画**时，属性值从「动画给的」切回「规则给的」，这次变化不算普通样式变更 ⇒ 浏览器不为它起过渡；而 `both` 恰好把动画的值顶到翻转那一刻才松手。实测逐帧读变换矩阵：高亮那颗字在 `active → passed` 翻转后的**第一帧**就已经是 `scale(1)`（`passed` 那一档声明的 500ms transform 过渡从未生效过）。改成 `none`（关键帧 `to` 与 classic 的 active 规则逐字相同 ⇒ 交还时零跳变、`FLY_SAFE_MS` 那条兜底不变）之后：`1.4 / 1.304 / 1.219 / 1.145 / 1.082 / 1.037 / 1.008 / 1`（8×70ms）。
+- **自转看不见**：入场关键帧里 roll 的系数是 1 → 0.34 → 0.05 → 0，衰减太快——字刚完全显形，自转就只剩三分之一（实测整段入场只读到 ~3° 的角变化）。改成 1 → **0.72** → **0.28** → 0（仍然单调、中途不倒转），**位移那条 1 → 0.34 → 0.03 → 0 一个字节没动**（飞行轨迹与手感不变）。
+- 起手色：classic active 的 `color` 过渡 `200ms → 0ms` ⇒ 冒出来的是「一颗**高亮**的字」，而不是「一颗黑字飞进来再变蓝」（字本来就是淡入进来的，颜色在那一层底下直接切到位）。
+- 「从放大变回原大小没有自旋」由两档的 rotate 都恒等于 `--pi-word-tilt` 保证（探针量的角摆幅 = 0.0°）。
+
+**探针**（`apps/desktop/src/main/index.ts`，两条都进 M3 渲染层验收的合取）：`流光高亮缩回`——抓「刚从 active 翻成 passed」的那颗字，8×70ms 量 scale 与合成角：首帧 > 1.05（还在放大态）、末帧 ≈ 1、单调、角摆幅 ≤ 2°；`流光冒字自旋`——抓「入场进度 15%~55%」的那一帧（字已全不透明、还在飞），量此刻合成角与 `--pi-word-tilt` 之差 ≥ 3°。
+
+**实测**（`PI_SMOKE_UI=1 PI_SMOKE_SHOT_THEMES=1 PI_SMOKE_THEMES=fume,classic PI_SMOKE_LYRIC_ONLY=1`，带登录态）：
+
+- `浮名块诊断（末帧）：primary=rgb(44, 37, 28) accent=rgb(37, 92, 193) → … L21/active/b#2255b2/f#707989/l#95acd6/o1`：等待段远端 `l=#95acd6`（浅蓝）、高亮那块 `b=#2255b2`（重蓝）、常态 `f/fadeTo=#707989`。
+- `浮名句内进度色（只记录）：句内前半（进度之前）平均饱和度=0.000（= 常态灰 rgb(128,128,128)）｜句内后半（进度还没到）=0.251（最右 rgb(66,100,161)）｜后半 − 前半=+0.251`——第一次真的读出「左边回原色、右边才有颜色、且右边整段都还带色」。
+- `浮名高亮褪回常态色 ✓`（唱过 / 还没唱到同为 `#808080`，离正在唱那块 115）、`浮名字形不出框 ✓`。
+- `流光高亮缩回 ✓（「困」缩回：首帧=1.4 末帧=1（1.4/1.304/1.219/1.145/1.082/1.037/1.008/1）｜单调=是｜整段角摆幅=0.0°）`
+- `流光冒字自旋 ✓（「な」入场进度=0.42（时长 200ms）｜此刻合成角=17.3° 落点角=5.2° ⇒ 看得见的自转=12.1°）`
+- 人眼证据：`docs/m3-lyric-fume.png`（左半句已褪回常态灰、中间高亮是最重的那支蓝、右半句是逐字加深的浅蓝）。
+- `pnpm typecheck` **14/14**、`vitest` **22 files / 442 tests**。
+
+**照实说**：①参考图 2 是别的播放器的画面，我们只按它的**关系**取（等待段 = 主题色往底色里混、比高亮那颗浅/暗一档），没有逐像素比对它的色值；②本轮只跑 `fume,classic` 两套主题，其余四套沿用上一轮成品图。
+
+### 4.32 用户本轮：浮名「密度太低」+「唱过 / 没唱到要在原色上分深浅」；流光借参考片段的分析改带宽（两条，附参考图与两份分析脚本）
+
+用户原话：「1.浮名的歌词间隙太大密度太低，应该达到图1所示效果 2.流光的歌词动画借助两个文件的分析，改进一下效果」。
+两个文件是上一轮留下的参考片段量测脚本：`analyze.py`（逐帧前景框 / 粉色高亮像素的水平跨度与质心 / 相邻帧的水平漂移）与 `reveal.py`（按 48px 横条统计「第一次出现亮字」的时刻与每帧前景量）。
+
+**① 浮名密度**（`apps/renderer/src/components/lyric-themes/FumeTheme.tsx`）
+
+- **根因**：屏上之所以「空」，不是纸面上的块少，而是**未唱段几乎隐形**（`WAIT_ALPHA_*` = 0.06 / 0.035，在真实封面背景上等于看不见）——于是整屏只剩高亮那一句。
+- `WAIT_ALPHA_HERO/BODY` 0.06 / 0.035 → **0.18 / 0.12**（看得见、但明显是配角）；
+- 纸面与块间距收紧：`PAPER_HEIGHT_MULT` 2.45 → **2.15**、`BLOCK_GAP_HERO/BODY` 0.12 / 0.04 → **0.08 / 0.03**；
+- 镜头略微退远：`CAMERA_LINE_HEIGHT_RATIO` 0.115 → **0.09**（同样视口里装得下更多句）。
+
+**② 原色分深浅**（同文件）：**「已经唱过」用深档、**「还没唱到」用浅档** —— 同一支原色（黑/白）的两个深度。
+
+- 新增 `FumePaint.waitInk = mixColor(ink, 底色, WAIT_TINT_MIX = 0.45)`：还没唱到的块用这支**浅档**（原来两种状态都用 `palette.ink`，只有透明度不同 ⇒ 图上分不出「唱过的 / 等着唱的」）；`ink` 本身留给「已经唱过」，`fadeTo` 也随之仍是 `ink`（唱过的落点是深档）。
+- rAF 路径与静止渲染路径（`paintStatic`）同源改法。暗底上「深档」= 更亮的白、亮底上 = 更深的墨色，两种底色都成立。
+
+**③ 流光**（`apps/renderer/src/styles/lyric-stage.css`）：按 `analyze.py` 的读数改**高亮带的宽度**。
+
+- 实测参考片段：粉色高亮像素的水平跨度在**500~1200px**（画幅 1582px ⇒ 占整行的 **32%~74%**，即同一时刻有 4~6 个字还带着高亮色）；`reveal.py` 的逐帧前景量是「一句之内单调累加、换句归零」——即**已经唱过的不回退、只在高亮扫过时变深，整句唱完才随行退场**。
+- 我们原来的 `color` / `text-shadow` 用的是 `ease-out`（起步最快 ⇒ 一过播放头颜色就掉一半），带比参考窄一截；换成起步慢的 S 曲线 **`cubic-bezier(0.45, 0, 0.55, 1)`**（前 1/3 段基本停在高亮色上，后段收干净）。时长（1100 / 700 / 520ms）与别的属性一律没动。
+- `analyze.py` 的另一条读数（相邻帧水平漂移 ≈ 0px）确认「整行**不横移**、动的只有高亮」——与现实现一致，故未改。
+
+**实测**（`PI_SMOKE_UI=1 PI_SMOKE_SHOT_THEMES=1 PI_SMOKE_THEMES=fume,classic PI_SMOKE_LYRIC_ONLY=1`，带登录态）：
+
+- 新增探针 `浮名密度`：`视口内看得见的歌词块=3（≥3 才算「密」）｜DOM 里的块=21｜样本=ありったけ@0.97 淡く光って@0.58 僕らじゃ問@0.18 → ✓`（改前只有 1~2 块）。
+- `浮名高亮褪回常态色`（判据已按本轮要求改写）：`唱过（非最新一句）=#808080（相对亮度 128）｜还没唱到=#b3b1af（相对亮度 177）｜两者色差=85（>=24 才算原色的深浅分得开）→ ✓` —— **唱过的那一支更深**，与参考图一致。
+- `流光高亮缩回 ✓（1.381/1.288/1.205/1.138/1.082/1.034/1.006/1，单调，角摆幅 0.0°）`、`流光冒字自旋 ✓（入场进度 0.42 时合成角 17.3° vs 落点 5.2° ⇒ 看得见的自转 12.1°）`。
+- `pnpm typecheck` 14/14、`vitest` 22 files / 443 tests。
+
+**照实说**：①参考图 1 的绝对密度比我们现在还高（它屏上有 6 句以上），本轮把「未唱段的可见度 + 纸面松紧 + 镜头远近」三处一起收到 3 句以上，属于「先把它从 1~2 句拉回一屏多句」；要不要再密，取决于你是否愿意让高亮那句再小一点（`CAMERA_LINE_HEIGHT_RATIO` 是一个数就能调）。②`analyze.py`/`reveal.py` 量的是参考片段（20fps 假设），我们只取了「带的宽度 / 不横移 / 累加」这三条相对关系，没有照搬它的绝对节奏（我们的进度必须跟真实音频同步）。③本轮只跑了 fume + classic 两套主题。
+
+### 4.33 用户本轮：浮名「译文搬到进度条上方（与流光同一套字幕层）」+「按参考的四张图把纸面铺满」（两条，附四张参考图）
+
+用户原话：「1.浮名：加密这一个修改，需要注意的是翻译歌词不在中央的动画歌词里，而是在进度条部件上面、跟流光的翻译歌词一样的显示。2.如四张图所示浮名的歌词应该如何分布布置，同时学习借鉴 folia 的实现，改善一下现在的歌词布置」。
+
+**① 译文离开纸面**（`apps/renderer/src/components/lyric-themes/FumeTheme.tsx` + `styles/lyric-moods.css`）
+
+- `FumeBlockView` 不再渲染 `.pi-lyricfume__translated`（纸面上只留**原文**，构图才与参考图一致）；
+- 主题根里新增一层 `.pi-lyricfume__sub`，**直接复用 classic 那套字幕层类名**（`.pi-lyricstage__sub` / `__sub-glow` / `__sub-inner` / `__translated` / `__preview`）⇒ 观感与流光一致；只补一条定位规则把这一层钉在**进度条上方**（`bottom: 100px`、居中、宽 `min(720px, 84%)`，浮名的舞台是整窗铺满、没有 classic 那两行网格）；
+- 内容取**当前正在唱的那一句**的译文 + 后两句原文预览（`activeIndex` → 退到 `viewIndex`）。
+
+**② 纸面按「空间」铺块（这才是参考图那种「印满字的纸」）**
+
+- **真因**：原来挂哪些块是按**时间序**取的（`viewIndex ± (8 / 12)`），而这张纸是**打乱**过的 ⇒ 时间上相邻的块在纸上离得很远，相机四周真正挨着的块**根本没进 DOM**，屏幕自然就空。
+- 现在按**空间**取：以当前句（`activeBlock ?? viewBlock`）为中心，**屏幕对角线 0.9 倍半径**内的块全部挂上（再并上时间序那一窗，保证当前句前后几行一定在）；结尾缩镜那一档仍然全挂。新增常量 `FUME_VISIBLE_RADIUS = 0.9`。
+
+**实测**（`PI_SMOKE_UI=1 PI_SMOKE_SHOT_THEMES=1 PI_SMOKE_THEMES=fume PI_SMOKE_LYRIC_ONLY=1`，带登录态）：
+
+- 探针 `浮名密度`（判据同时覆盖本轮两条）：`视口内看得见的歌词块=8（≥6 才算「密」）｜DOM 里的块=42｜样本=明日はもう@0.18 「そうね」@0.18 でも君は上@0.74 ありったけ@0.97 世界はもう@0.74 淡く光って@0.58 遠き記憶の@0.58 僕らじゃ問@0.18｜纸面上的译文=0 个（要求 0）｜底部字幕层=有（译文「瞳たらしの君の瞳には今な」底边 672px ≤ 进度条顶边 710px）→ ✓（密度 ✓／译文层 ✓）`
+  - 对照改前：可见块 3、DOM 21、纸面上还有译文。
+- `浮名镜头跟着高亮字·始终居中 ✓（横 36px 纵 8px，容差 60px）`、`浮名高亮褪回常态色 ✓（唱过 #808080 亮度 128 ／ 还没唱到 #b3b1af 亮度 177，色差 85）`。
+- `pnpm typecheck` 14/14、`vitest` 22 files / 443 tests。
+
+
+### 4.35 用户本轮：先锋「歌单选择页 → 播放页」过渡里背景闪一下（真因：兜底薄幕；附逐合成帧证据）
+
+用户原话：「先锋模式下，从歌单选择页回到歌曲播放页的过渡动画中背景会闪一下，解决一下我希望只有淡出」。
+
+**真因**：不是封面层在闪 —— 它自己是干净的（逐帧 `不透明度 1.000 → 0.000` 单调、全程同一个 DOM 实例、300ms 后卸载）。闪的是它**收干净之后**又被铺上的那层兜底薄幕 `pi-page-arrive-veil`（`backdrop-filter: blur(16px)` + 10% 底色、0.52s 淡出）。
+
+为什么这一路会走到兜底：`App.tsx` 的 `usePageLeave` 用「当前 nav」判「刚离开的是哪一页」，而 `navigate('home')` 把 `nav` 与 `homeArriveAt` 是**同一次** set 落地的 ⇒ 等 layout effect 跑时 `nav` 已经是 `home`，`from === 'home'` 直接 early-return，封面层没被登记；于是 `veil = arriving && kind==='page' && leave.page===null && leave.cover===null` 成立，薄幕就上来了。（底栏那条路不会：它 `arriveHome()` 先声明、`navigate` 晚三帧，`from` 还是旧页。）
+
+**修法**：`state/ui.ts` 的 `navigate` / `arriveHome` 顺手记下「这一下从哪一页离开」（`homeArriveFrom`，记 state 而不是 ref —— 它要在整个 0.56s 到达窗口里都成立）；`App.tsx` 的 `useArriveVeil` 遇到「先锋档 + 刚离开的是歌单封面层」就**不铺薄幕**。这一路于是只剩那一次淡出。平凡档 / 浮层那两条路的判据一个字没动。
+
+**实测**（`PI_SMOKE_UI_PLLIST=1` 快速通道 ≈ 20s，只跑这一条过渡；探针 `probeAvantPlaylistExit` 同时记逐帧 DOM 轨迹、逐合成帧亮度、逐合成帧「中心锐度」= 相邻像素亮度差均值 —— 整屏均值看不见 blur 掉没掉，锐度会跳）：
+
+- 改前：`锐度 1.91 → 1.07 → 1.16 … → 1.91`（掉下去再爬回来 ≈ 那 0.52s 的薄幕）；浮层卸载后 +430ms 的快照里赫然是 `pi-page-arrive-veil｜opacity=0.414713｜bf=blur(16px) saturate(1.06)｜box=0,0 1182x772`。
+- 改后：`锐度 9.14 8.77 7.65 6.91 6.15 5.51 5.01 4.63 4.44 4.34 → 4.37 4.36 …`（单调降到平台，无回升）；同一拍「仍在模糊的层」里只剩封面/歌词自己的 `filter: blur()`，**没有全屏薄幕**；亮度 `134 → 128` 单调、无暗谷。
+- 完整冒烟（`PI_SMOKE_UI=1 PI_SMOKE_UI_STYLE=avant`）：`先锋歌单选择页退场 ✓（收干净后还有全屏薄幕=false）`、`回播放页过渡 ✓`、`十八轮总闸 → 通过`、`十六轮十四项总闸 → 通过`、`M3 渲染层验收 → 通过`，`Exit status 0`；`pnpm typecheck` 14/14、`vitest` 27 files / 526 tests。
+
+
+**顺带修掉探针自己的两个坑**（都是这一轮才暴露出来的）：
+
+1. `probeAvantPlaylistExit` 第一步是 `clickNav('我的歌单')`，而**平凡档里那是整整一页**、没有 `[data-pl-list]` 可点 ⇒ 收尾必须把页面送回播放页，否则紧跟着的「圆球塌陷 / 名片贴近左下 / 接下来播放」三条全在歌单页上量、一起假红（实测：修前 `第十八轮总闸 ②=false ⑨=false ⑪=false`，补上 `backToPlayingPage()` 之后同一条冒烟 `②⑨⑪=true → 通过`）；
+2. 那一档**没有对象可量**时应记「未跑」而不是「✗」，并且提前返回的那条分支漏了 `lingering` 字段 —— 平凡档会直接 `TypeError: Cannot read properties of undefined (reading 'includes')` 把整跑炸掉。
+
 ## 五、里程碑与验收标准
 
 | 里程碑 | 内容 | 交付物 | 验收标准（必须能演示） |
@@ -1394,5 +1672,3 @@ export interface MusicSource {
   - **未做（本轮，照实记）**：①参考图 1 是 folia 的**深色药丸 + 白色实心大圆播放键**，这一版保留 PI 的浅色玻璃药丸与配色（只落实用户逐条点名的六项）；②「音量条部件悬停变大」靠 `transform: scale(1.3)`，`getBoundingClientRect()` 量到的是放大后的视觉盒（21×109），所以那条断言判的是**布局盒**（16×84）+ 视觉盒区间双保险；③云阶 `partitaStaggerMin/Max` 默认仍是 20/100（参考图 4 的读数），「错位减小」落在行距收紧与错位夹取上，**没有**把默认区间本身调小；④时计那条「铺满整屏」的并集宽占比随当前歌词内容浮动（本轮 0.569、另一跑 0.865），没改成固定阈值；⑤心象按授权放宽了第 1 条几何契约（最大放宽 136.8px、`138/3450` 个词缩到最小 0.620），取代关系写在测试文件头；⑥不可达舞台（640×400，低于应用最小窗口 960×620）心象 5 组微重叠、云阶 87 组溢出，都只记录不判定；⑦渲染层仍**没有 DOM 渲染测试**（单测只覆盖几何与时间轴），第 1/4/8 条的观感靠探针数值 + 我逐张看成品图；⑧沙箱里没有 git 仓库，改动没法提交（用户自行提交）
 
 **下一步：等 m05281 第十四版改版的主观评审**——重点看：①底部控制条的六项（38px 圆播放键、34px 无框音量键、行内 `‹`/`›`、去掉蓝色圆球的细长音量条、悬停放大）手感对不对，以及**要不要 1:1 照搬 folia 那种深色药丸 + 白色实心大圆播放键**（这一版是有意偏离，见 §4.16 照实记①）；②「我的喜欢」的拼贴像不像 folia 的 Lattice（中心 614px vs 普通 201px、序号徽章、拖拽）；③浮名镜头跟当前句顺不顺（`snap` 定格档那点飘移要不要去掉）；④流光逐字旋转的最大 6° 够不够明显；⑤心象的词散布与当前句放大够不够「folia」；⑥云阶的三档字号 + 当前句放大 + 引导线开关；⑦时计的小齿轮转动与表盘四个旋钮（轮盘半径 / 弧度角度 / 擒纵咬合力 / 聚焦句缩放）；⑧切歌小名片的位置、3400ms 时长与「点击无互动」。**下一轮的第一件事**：接着做 M4 的**二期**——**删掉环形歌单展示**、歌单/列表也换成卡片/拼贴（用户第十三轮就裁定过这个顺序），另可把专辑/歌手独立页（M4）或 M5 下载与本地库排进来。
-
-

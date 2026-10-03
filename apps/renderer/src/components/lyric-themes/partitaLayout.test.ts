@@ -79,7 +79,8 @@ const LINES: readonly string[] = [
   'supercalifragilisticexpialidocious',
 ];
 
-const KANA = 'あいうえおかきくけこさしすせそたちつてとなにぬねのはひふへほまみむめもやゆよらりるれろわをん';
+const KANA =
+  'あいうえおかきくけこさしすせそたちつてとなにぬねのはひふへほまみむめもやゆよらりるれろわをん';
 const LATIN_WORDS = [
   'alpha',
   'bravo',
@@ -103,9 +104,7 @@ function checkGeometry(plan: PartitaLayoutPlan, source: string, where: string): 
   for (let i = 1; i < plan.blocks.length; i += 1) {
     expect(plan.blocks[i]!.y, `阅读顺序: ${where}`).toBeGreaterThan(plan.blocks[i - 1]!.y);
   }
-  const joined = plan.blocks
-    .map((block) => block.atoms.map((atom) => atom.text).join(''))
-    .join('');
+  const joined = plan.blocks.map((block) => block.atoms.map((atom) => atom.text).join('')).join('');
   expect(joined, `丢字/串字: ${where}`).toBe(source.replace(/\s+/gu, ''));
   const seen = plan.blocks
     .flatMap((block) => block.atoms.flatMap((atom) => atom.words.map((word) => word.index)))
@@ -175,10 +174,12 @@ describe('partita 楼梯几何', () => {
         for (const [fontScale, motionAmount, chaotic] of TUNINGS) {
           const plan = layout(line, width, height, fontScale, motionAmount, chaotic);
           cases += 1;
-          const where =
-            `"${line}" @ ${width}x${height} fs=${fontScale} mo=${motionAmount} ch=${chaotic}`;
+          const where = `"${line}" @ ${width}x${height} fs=${fontScale} mo=${motionAmount} ch=${chaotic}`;
           checkGeometry(plan, line, where);
-          if (plan.needWidth > plan.availWidth + 1e-6 || plan.needHeight > plan.availHeight + 1e-6) {
+          if (
+            plan.needWidth > plan.availWidth + 1e-6 ||
+            plan.needHeight > plan.availHeight + 1e-6
+          ) {
             overflow.push(
               `${where} 字宽=${plan.needWidth.toFixed(0)}/${plan.availWidth.toFixed(0)} ` +
                 `字高=${plan.needHeight.toFixed(0)}/${plan.availHeight.toFixed(0)} ` +
@@ -205,7 +206,10 @@ describe('partita 楼梯几何', () => {
           const plan = layout(line, width, height, fontScale, motionAmount, chaotic);
           cases += 1;
           checkGeometry(plan, line, `${line} @ ${width}x${height}`);
-          if (plan.needWidth > plan.availWidth + 1e-6 || plan.needHeight > plan.availHeight + 1e-6) {
+          if (
+            plan.needWidth > plan.availWidth + 1e-6 ||
+            plan.needHeight > plan.availHeight + 1e-6
+          ) {
             overflow.push(
               `"${line}" @ ${width}x${height} fs=${fontScale} mo=${motionAmount} ch=${chaotic} ` +
                 `字宽=${plan.needWidth.toFixed(0)}/${plan.availWidth.toFixed(0)} ` +

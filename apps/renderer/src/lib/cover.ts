@@ -16,3 +16,33 @@ export function coverAt(url: string | undefined, size: number): string | undefin
   if (!base) return undefined;
   return `${base}?param=${size}y${size}`;
 }
+
+/**
+ * 「每日推荐」那张卡片的封面（用户第二十一轮第 2 条：「每日推荐歌单没有封面，修一下」）。
+ *
+ * 每日推荐是个**伪歌单**：上游没有歌单 id、也就没有歌单封面（`PlaylistPage` 原来给它画的是
+ * 一个音符占位图标）。但里面每首歌都有专辑封面，所以照网易云自己的做法——拿**前几首歌**的封面
+ * 拼一张。四张是网易云那个 2×2 拼图的张数；不足四张就**循环补满**（两张时上下各重复一次），
+ * 这样卡片永远是满满一张图，不会剩一格空着。
+ *
+ * `count` 传 1 时就是「只取第一张」，给先锋档那张单图卡片与歌曲浮层的抬头用。
+ */
+export function dailyCoverUrls(
+  tracks: readonly { album?: { coverUrl?: string } | undefined }[] | undefined,
+  count = 4,
+  size = 400,
+): string[] {
+  const unique: string[] = [];
+  for (const track of tracks ?? []) {
+    const url = coverAt(track.album?.coverUrl, size);
+    if (url === undefined || unique.includes(url)) continue;
+    unique.push(url);
+    if (unique.length >= count) break;
+  }
+  if (unique.length === 0 || count <= 1) return unique.slice(0, Math.max(count, 0));
+  const filled: string[] = [];
+  for (let index = 0; index < count; index += 1) {
+    filled.push(unique[index % unique.length] as string);
+  }
+  return filled;
+}

@@ -7,6 +7,11 @@
   --pi-primary-weak: #e8f4ff;
   /* 需要在白底上当小字号文字用的深一档天蓝（#1f9bff 直接当正文色对比度不够）。 */
   --pi-primary-deep: #0d7bd0;
+  /* 主色底上的前景色（用户第二十一轮第 5 条「应用主题色」）：默认白字；
+     换成黑白/自定义主色时跟着一起改（见文件末尾的两块 `[data-accent]`），
+     否则「暗档拿近白当主色 + 白字」会变成看不见的白底白字。
+     全仓凡是「坐在 `--pi-primary` 上的字」都读这一枚，不再写死 #fff。 */
+  --pi-on-primary: #ffffff;
 
   --pi-bg: #ffffff;
   --pi-bg-subtle: #f5faff;
@@ -79,8 +84,9 @@
   --pi-np-accent: var(--pi-primary);
 
   /* 系统字体栈：不硬编码 PingFang / 苹方，Linux 上也要有得用（§2.6 规则 4） */
-  --pi-font: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans CJK SC',
-    'Microsoft YaHei', 'Source Han Sans SC', 'Helvetica Neue', Arial, sans-serif;
+  --pi-font:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans CJK SC', 'Microsoft YaHei',
+    'Source Han Sans SC', 'Helvetica Neue', Arial, sans-serif;
 }
 
 [data-theme='dark'] {
@@ -126,4 +132,36 @@
     rgba(18, 24, 33, 0.7) 100%
   );
   --pi-glass-edge: 0 0 0 1px rgba(255, 255, 255, 0.07);
+}
+
+/* ------------------------------------------------------------------ *
+ * 应用主题色（用户第二十一轮第 5 条）
+ *
+ * 原话：「在设置里加入应用主题色设置，影响按键的颜色等，将黑白/天蓝设为默认色，
+ * 并且有自定义选项」。三档的落法：
+ *   - 天蓝（默认）：**什么都不写**，直接用上面 `:root` / `[data-theme='dark']` 里那四枚天蓝；
+ *   - 黑白：写在这一块，亮档近黑、暗档近白；
+ *   - 自定义：`lib/accent.ts` 用用户挑的颜色算好五枚变量，`App.tsx` 的 `useAccent`
+ *     写成 `<html>` 的内联自定义属性 —— 所以这里不出现 `custom` 一档。
+ *
+ * 档位由 `useAccent` 写到 `<html data-accent>` 上（和 `data-theme` 同一个节点），
+ * 所以下面 `[data-theme='dark'][data-accent='mono']` 的两条能按明暗分别覆盖（特异度也更高）。
+ *
+ * **每一档都必须连 `--pi-on-primary` 一起给**：主色换成近白之后，留在主色底上的白字会整片消失。
+ * ------------------------------------------------------------------ */
+
+[data-accent='mono'] {
+  --pi-primary: #14171c;
+  --pi-primary-hover: #2c323b;
+  --pi-primary-weak: rgba(20, 23, 28, 0.08);
+  --pi-primary-deep: #0b0d11;
+  --pi-on-primary: #ffffff;
+}
+
+[data-theme='dark'][data-accent='mono'] {
+  --pi-primary: #eef1f6;
+  --pi-primary-hover: #ffffff;
+  --pi-primary-weak: rgba(238, 241, 246, 0.18);
+  --pi-primary-deep: #cdd3dc;
+  --pi-on-primary: #14171c;
 }

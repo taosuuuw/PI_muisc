@@ -94,7 +94,10 @@
   font: inherit;
   font-size: 13px;
   cursor: pointer;
-  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease,
+    border-color 0.15s ease;
 }
 .pi-settings-frame__tab:hover {
   background: var(--pi-bg-subtle);
@@ -194,40 +197,69 @@
 
 /* 勾选框改成开关外观：参考图里这一排没有方框勾选，都是胶囊。
    仍然是原生 `<input type="checkbox">`（`data-lyric-tuning="randomThemePerSong"`
-   的抓手与 onChange 一行没动），只是用 appearance:none + ::after 画出来。 */
+   的抓手与 onChange 一行没动），只是用 appearance:none + ::after 画出来。
+
+   **用户第 7 轮第 3 条**（原话：「音源页……的两个按键太丑了要修改」「界面页……有一个很丑的
+   按键需要优化」）—— 截图（用户图 1 / 图 2，同 `docs/m3-settings-frame.png`）上看，两个开关
+   都不是胶囊，而是「一个白方块上浮着一坨深色勾」和「一块灰糊」。两个真原因都在这段里：
+     ① **没有 `appearance: none`** —— 原生复选框一直被 Chromium 画出来：白底方框 + 勾 /
+        禁用态的灰块，跟我们那层胶囊叠在一起。所以看到的一直是原生控件的形状（勾在深色
+        主题下就是那坨深色），而不是胶囊。
+     ② 未选中时轨道写的是 `--pi-bg-subtle`、滑块写的是 `--pi-surface`，而设置行的底色
+        **正好也是** `--pi-bg-subtle`（见上面 `.pi-setting`），滑块在浅色主题下又是白的
+        ⇒ 关着的开关整条隐形，只在打开时才看得见一块 `--pi-primary`。
+   修法：补 `appearance: none`（那三个 `-webkit-` 前缀是 Electron/Chromium 上的习惯写法），
+   轨道改用「文字色 18% 混出的中性灰」（在浅卡与深卡上都看得见），滑块固定白 + 一道极轻落影
+   （滑块在两种主题下都该是白的，所以不用 `--pi-surface`），并补键盘焦点光环与禁用态。 */
 .pi-settings-frame .pi-check {
+  appearance: none;
+  -webkit-appearance: none;
   position: relative;
   flex: none;
-  width: 38px;
+  width: 40px;
   height: 22px;
-  border: 1px solid var(--pi-divider);
+  margin: 0;
+  padding: 0;
+  border: 0;
   border-radius: 999px;
-  background: var(--pi-bg-subtle);
+  background: color-mix(in srgb, var(--pi-text) 18%, transparent);
+  box-shadow: inset 0 1px 2px rgb(0 0 0 / 12%);
   cursor: pointer;
-  transition: background 0.15s ease, border-color 0.15s ease;
+  transition: background 0.18s ease;
 }
 .pi-settings-frame .pi-check::after {
   content: '';
   position: absolute;
-  top: 2px;
-  left: 2px;
+  top: 3px;
+  left: 3px;
   width: 16px;
   height: 16px;
   border-radius: 50%;
-  background: var(--pi-surface);
-  box-shadow: var(--pi-shadow-card);
-  transition: transform 0.15s ease;
+  background: #fff;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 30%);
+  transition: transform 0.18s cubic-bezier(0.22, 1, 0.36, 1);
 }
 .pi-settings-frame .pi-check:checked {
-  border-color: var(--pi-primary);
   background: var(--pi-primary);
+  box-shadow: inset 0 1px 2px rgb(0 0 0 / 16%);
 }
 .pi-settings-frame .pi-check:checked::after {
-  transform: translateX(16px);
+  transform: translateX(18px);
+}
+.pi-settings-frame .pi-check:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--pi-primary) 65%, transparent);
+  outline-offset: 2px;
 }
 .pi-settings-frame .pi-check:disabled {
   cursor: default;
-  opacity: 0.6;
+  opacity: 0.45;
+}
+/* 关着的开关在深色主题下也不能糊成一团：那支中性灰跟底色太近时再补一点。
+   选择器**必须**带 `:not(:checked)`：不带时它的特异性（0,2,1）会压过上面那条
+   `.pi-settings-frame .pi-check:checked`（0,2,0），于是深色主题下「开」与「关」是同一个
+   颜色、开关完全看不出状态 —— 这条是冒烟探针当场抓到的（`选中轨道 == 未选中`）。 */
+[data-theme='dark'] .pi-settings-frame .pi-check:not(:checked) {
+  background: color-mix(in srgb, var(--pi-text) 22%, transparent);
 }
 
 /* 分段控件（播放模式 / 外观 / 界面语言）：浅底胶囊容器 + 选中项白底小胶囊。 */
@@ -249,7 +281,10 @@
   font-size: 13px;
   white-space: nowrap;
   cursor: pointer;
-  transition: background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease,
+    box-shadow 0.15s ease;
 }
 .pi-seg__item:hover:not([data-active='true']) {
   color: var(--pi-text);
@@ -268,6 +303,14 @@
   outline: 2px solid var(--pi-primary);
   outline-offset: 1px;
 }
+
+/*
+ * 应用主题色的自定义取色已经搬到 `styles/accent-picker.css`（用户第二十二轮第 2 条把它从
+ * 「原生取色块 + 十六进制输入」整块换成了选色面板），这里**不要再留同名规则**：
+ * 残留的 `.pi-accent-picker { display: inline-flex }` 会把新面板的竖排网格压成一行
+ * （第二十二轮实测：方块、当前选色、推荐色挤成左右两列）。类名同名是刻意复用的，
+ * 所以旧定义必须连根删掉。
+ */
 
 /* ------------------------------ 同步按钮 ------------------------------ */
 
@@ -290,11 +333,14 @@
   border: 1px solid var(--pi-primary);
   border-radius: var(--pi-radius-btn);
   background: var(--pi-primary);
-  color: #fff;
+  /* 主色底上的字读 `--pi-on-primary`（用户第二十一轮第 5 条：主色可换成黑白/自定义）。 */
+  color: var(--pi-on-primary, #fff);
   font: inherit;
   font-size: 14px;
   cursor: pointer;
-  transition: background 0.15s ease, border-color 0.15s ease;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease;
 }
 .pi-syncbtn:hover:not(:disabled) {
   border-color: var(--pi-primary-hover);
@@ -335,7 +381,10 @@
   text-align: left;
   cursor: pointer;
   box-shadow: var(--pi-shadow-card);
-  transition: border-color 0.15s ease, background 0.15s ease, transform 0.15s ease;
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease,
+    transform 0.15s ease;
 }
 .pi-lyric-theme:hover:not(:disabled) {
   border-color: var(--pi-primary);
@@ -496,7 +545,10 @@
   font-size: 12.5px;
   font-variant-numeric: tabular-nums;
   cursor: pointer;
-  transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease,
+    color 0.15s ease;
 }
 .pi-scut__key:hover {
   border-color: var(--pi-primary);

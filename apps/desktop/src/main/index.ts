@@ -1,4 +1,5 @@
 import { app, BrowserWindow, shell } from 'electron';
+import type { NativeImage } from 'electron';
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -21,9 +22,9 @@ const PLAYBACK_SMOKE_SIZE = 3;
  */
 const smokeRun = Boolean(
   process.env.PI_SMOKE_PLAY ||
-    process.env.PI_SMOKE_SOURCES ||
-    process.env.PI_SMOKE_SETTINGS ||
-    process.env.PI_SMOKE_UI,
+  process.env.PI_SMOKE_SOURCES ||
+  process.env.PI_SMOKE_SETTINGS ||
+  process.env.PI_SMOKE_UI,
 );
 
 /**
@@ -221,6 +222,31 @@ function createWindow(): void {
     console.error('[pi] preload 加载失败：', preload, error);
   });
 
+  // 诊断（用户 m00597 第 2 条「平凡模式进入每日推荐歌单页没有歌曲显示」）：
+  // 渲染层的 console **不会**进 pi-launch.log（那条日志只是 PI.cmd 的 stdout/stderr，见
+  // scripts/pi-silent.vbs），所以这里把带 `[pi/` 前缀的渲染层日志原样转到主进程 stdout ——
+  // 用户复现一次，日志里就有真机的 innerWidth/DPR/列表长度/各盒子的 getBoundingClientRect。
+  // `level >= 2`（warning/error）也一起转：渲染层要是抛异常，pi-launch.log 里就能看见。
+  /* Electron 的 `console-message` 有两种回调签名：旧版 `(event, level: number, message, line, sourceId)`，
+     35+ 换成 `(event, details: { level: string, message: string, … })`。仓库里装的类型是旧签名，
+     所以统一按「第二个参数可能是数字、也可能是对象」两种都收，运行时不会取错。 */
+  mainWindow.webContents.on('console-message', (...args: unknown[]) => {
+    const second = args[1];
+    const details =
+      typeof second === 'object' && second !== null
+        ? (second as { level?: string | number; message?: string })
+        : null;
+    const text = String((details !== null ? details.message : args[2]) ?? '');
+    const rawLevel = details !== null ? details.level : (second as number | undefined);
+    const level =
+      typeof rawLevel === 'string'
+        ? rawLevel
+        : (['verbose', 'info', 'warn', 'error'][rawLevel ?? 1] ?? 'info');
+    const noisy = level === 'warn' || level === 'warning' || level === 'error';
+    if (!text.startsWith('[pi/') && !noisy) return;
+    console.info(`[pi/renderer:${level}] ${text}`);
+  });
+
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
@@ -315,9 +341,7 @@ app.on('child-process-gone', (_event, details) => {
 });
 
 app.on('render-process-gone', (_event, _contents, details) => {
-  console.error(
-    `[pi] 渲染进程崩溃：reason=${details.reason} exitCode=${details.exitCode}`,
-  );
+  console.error(`[pi] 渲染进程崩溃：reason=${details.reason} exitCode=${details.exitCode}`);
 });
 
 app.on('second-instance', () => {
@@ -344,11 +368,7 @@ app.on('second-instance', () => {
  * 注意 content-type 不能信：网易云 CDN 会给 flac 回 `audio/mpeg`（实测过），
  * 所以只有前 4 个字节的 magic 才算证据。
  */
-async function checkSongPlayable(
-  services: Services,
-  song: Song,
-  index: number,
-): Promise<boolean> {
+async function checkSongPlayable(services: Services, song: Song, index: number): Promise<boolean> {
   console.info(
     `[pi/smoke] #${index} 歌曲：${song.name} - ${song.artists.map((a) => a.name).join('/')}`,
   );
@@ -488,7 +508,7 @@ async function runLocalSmoke(services: Services, restoreDir: string): Promise<bo
     if (result.src) {
       const response = await fetch(result.src, { headers: { range: 'bytes=0-1023' } });
       const body = new Uint8Array(await response.arrayBuffer());
-      bytes = (response.status === 200 || response.status === 206) ? body.byteLength : 0;
+      bytes = response.status === 200 || response.status === 206 ? body.byteLength : 0;
     }
 
     ok =
@@ -581,7 +601,8 @@ async function runSourceSmoke(services: Services): Promise<void> {
 
       const response = await fetch(result.src, { headers: { range: 'bytes=0-1023' } });
       const bytes = new Uint8Array(await response.arrayBuffer());
-      if ((response.status === 200 || response.status === 206) && bytes.byteLength > 0) bytesOk += 1;
+      if ((response.status === 200 || response.status === 206) && bytes.byteLength > 0)
+        bytesOk += 1;
     }
 
     console.info(
@@ -774,7 +795,17 @@ function percentile(sorted: readonly number[], q: number): number {
 async function stopFrameProbe(win: BrowserWindow, label: string): Promise<FrameStats> {
   // 第十六轮删球：环形展开/坠入两段动画的帧率已经无对象，返回全 0 的统计（日志结构不动）。
   if (!r16LegacyProbe(win)) {
-    return { frames: 0, ms: 0, p50: 0, p95: 0, worst: 0, long: 0, dragFrames: 0, dragLong: 0, dragP95: 0 };
+    return {
+      frames: 0,
+      ms: 0,
+      p50: 0,
+      p95: 0,
+      worst: 0,
+      long: 0,
+      dragFrames: 0,
+      dragLong: 0,
+      dragP95: 0,
+    };
   }
   const raw = (await win.webContents.executeJavaScript(
     `(() => { const w = window; w.__piFrameStop = true; return w.__piFrames || []; })()`,
@@ -1256,7 +1287,9 @@ async function measureItemHover(
     items: number;
   };
   const basis =
-    live.cx !== null && live.cy !== null ? { cx: live.cx, cy: live.cy } : { cx: target.cx, cy: target.cy };
+    live.cx !== null && live.cy !== null
+      ? { cx: live.cx, cy: live.cy }
+      : { cx: target.cx, cy: target.cy };
   // 记下渲染进程真收到的指针事件与随之而来的悬停态：悬停判定改用几何命中之后，
   // 一旦「一个事件都没收到」和「收到了但没命中」是两种完全不同的原因，得能分开看。
   await win.webContents.executeJavaScript(
@@ -1519,7 +1552,9 @@ async function openRecommendedPlaylist(win: BrowserWindow): Promise<number> {
       await delay(400);
     }
     if (gridCards <= index) {
-      console.info(`[pi/smoke] 兜底歌源：推荐歌单页只有 ${gridCards} 张卡（要第 ${index + 1} 张），收工`);
+      console.info(
+        `[pi/smoke] 兜底歌源：推荐歌单页只有 ${gridCards} 张卡（要第 ${index + 1} 张），收工`,
+      );
       break;
     }
     /*
@@ -1696,9 +1731,14 @@ async function ensureLyricSong(
   /*
    * 判「这首真的有歌词」不能用 `[data-lyric-line]` 的行数：那只是歌词轨**当前渲染窗口**的行数，
    * 一首歌刚开始放时本来就只画一两行，后面才长大（实测 13 首全是 1~2 行，全都判成「不够」）。
-   * 改用字素数：只有一句 `[Intro ]` 的那种是 8 个字素，而真歌词一行就有三十几个。
+   * 改用**原子数**：只有一句 `[Intro ]` 的那种现在只剩 2 个原子（一个词 + 一个空格），
+   * 而真歌词一行就有十几个。
+   *
+   * 用户 m04987 第 1 条之后英文不再是「一个字母一个元素」，而是一个词一个元素（词间另挂
+   * `.pi-lyricstage__space`），所以口径必须把空格原子也算进来、阈值也要跟着降：英文行
+   * 「I will be dying for you」= 6 词 + 5 空格 = 11 个原子，中文行不变（仍一字一原子）。
    */
-  const RICH_WORDS = 14;
+  const RICH_WORDS = 8;
   let thin: { index: number; name: string; lines: number } | null = null;
   const limit = Math.min(tries, rows - 1);
   for (let index = 1; index <= limit; index += 1) {
@@ -1706,10 +1746,8 @@ async function ensureLyricSong(
     if (index > 1) rows = await ensureQueue();
     if (rows <= index) break;
     const before = await readAudio(win);
-    const label = (await win.webContents.executeJavaScript(
-      clickQueueEntryJs(index),
-      true,
-    )) as string | null;
+    const label = (await win.webContents.executeJavaScript(clickQueueEntryJs(index), true)) as
+      string | null;
     if (label === null) break;
     await waitForPlayback(win, UI_SMOKE_TIMEOUT_MS, before.src);
     // 换源成功 ≠ 歌词到位：歌词是另一条联网请求，单独再等一小段。
@@ -1720,7 +1758,7 @@ async function ensureLyricSong(
       const probe = (await win.webContents.executeJavaScript(
         `(() => ({
           lines: document.querySelectorAll('[data-lyric-line], .pi-lyrics__line').length,
-          words: document.querySelectorAll('.pi-lyricstage__word').length,
+          words: document.querySelectorAll('.pi-lyricstage__word, .pi-lyricstage__space').length,
         }))()`,
         true,
       )) as { lines: number; words: number };
@@ -1734,8 +1772,8 @@ async function ensureLyricSong(
     }
     if (lastLines > 0) thin = thin ?? { index, name: label, lines: lastLines };
     console.info(
-      `[pi/smoke] 队列第 ${index + 1} 首「${label}」歌词字素=${bestWords} 行=${lastLines}` +
-        `（不足 ${RICH_WORDS} 个字素，继续往下找）`,
+      `[pi/smoke] 队列第 ${index + 1} 首「${label}」歌词原子=${bestWords} 行=${lastLines}` +
+        `（不足 ${RICH_WORDS} 个原子，继续往下找）`,
     );
   }
   // 要退回薄的那份：把它重新点回来，别让「在放的那首」和日志里报的那首对不上。
@@ -2265,8 +2303,319 @@ async function clickQuickItem(win: BrowserWindow, id: string): Promise<boolean> 
   )) as boolean;
 }
 
+/**
+ * 把页面**送回播放页**。
+ *
+ * 为什么探针收尾非要这一步（用户第二十八轮）：`probeAvantPlaylistExit` 第一步是
+ * `clickNav('我的歌单')`。先锋档里那是一层浮在播放页上的封面层，点空白就回去了；
+ * **平凡档里它是一整页**、压根没有 `[data-pl-list]` 可点 ⇒ 探针会**把界面留在歌单页上**，
+ * 而紧跟着的十几条探针（圆球塌陷 / 名片贴近左下 / 接下来播放）全都是在**播放页**上量的 ——
+ * 实测漏掉这一步会让那三条一起变红（`未量到 [data-home-card]` 就是它）。
+ * 这里按页面自己的 `data-page` 判断，只有真的不在播放页才动（在播放页时是一次空操作）。
+ */
+async function backToPlayingPage(win: BrowserWindow): Promise<void> {
+  const page = (await win.webContents.executeJavaScript(
+    `document.querySelector('.pi-main')?.dataset.page || ''`,
+    true,
+  )) as string;
+  if (page === 'home') return;
+  await clickNav(win, '播放器主页');
+  await delay(240);
+}
+
+/**
+ * 「先锋歌单选择页 → 播放页」这一下过渡的探针（用户第二十六轮加的，第二十八轮补逐帧轨迹）。
+ *
+ * 判据本身一个字不改（第二十六轮定的那条）：退场那一层挂 `data-leaving`，播的是与歌单歌曲页
+ * 浮层**同一条** `pi-listoverlay-crossfade-out`（300ms），收干净之后浮层不在、当前页是 `home`。
+ *
+ * 第二十八轮补的是**逐帧轨迹**（用户：「过渡动画中背景会闪一下…我希望只有淡出」）：
+ * 每帧记下 `实例号 / 不透明度 / 动画名 / data-*`。
+ * - 实例号是渲染侧用 `WeakMap` 给 DOM 节点打的（同一棵树里同一个节点永远是同一个号）——
+ *   **换号 = 这一层被重新挂载**，而重新挂载会把 300ms 的淡出从头再放一遍（先淡到 0、再跳回 1），
+ *   那正是「闪」的形状，也是 DOM 上唯一能证明它的证据；
+ * - 不透明度序列则直接回答「是不是只剩淡出」：它必须**单调不回升**。
+ *
+ * 返回 `ok = null` 表示这一跑没进到这一页（未跑），不是失败。
+ */
+async function probeAvantPlaylistExit(
+  win: BrowserWindow,
+): Promise<{ ok: boolean | null; info: string }> {
+  const entered = await clickNav(win, '我的歌单');
+  if (!entered) {
+    await backToPlayingPage(win);
+    return { ok: null, info: '没能从导航抽屉进入「我的歌单」' };
+  }
+  /* 等这一层挂上（卡片数只作信息记录：账号没登录时它是空态，那时的「退场」照样要淡出）。 */
+  const deadline = Date.now() + 8000;
+  for (;;) {
+    const ready = (await win.webContents.executeJavaScript(
+      `document.querySelector('[data-pl-list]') !== null`,
+      true,
+    )) as boolean;
+    if (ready) break;
+    if (Date.now() >= deadline) break;
+    await delay(200);
+  }
+  await delay(400);
+  /*
+   * 逐**合成帧**采样（用户第二十八轮）。
+   *
+   * 为什么非它不可：上面那份「不透明度轨迹」只证明**这一层自己在淡**，
+   * 证明不了「屏幕上没有别的帧突然变暗」——用户说的「背景会闪一下」恰恰可能是
+   * `backdrop-filter` 在淡出那一拍被合成器丢掉（背景忽然变清晰/变暗一帧），
+   * 那时候这一层的 opacity 曲线照样是干净的。`capturePage` 一次要 ~320ms、抓不住
+   * 单帧，所以用帧订阅；每帧只算两个便宜的数（隔 8 个像素采样的整屏均值 +
+   * 中心那一块的相邻像素梯度），只记录、不判定。
+   */
+  const lum: number[] = [];
+  /**
+   * 每帧的「锐度」= 中心区域相邻像素亮度差的均值。整屏均值看不见 `backdrop-filter`
+   * 被丢掉那一帧（模糊 ↔ 清晰几乎不改变均值），但锐度会**跳**。
+   */
+  const sharp: number[] = [];
+  let frameNo = 0;
+  let armed = false;
+  const onFrame = (image: Electron.NativeImage): void => {
+    if (!armed) return;
+    frameNo += 1;
+    if (frameNo > 240) return;
+    const bitmap = image.toBitmap();
+    const size = image.getSize();
+    let sum = 0;
+    let count = 0;
+    for (let i = 0; i + 3 < bitmap.length; i += 32) {
+      sum += ((bitmap[i] ?? 0) + (bitmap[i + 1] ?? 0) + (bitmap[i + 2] ?? 0)) / 3;
+      count += 1;
+    }
+    const mean = sum / Math.max(1, count);
+    lum.push(mean);
+    /* 中心 50% 那块里横向相邻像素的亮度差（隔 3 个像素取一个，便宜够用）。 */
+    const width = size.width;
+    const height = size.height;
+    const x0 = Math.floor(width * 0.25);
+    const x1 = Math.floor(width * 0.75);
+    const y0 = Math.floor(height * 0.25);
+    const y1 = Math.floor(height * 0.75);
+    let grad = 0;
+    let gradCount = 0;
+    for (let y = y0; y < y1; y += 3) {
+      for (let x = x0; x < x1 - 4; x += 3) {
+        const a = (y * width + x) * 4;
+        const b = (y * width + x + 4) * 4;
+        const la = ((bitmap[a] ?? 0) + (bitmap[a + 1] ?? 0) + (bitmap[a + 2] ?? 0)) / 3;
+        const lb = ((bitmap[b] ?? 0) + (bitmap[b + 1] ?? 0) + (bitmap[b + 2] ?? 0)) / 3;
+        grad += Math.abs(la - lb);
+        gradCount += 1;
+      }
+    }
+    sharp.push(grad / Math.max(1, gradCount));
+  };
+  win.webContents.beginFrameSubscription(false, onFrame);
+  armed = true;
+  const exit = (await win.webContents.executeJavaScript(
+    `(async () => {
+       const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+       const root = document.querySelector('[data-pl-list]');
+       if (root === null) {
+         return { open: false, cards: 0, present: false, leaving: false, opacity: '',
+                  anim: '', ms: '', after: true, page: '', trace: '', lingering: '' };
+       }
+       const cards = root.querySelectorAll('[data-pl-cover-card]').length;
+       /*
+        * 逐帧轨迹。
+        * ⚠️ 这一行**只作诊断**：轨迹行长、每跑都会不一样（帧率本来就是浮动的），
+        *    所以它只打进日志，不进任何判据（判据仍用下面 70ms / 收干净那两拍）。
+        */
+       const marks = new WeakMap();
+       let nextMark = 0;
+       const rows = [];
+       const t0 = performance.now();
+       const tick = () => {
+         const el = document.querySelector('[data-pl-list]');
+         if (el === null) {
+           rows.push(Math.round(performance.now() - t0) + 'ms 无');
+         } else {
+           if (!marks.has(el)) marks.set(el, ++nextMark);
+           const cs = getComputedStyle(el);
+           rows.push(
+             Math.round(performance.now() - t0) + 'ms#' + marks.get(el) +
+             ' op=' + Number(cs.opacity).toFixed(3) +
+             ' anim=' + (cs.animationName === 'none' ? '-' : cs.animationName) +
+             ' leaving=' + (el.getAttribute('data-leaving') || '-') +
+             ' closing=' + (el.getAttribute('data-closing') || '-'),
+           );
+         }
+         if (performance.now() - t0 < 1000) requestAnimationFrame(tick);
+       };
+       /* 点这层模糊底本身 = 退回播放页（第十七轮第 ⑤ 条）。 */
+       root.click();
+       requestAnimationFrame(tick);
+       /*
+        * 等 70ms 再读：setLeaving(true) 由 React 在事件收尾时落地，
+        * 同一条同步脚本里立刻读会读到**改动前**的 DOM（第一版就是这么误报成
+        * 「data-leaving=false、动画还是入场那条」的）。70ms 后 300ms 的淡出刚好走到 0.8 左右，
+        * 仍然满足「在 (0,1) 之间」。
+        */
+       await sleep(70);
+       const first = document.querySelector('[data-pl-list]');
+       const firstStyle = first === null ? null : getComputedStyle(first);
+       const during = {
+         present: first !== null,
+         leaving: first === null ? false : first.getAttribute('data-leaving') === 'true',
+         opacity: firstStyle === null ? '' : firstStyle.opacity,
+         anim: firstStyle === null ? '' : firstStyle.animationName,
+         ms: firstStyle === null ? '' : firstStyle.animationDuration,
+       };
+       /*
+        * 第二十八轮：浮层收干净之后再取一次快照 —— 「背景会闪一下」如果是
+        * backdrop-filter 的残留（模糊层晚走几帧），这一拍里就能看见是谁还带着模糊。
+        */
+       await sleep(360);
+       const lingering = [...document.querySelectorAll('*')]
+         .map((el) => {
+           const cs = getComputedStyle(el);
+           const bf = cs.backdropFilter || cs.webkitBackdropFilter || 'none';
+           const f = cs.filter || 'none';
+           if (bf === 'none' && f === 'none') return null;
+           const r = el.getBoundingClientRect();
+           return (
+             (el.className && typeof el.className === 'string' ? el.className : el.tagName) +
+             '｜opacity=' + cs.opacity +
+             '｜bf=' + bf +
+             '｜filter=' + f +
+             '｜box=' + Math.round(r.left) + ',' + Math.round(r.top) + ' ' + Math.round(r.width) + 'x' + Math.round(r.height)
+           );
+         })
+         .filter((row) => row !== null)
+         .join(' / ');
+       await sleep(1060);
+       const main = document.querySelector('.pi-main');
+       return {
+         open: true,
+         cards: cards,
+         present: during.present,
+         leaving: during.leaving,
+         opacity: during.opacity,
+         anim: during.anim,
+         ms: during.ms,
+         after: document.querySelector('[data-pl-list]') !== null,
+         page: main === null ? '' : main.dataset.page || '',
+         trace: rows.join(' | '),
+         lingering: lingering,
+       };
+     })()`,
+    true,
+  )) as {
+    open: boolean;
+    cards: number;
+    present: boolean;
+    leaving: boolean;
+    opacity: string;
+    anim: string;
+    ms: string;
+    after: boolean;
+    page: string;
+    trace: string;
+    lingering: string;
+  };
+  await delay(400);
+  armed = false;
+  win.webContents.endFrameSubscription();
+  /*
+   * 没等到这一层就**记「未跑」而不是「✗」**：先锋之外这一档根本没有封面卡片层
+   * （`[data-pl-list]` 只在 `uiStyle === 'avant'` 且 nav 是歌单页时挂），平凡档里它必然不在 ——
+   * 那是「没有对象可量」，不是回归。（帧订阅在上面已经收掉，这里直接返回不会漏掉订阅。）
+   */
+  if (!exit.open) {
+    await backToPlayingPage(win);
+    return { ok: null, info: '没能等到歌单封面卡片层（[data-pl-list] 不在）' };
+  }
+  console.info(`[pi/smoke] 先锋歌单选择页退场后仍在模糊的层（+430ms）：${exit.lingering || '无'}`);
+  const duringOpacity = Number.parseFloat(exit.opacity);
+  /*
+   * 判据（用户第二十八轮）：浮层收干净之后，页面上**不许**再出现那层全屏薄幕。
+   *
+   * 这一条不是「薄幕好不好看」，而是用户那句话的直接翻译：**这一路只该有淡出**。
+   * 薄幕（`pi-page-arrive-veil`）是「旧内容已经没了、只能盖一层」的兜底，
+   * 而先锋歌单封面层是先自己淡完才换页的 —— 在它收干净之后又糊一层，用户看到的就是
+   * 「背景闪一下」。（拿掉它的正是 `App.tsx` 的 `useArriveVeil`。）
+   */
+  const lingerVeil = exit.lingering.includes('pi-page-arrive-veil');
+  const ok =
+    exit.open &&
+    exit.present &&
+    exit.leaving &&
+    exit.anim === 'pi-listoverlay-crossfade-out' &&
+    exit.ms === '0.3s' &&
+    Number.isFinite(duringOpacity) &&
+    duringOpacity > 0 &&
+    duringOpacity < 1 &&
+    !exit.after &&
+    exit.page === 'home' &&
+    !lingerVeil;
+  /* 逐帧轨迹（只作诊断，不进判据）。 */
+  console.info(`[pi/smoke] 先锋歌单选择页退场逐帧轨迹：${exit.trace}`);
+  console.info(
+    `[pi/smoke] 先锋歌单选择页退场逐合成帧亮度（帧号:均值）：` +
+      lum.map((value, index) => `${index + 1}:${value.toFixed(0)}`).join(' '),
+  );
+  console.info(
+    `[pi/smoke] 先锋歌单选择页退场逐合成帧中心锐度（帧号:梯度均值）：` +
+      sharp.map((value, index) => `${index + 1}:${value.toFixed(2)}`).join(' '),
+  );
+  const info =
+    `歌单卡片=${exit.cards}｜退场：在=${exit.present} data-leaving=${exit.leaving}` +
+    ` 动画=${exit.anim || '无'}/${exit.ms || '无'}（要求与歌曲页浮层同一条）` +
+    ` 不透明度=${exit.opacity || '—'}` +
+    `｜收干净：浮层还在=${exit.after} 当前页=${exit.page || '?'}` +
+    `｜收干净后还有全屏薄幕=${lingerVeil}（要求 false：这一路只该有淡出）`;
+  return { ok, info };
+}
+
 async function runUiSmoke(win: BrowserWindow): Promise<void> {
   try {
+    /*
+     * 用户第二十二轮第 5 条（「优化下测试流程，减少多余冗杂的步骤，保证最终质量」）。
+     *
+     * 第一刀是**先看见时间花在哪**：原来整条冒烟只有最后一行的总时长，中间几十条固定 `delay`
+     * 串起来的那几段（拖拽 8×1.2s、翻页等 6s、换页 760ms×N）完全看不见谁在吃时间，
+     * 于是「优化」只能靠猜。这里把 `console.info` 包一层，给每行 `[pi/smoke]` 前面插一个
+     * 「距冒烟开始 +Nms」——跑完直接按相邻两行的差值排序就知道该砍哪里。
+     * 只包 `[pi/smoke]` 前缀的行：渲染层转发过来的 `[pi/renderer:info]` 等保持原样。
+     */
+    const smokeStart = Date.now();
+    const rawInfo = console.info.bind(console);
+    console.info = (...args: unknown[]): void => {
+      if (typeof args[0] === 'string' && args[0].startsWith('[pi/smoke]')) {
+        rawInfo(
+          `+${String(Date.now() - smokeStart).padStart(6, ' ')}ms ${args[0]}`,
+          ...args.slice(1),
+        );
+        return;
+      }
+      rawInfo(...args);
+    };
+    /**
+     * 「最多等 X ms，条件一成立就走」（用户第二十二轮第 5 条）。
+     *
+     * 冒烟里原来到处是「固定 `delay(N)` 再量一次」——健康的一跑里那些时间**全是白等**，
+     * 而真慢的时候又不够（上一跑翻页加载就是等满了还是没等到）。这个 helper 把两件事一起解决：
+     * 正常情况下立刻返回，慢的时候等满上限，返回值表示「等到没有」。
+     * 判据本身一个字不改，避免把「优化流程」变成「放松验收」。
+     */
+    const pollUntil = async (
+      check: () => Promise<boolean>,
+      timeoutMs: number,
+      stepMs = 200,
+    ): Promise<boolean> => {
+      const deadline = Date.now() + timeoutMs;
+      for (;;) {
+        if (await check()) return true;
+        if (Date.now() >= deadline) return false;
+        await delay(stepMs);
+      }
+    };
     // 首行带 pid 与时间：冒烟被残留实例「空跑」过一次，日志里必须能看出新旧。
     console.info(
       `[pi/smoke] UI 冒烟开始：pid=${process.pid} ${new Date().toLocaleString('zh-CN')}`,
@@ -2316,6 +2665,22 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
       `document.documentElement.dataset.piIdle = 'off'`,
       true,
     );
+    /*
+     * 快速通道（`PI_SMOKE_UI_PLLIST=1`）：只跑「先锋歌单选择页 → 播放页」这一条过渡。
+     *
+     * 前面几十条探针要跑三分半钟，迭代这一条过渡时没必要每次都陪跑 —— 这里只把首屏那点
+     * 公共准备（清 last-played / 写排版风格 / 重载 / 等就绪 / 关自动隐藏）做完，然后直接
+     * 调**同一个**探针函数、按它的结果退出。判据一个字不改，只是把它单独拎出来跑。
+     */
+    if (process.env.PI_SMOKE_UI_PLLIST === '1') {
+      const { ok, info } = await probeAvantPlaylistExit(win);
+      console.info(
+        `[pi/smoke] 先锋歌单选择页退场（用户第二十六轮）：${info}` +
+          ` ${ok === true ? '✓' : ok === false ? '✗' : '未跑'}`,
+      );
+      app.exit(ok === true ? 0 : 1);
+      return;
+    }
     const emptyInfo = (await win.webContents.executeJavaScript(
       `(() => {
         const page = document.querySelector('.pi-home');
@@ -2426,7 +2791,9 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
     await delay(460);
     const ctrlParked = await readCtrl();
     const r23NearOk =
-      ctrlBefore.visible === 'false' && ctrlNear.visible === 'true' && ctrlParked.visible === 'false';
+      ctrlBefore.visible === 'false' &&
+      ctrlNear.visible === 'true' &&
+      ctrlParked.visible === 'false';
     let ctrlAfter: CtrlState = ctrlBefore;
     let ctrlHit: string | null = null;
     let ctrlHitAfter: string | null = null;
@@ -2442,10 +2809,18 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
         })()`,
         true,
       )) as string | null;
-      win.webContents.sendInputEvent({ type: 'mouseMove', x: ctrlBefore.hot.x, y: ctrlBefore.hot.y });
+      win.webContents.sendInputEvent({
+        type: 'mouseMove',
+        x: ctrlBefore.hot.x,
+        y: ctrlBefore.hot.y,
+      });
       await delay(420);
       // 同一位置补一发：首次投递偶尔会被当成「位置没变」而吞掉。
-      win.webContents.sendInputEvent({ type: 'mouseMove', x: ctrlBefore.hot.x, y: ctrlBefore.hot.y });
+      win.webContents.sendInputEvent({
+        type: 'mouseMove',
+        x: ctrlBefore.hot.x,
+        y: ctrlBefore.hot.y,
+      });
       await delay(420);
       ctrlAfter = await readCtrl();
       /*
@@ -2457,7 +2832,11 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
       for (let attempt = 0; attempt < 2 && ctrlAfter.visible !== 'true'; attempt += 1) {
         win.webContents.sendInputEvent({ type: 'mouseMove', x: 24, y: 320 });
         await delay(320);
-        win.webContents.sendInputEvent({ type: 'mouseMove', x: ctrlBefore.hot.x, y: ctrlBefore.hot.y });
+        win.webContents.sendInputEvent({
+          type: 'mouseMove',
+          x: ctrlBefore.hot.x,
+          y: ctrlBefore.hot.y,
+        });
         await delay(460);
         ctrlAfter = await readCtrl();
       }
@@ -2470,7 +2849,9 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
         true,
       )) as string | null;
     }
-    const threeBtns = ['minimize', 'maximize', 'close'].every((name) => ctrlBefore.btns.includes(name));
+    const threeBtns = ['minimize', 'maximize', 'close'].every((name) =>
+      ctrlBefore.btns.includes(name),
+    );
     // 第十二轮第 6 条：三键「不要有边框，就是单独的三个图标」——边框必须真的 0、没有背景图、
     // 背景透明、圆角 0（参考图 4 上就是白底上三个细线图标）。
     const ctrlLookOk =
@@ -2501,7 +2882,15 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
         };
       })()`,
       true,
-    )) as { brand: number; hotLeft: number; hook: boolean; w: number; h: number; opacity: string; pointer: string };
+    )) as {
+      brand: number;
+      hotLeft: number;
+      hook: boolean;
+      w: number;
+      h: number;
+      opacity: string;
+      pointer: string;
+    };
     const r31BrandGoneOk =
       r31Brand.brand === 0 &&
       r31Brand.hotLeft === 0 &&
@@ -2633,9 +3022,7 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
       }
       // 等它把列表请求回来（推荐页的每日推荐要等 `/personalized/newsong`），别读到 0 就下结论。
       const rows = await waitForRows(win, UI_SMOKE_SONGS);
-      console.info(
-        `[pi/smoke] 切到「${fallback}」：${rows} 行歌｜${await describePage(win)}`,
-      );
+      console.info(`[pi/smoke] 切到「${fallback}」：${rows} 行歌｜${await describePage(win)}`);
     }
 
     // 这台机器上的账号是「零收藏 + 零最近听过」，上面那两页都给不出歌；「推荐」页面又被
@@ -3004,7 +3391,8 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
         ` 左半=${settingsRing?.left.map((el) => el.id).join(',')} ${settingsOk ? '✓' : '✗'}`,
     );
     const settingsShot =
-      process.env.PI_SMOKE_UI_SHOT_SETTINGS ?? path.resolve(here, '../../../docs/m3-orb-settings.png');
+      process.env.PI_SMOKE_UI_SHOT_SETTINGS ??
+      path.resolve(here, '../../../docs/m3-orb-settings.png');
     writeFileSync(settingsShot, (await win.webContents.capturePage()).toPNG());
     console.info(`[pi/smoke] 截图：${settingsShot}`);
     // 关掉设置框再回主菜单：浮层(z-index 60)盖着球(40)，而球在塌缩态还带着 pointer-events: none，
@@ -3033,7 +3421,15 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
      * 先锋 = 搜索那套 `SongCards`（第十八轮第 ③ 条起，`.pi-songcard`，只有**焦点卡**点了才进详情）。
      * 下面两段的选卡与计数都写成「两套都认」，冒烟两种风格下都能跑。
      */
-    const PL_CARD_SEL = '.pi-plcard:not([data-daily-card]), [data-playlist-card], .pi-songcard:not([data-daily-card])';
+    /**
+     * **用户 m00341 第 2 条**：「（每日推荐歌单页）歌曲没有正常显示，底部也没有进度条部件」
+     * —— 平凡 / 先锋两套风格下都要量（见下面那段探针）。`null` = 这一跑里没找到那张
+     * 「每日推荐」卡（例如没登录、推荐面空了），不进判定。
+     * 声明放这里（而不是和 `fumeOutroOk` 那一堆放一起）：那段文本位置在下面，会「先用后声明」。
+     */
+    let dailyOverlayOk: boolean | null = null;
+    const PL_CARD_SEL =
+      '.pi-plcard:not([data-daily-card]), [data-playlist-card], .pi-songcard:not([data-daily-card])';
     await clickNav(win, '推荐歌单');
     await delay(600);
     const gridDeadline = Date.now() + UI_SMOKE_TIMEOUT_MS / 2;
@@ -3047,7 +3443,8 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
       await delay(400);
     }
     const coverShot =
-      process.env.PI_SMOKE_UI_SHOT_COVERS ?? path.resolve(here, '../../../docs/m3r15-orb-plcards.png');
+      process.env.PI_SMOKE_UI_SHOT_COVERS ??
+      path.resolve(here, '../../../docs/m3r15-orb-plcards.png');
     writeFileSync(coverShot, (await win.webContents.capturePage()).toPNG());
     console.info(`[pi/smoke] 截图：${coverShot}`);
     const gridFirstName = (await win.webContents.executeJavaScript(
@@ -3064,6 +3461,265 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
       true,
     )) as string;
     const playlistPanelOk = gridCards > 0 && gridFirstName !== '';
+    /*
+     * **用户 m00341 第 2 条**：「（每日推荐歌单页）歌曲没有正常显示，底部也没有进度条部件」
+     * —— 平凡 / 先锋两套风格下都量一遍：点推荐面第一张「每日推荐」卡（`[data-daily-card]`，
+     * 平凡是 `.pi-plcard`、先锋是 `.pi-songcard` 哨兵卡），同一层浮层随即切到 `[data-songs="daily"]`。
+     *
+     * 量四件事：① 卡片上那个「N 首」（`data-daily-count`，来自 `/recommend/songs` 的曲目数）；
+     * ② 浮层里**真的渲染出来的**行数 / 拼贴格数；③ hero 的「N 首」与正文盒尺寸（0 高就是「没显示」）；
+     * ④ 底部那条进度条药丸在不在（`[data-collage-bar]`，`BottomBar` 挂的）。
+     * 平凡档是竖排列表（`.pi-songrow`）、先锋档是队列拼贴（`[data-collage-cell]`），两个都认。
+     */
+    const dailyEntry = (await win.webContents.executeJavaScript(
+      `(() => {
+        const card = document.querySelector('[data-daily-card]');
+        if (!(card instanceof HTMLElement)) return null;
+        const count = card.getAttribute('data-daily-count');
+        card.click();
+        return { count: count };
+      })()`,
+      true,
+    )) as { count: string | null } | null;
+    let daily = null as {
+      rows: number;
+      cells: number;
+      hero: string;
+      sub: string;
+      /** 抬头那张封面的 `naturalWidth`（-1 = 连 `<img>` 都没有；0 = 还没加载出来）。 */
+      heroCover: number;
+      placeholder: string;
+      sheet: string;
+      body: string;
+      firstRow: string;
+      listScroll: number;
+      nameColor: string;
+      bar: boolean;
+      barBox: string;
+      win: string;
+      overlayPos: string;
+      sheetInfo: string;
+      barInfo: string;
+      cls: string;
+      overlayBox: string;
+      overlayKids: string;
+      sheetCss: string;
+      fixedCtx: string;
+      sheetFits: boolean;
+      sheetIn: string;
+    } | null;
+    if (dailyEntry !== null) {
+      const dailyDeadline = Date.now() + UI_SMOKE_TIMEOUT_MS;
+      /* 入场动画（`pi-listoverlay-sheet-in` 0.34s，from = translateY(14px) scale(0.985)）没跑完时
+         量到的 top/height 都带那 0.985 倍缩放，会把「纸被推到底边之外」读成「纸在窗口里」。
+         所以数据一到就先让它落定再量第二遍。 */
+      let dailySettled = false;
+      while (Date.now() < dailyDeadline) {
+        daily = (await win.webContents.executeJavaScript(
+          `(() => {
+            const overlay = document.querySelector('.pi-listoverlay[data-songs="daily"]');
+            if (!(overlay instanceof HTMLElement)) return null;
+            const box = (el) => {
+              if (!(el instanceof HTMLElement)) return '无';
+              const r = el.getBoundingClientRect();
+              return Math.round(r.width) + 'x' + Math.round(r.height);
+            };
+            const ph = overlay.querySelector('.pi-placeholder');
+            const bar = document.querySelector('[data-collage-bar]');
+            const title = overlay.querySelector('.pi-songslist__title');
+            const sub = overlay.querySelector('.pi-page-sub');
+            /* 行「在不在」与行「看不看得见」是两件事：上一版只数 DOM 节点，量不到塌成 0 高 /
+               透明字的假显示。这里补上第一行的盒子、列表的滚动高度与首行标题的计算色。 */
+            const row = overlay.querySelector('.pi-songrow');
+            const list = overlay.querySelector('.pi-songlist__rows');
+            const name = overlay.querySelector('.pi-songrow__name');
+            return {
+              rows: overlay.querySelectorAll('.pi-songrow').length,
+              cells: overlay.querySelectorAll('[data-collage-cell]').length,
+              hero: title instanceof HTMLElement ? (title.textContent || '').trim() : '',
+              sub: sub instanceof HTMLElement ? (sub.textContent || '').trim() : '',
+              /* 用户第二十一轮第 2 条：抬头那张封面（每日推荐原来没有、只有占位图标）现在
+                 走前几首歌的专辑封面；这里读 naturalWidth（-1 = 连 img 都没有）。 */
+              heroCover: (function () {
+                const img = overlay.querySelector('.pi-songslist__cover');
+                if (img === null) return -1;
+                return img.naturalWidth || 0;
+              })(),
+              placeholder: ph instanceof HTMLElement ? (ph.textContent || '').trim().slice(0, 48) : '',
+              sheet: box(overlay.querySelector('.pi-listoverlay__sheet')),
+              body: box(overlay.querySelector('.pi-songslist__body')),
+              firstRow: box(row),
+              listScroll: list instanceof HTMLElement ? Math.round(list.scrollHeight) : 0,
+              nameColor: name instanceof HTMLElement ? getComputedStyle(name).color : '',
+              bar: bar instanceof HTMLElement,
+              barBox: box(bar),
+              /* 用户 m00597 第 2 条的真机取证：他截图里「♪ 每日推荐」落在窗口**左下角**。
+                 2026 版读数：窗 1182x772@1.25、纸盒 top=748 高=749（纸本高 760 × 0.985 入场缩放），
+                 即纸被推到窗口底边之外、只露顶栏那一条 —— 与用户图 2 一模一样，本机能复现。
+                 这里把「浮层自己的盒子 / 网格 / 每个子节点 / 祖先里谁建了 fixed 包含块」全量出来。 */
+              win: window.innerWidth + 'x' + window.innerHeight + '@' + window.devicePixelRatio
+                + ' scrollY=' + Math.round(window.scrollY)
+                + ' docH=' + document.documentElement.scrollHeight
+                + ' bodyH=' + document.body.scrollHeight,
+              overlayBox: (function () {
+                var r = overlay.getBoundingClientRect();
+                var s = getComputedStyle(overlay);
+                return Math.round(r.left) + ',' + Math.round(r.top) + ' '
+                  + Math.round(r.width) + 'x' + Math.round(r.height)
+                  + ' pad=' + s.padding + ' rows=' + s.gridTemplateRows
+                  + ' ai=' + s.alignItems + ' ac=' + s.alignContent
+                  + ' gap=' + s.rowGap + ' h=' + s.height;
+              })(),
+              overlayKids: Array.prototype.map.call(overlay.children, function (el) {
+                var r = el.getBoundingClientRect();
+                var s = getComputedStyle(el);
+                return (el.tagName + '.' + (el.className || '')).slice(0, 32)
+                  + '@' + Math.round(r.left) + ',' + Math.round(r.top)
+                  + ' ' + Math.round(r.width) + 'x' + Math.round(r.height) + '/' + s.position;
+              }).join(' ; ').slice(0, 420),
+              sheetCss: (function () {
+                var el = overlay.querySelector('.pi-listoverlay__sheet');
+                if (!(el instanceof HTMLElement)) return '无';
+                var s = getComputedStyle(el);
+                return 'h=' + s.height + ' m=' + s.margin + ' as=' + s.alignSelf
+                  + ' top=' + s.top + ' bottom=' + s.bottom
+                  + ' anim=' + s.animationName + '/' + s.animationDuration;
+              })(),
+              fixedCtx: (function () {
+                var out = [];
+                var el = overlay.parentElement;
+                while (el !== null) {
+                  var s = getComputedStyle(el);
+                  if (s.transform !== 'none' || s.filter !== 'none'
+                    || s.backdropFilter !== 'none' || s.perspective !== 'none'
+                    || s.willChange.indexOf('transform') >= 0
+                    || s.contain.indexOf('paint') >= 0) {
+                    var r = el.getBoundingClientRect();
+                    out.push((el.tagName + '.' + (el.className || '')).slice(0, 36)
+                      + '[top=' + Math.round(r.top) + ' h=' + Math.round(r.height)
+                      + ' tf=' + s.transform + ' f=' + s.filter
+                      + ' bf=' + s.backdropFilter + ' wc=' + s.willChange + ']');
+                  }
+                  el = el.parentElement;
+                }
+                return out.length === 0 ? '无（fixed 按视口算）' : out.join(' | ').slice(0, 520);
+              })(),
+              overlayPos: (function () {
+                var s = getComputedStyle(overlay);
+                return s.position + '/' + s.display + '/' + s.placeItems + '/' + s.overflow;
+              })(),
+              sheetInfo: (function () {
+                var el = overlay.querySelector('.pi-listoverlay__sheet');
+                if (!(el instanceof HTMLElement)) return '无';
+                var r = el.getBoundingClientRect();
+                var s = getComputedStyle(el);
+                return Math.round(r.left) + ',' + Math.round(r.top) + ' '
+                  + Math.round(r.width) + 'x' + Math.round(r.height)
+                  + ' pos=' + s.position + ' rows=' + s.gridTemplateRows
+                  + ' ac=' + s.alignContent + ' tf=' + s.transform;
+              })(),
+              barInfo: (function () {
+                var el = overlay.querySelector('.pi-songslist__bar');
+                if (!(el instanceof HTMLElement)) return '无';
+                var r = el.getBoundingClientRect();
+                var s = getComputedStyle(el);
+                return Math.round(r.left) + ',' + Math.round(r.top) + ' '
+                  + Math.round(r.width) + 'x' + Math.round(r.height)
+                  + ' pos=' + s.position + ' tx=«' + (el.textContent || '').trim().slice(0, 24) + '»';
+              })(),
+              /* 这一条是本轮（用户 m00597 第 2 条）真正的判据：纸在不在窗口里。
+                 之前只数 DOM 节点，于是「32 行都在、纸沉在窗口底边之外」这种假绿被判成 ✓。 */
+              sheetFits: (function () {
+                var el = overlay.querySelector('.pi-listoverlay__sheet');
+                if (!(el instanceof HTMLElement)) return false;
+                var r = el.getBoundingClientRect();
+                return r.top >= -1 && r.bottom <= window.innerHeight + 1
+                  && r.left >= -1 && r.right <= window.innerWidth + 1;
+              })(),
+              sheetIn: (function () {
+                var el = overlay.querySelector('.pi-listoverlay__sheet');
+                if (!(el instanceof HTMLElement)) return '无纸';
+                var r = el.getBoundingClientRect();
+                return 'top=' + Math.round(r.top) + ' bottom=' + Math.round(r.bottom)
+                  + ' 窗高=' + window.innerHeight;
+              })(),
+              cls: (document.documentElement.className + ' | ' + document.body.className).slice(0, 140),
+            };
+          })()`,
+          true,
+        )) as typeof daily;
+        if (daily !== null && (daily.rows + daily.cells > 0 || daily.placeholder !== '')) {
+          if (!dailySettled) {
+            dailySettled = true;
+            await delay(450);
+            continue;
+          }
+          break;
+        }
+        await delay(250);
+      }
+    }
+    if (dailyEntry === null) {
+      dailyOverlayOk = null;
+      console.info(
+        `[pi/smoke] 每日推荐歌单页（用户 m00341 第 2 条，风格=${wantStyle}）：没找到 [data-daily-card]` +
+          `（推荐面空 / 没登录），未跑`,
+      );
+    } else {
+      if (daily !== null) {
+        const dailyShot =
+          process.env.PI_SMOKE_UI_SHOT_DAILY ??
+          path.resolve(here, '../../../docs/m3r33-daily-plain.png');
+        writeFileSync(dailyShot, (await win.webContents.capturePage()).toPNG());
+        console.info(`[pi/smoke] 截图：${dailyShot}`);
+      }
+      dailyOverlayOk =
+        daily !== null && daily.rows + daily.cells > 0 && daily.bar && daily.sheetFits;
+      console.info(
+        `[pi/smoke] 每日推荐歌单页（用户 m00341 第 2 条，风格=${wantStyle}）：卡片标 N=${dailyEntry.count ?? '无'}` +
+          (daily === null
+            ? '｜浮层没开出来'
+            : `｜行=${daily.rows} 拼贴格=${daily.cells}｜hero=「${daily.hero}」/「${daily.sub}」` +
+              `（抬头封面=${daily.heroCover === -1 ? '没有 <img>' : daily.heroCover > 0 ? `${daily.heroCover}px 已加载` : '未加载'}）` +
+              `｜正文盒=${daily.body} 纸=${daily.sheet}` +
+              (daily.rows > 0
+                ? `｜首行=${daily.firstRow} 列表滚动高=${daily.listScroll} 歌名色=${daily.nameColor}`
+                : '') +
+              (daily.placeholder === '' ? '' : `｜占位文案=「${daily.placeholder}」`) +
+              `｜底部进度条=${daily.bar ? `有（${daily.barBox}）` : '没有'}` +
+              `｜纸在窗内=${daily.sheetFits ? '是' : `否（${daily.sheetIn}）`}` +
+              `｜窗=${daily.win}` +
+              `｜浮层=${daily.overlayPos}` +
+              `｜浮层盒=${daily.overlayBox}` +
+              `｜浮层子=${daily.overlayKids}` +
+              `｜纸盒=${daily.sheetInfo}` +
+              `｜纸样式=${daily.sheetCss}` +
+              `｜顶层=${daily.fixedCtx}` +
+              `｜顶栏=${daily.barInfo}` +
+              `｜类=«${daily.cls}»`) +
+          ` → ${dailyOverlayOk ? '✓' : '✗'}`,
+      );
+    }
+    // 关掉浮层，后面那一段还要在这张推荐面上点真歌单卡。
+    // **坑**：`openSongs` 会把 `nav` 拨回 `'home'`（`state/ui.ts:359`），所以关掉每日推荐浮层之后
+    // 人已经**不在推荐歌单页**了 —— 必须再点一次导航把那一页拉回来，否则下面
+    // 「点首卡进歌单详情」会因为页面上根本没有 `.pi-plcard` 而假红（第一版就是这个原因）。
+    await win.webContents.executeJavaScript(
+      `document.querySelector('.pi-listoverlay[data-song-list-overlay]')?.click()`,
+      true,
+    );
+    await delay(420);
+    await clickNav(win, '推荐歌单');
+    await delay(700);
+    const backDeadline = Date.now() + UI_SMOKE_TIMEOUT_MS / 2;
+    while (Date.now() < backDeadline) {
+      const back = (await win.webContents.executeJavaScript(
+        `document.querySelectorAll('${PL_CARD_SEL}').length`,
+        true,
+      )) as number;
+      if (back > 0) break;
+      await delay(300);
+    }
     /*
      * 用户 m02898 第 3 条之后，先锋档「推荐歌单」面卡片流的**第一张**是「每日推荐」哨兵卡
      * （`PlaylistCoverflowOverlay.tsx` 的 `data-daily-card`）。进歌单详情得先把它挪开一格，
@@ -3529,7 +4185,11 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
     // 双击窗口 `DOUBLE_CLICK_MS`（240ms，用户 m08066 第 2 条），否则这第二次补救点击
     // 会被当成双击——球去播放页，菜单照样开着，断言反而更难通过。
     let diveMid = await readDiveMid();
-    for (let attempt = 0; attempt < 3 && diveMid.closing !== 'true' && diveMid.items > 0; attempt += 1) {
+    for (
+      let attempt = 0;
+      attempt < 3 && diveMid.closing !== 'true' && diveMid.items > 0;
+      attempt += 1
+    ) {
       await win.webContents.executeJavaScript(
         `document.querySelector('.pi-orb__ball')?.click()`,
         true,
@@ -3906,6 +4566,78 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
      * 等 transform 回到 scale(1)（按钮）与 scale(1)（弹层），再量一次——那才是用户真正看到的
      * 相邻关系。顺带把「悬停不会把药丸撑长」也量进去（第十一轮第 3 条：长度不变、只多两个键）。
      */
+    /*
+     * 第二十轮第 1 条的读数容器：那颗 40px 播放键的图标是**圆角 + 厚实**的那一版吗。
+     * 写在 IIFE 外面是因为量的时机在里面（指针压着药丸、键真的可见），
+     * 但日志与总验收要在这段之后。
+     */
+    let iconProbeOk: boolean | null = null;
+    let iconProbeInfo = '没量到';
+    /*
+     * 第二十轮第 2 条的读数容器：静音时音量条那截滑块还涂不涂主色。
+     * 判据走**像素**（数截下来的方块里有多少个蓝点），不看选择器——
+     * 用户看到的就是那几个蓝点，`--pi-volume=0` 但滑块仍蓝正是他报的那个现象。
+     */
+    let muteBarOk: boolean | null = null;
+    let muteBarInfo = '没量到';
+    /*
+     * 第二十二轮第 3 条的读数容器：音量条**鼠标拖拽**跟不跟手、线不线性。
+     * 与上面那条静音/拖到底的探针同一个时机（指针压着音量键），分两处声明便于日志分行。
+     */
+    let volumeDragOk = false;
+    let volumeDragInfo = '没走到音量条悬停那一拍';
+    /*
+     * 第二十二轮第 1 / 2 / 4 条的三处读数容器（都在各自那一段里采样，日志与总闸在收尾处）。
+     * - `orbAccentOk`：换主色后**球心那个 PI**（`.pi-quick-orb__logo`）的渐变是否跟着换；
+     * - `accentPickerOk`：自定义档下面那块取色面板（方块 / 色相条 / 推荐色）在不在、点推荐色生不生效；
+     * - `quickAccentOk`：快捷设置卡「主题颜色」页里的主色栏（三档 + 自定义取色面板）；
+     * - `overlayArriveOk`：从**歌曲展示浮层**（歌单曲目 / 每日推荐那层）点底栏回播放页也要有过渡。
+     */
+    let orbAccentOk: boolean | null = null;
+    let orbAccentInfo = '未量';
+    let accentPickerOk: boolean | null = null;
+    let accentPickerInfo = '未量';
+    let quickAccentOk: boolean | null = null;
+    let quickAccentInfo = '未量';
+    let overlayArriveOk = false;
+    let overlayArriveInfo = '没走到歌曲展示浮层那一拍';
+
+    /** 截图里「蓝点」的个数。通道顺序不敏感：判的是「蓝那一侧明显强过另一侧」。 */
+    const countBluePixels = (image: NativeImage): number => {
+      const px = image.toBitmap();
+      const total = px.length / 4;
+      // 不拿 `getSize()` 去推 stride：这台机器是 125% 缩放，`capturePage` 交回来的是
+      // **物理像素**、而 crop 矩形是 DIP，两者算出来的宽高对不上（上一版就是这么记成 -1 的）。
+      // 这里只要颜色不要几何，直接扫整个缓冲区。
+      let blue = 0;
+      for (let i = 0; i < total; i += 1) {
+        const c0 = px[i * 4] ?? 0;
+        const c2 = px[i * 4 + 2] ?? 0;
+        const hi = Math.max(c0, c2);
+        const lo = Math.min(c0, c2);
+        if (hi - lo > 45 && hi > 90) blue += 1;
+      }
+      return blue;
+    };
+
+    /** 把截图矩形夹进窗口内容区（`capturePage` 越界会抛）。 */
+    const clampCrop = (rect: {
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+    }): { x: number; y: number; width: number; height: number } => {
+      const bounds = win.getContentBounds();
+      const x = Math.max(0, Math.min(Math.round(rect.x), Math.max(0, bounds.width - 1)));
+      const y = Math.max(0, Math.min(Math.round(rect.y), Math.max(0, bounds.height - 1)));
+      return {
+        x,
+        y,
+        width: Math.max(1, Math.min(Math.round(rect.width), bounds.width - x)),
+        height: Math.max(1, Math.min(Math.round(rect.height), bounds.height - y)),
+      };
+    };
+
     const barHoverInfo = await (async (): Promise<string> => {
       /*
        * 第十七轮第 6 条（用户 m00006）：音量条常态缩到 70%（弹层 16×84 → 16×59、滑杆布局
@@ -3928,7 +4660,12 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
        * 现在直接读**音量键那一层**（`.pi-home__volume`，34x36、不带 transform）的中心，
        * 两态都精确落在键心上；撑开与否仍然只看药丸**宽度**。
        */
-      const barRightBox = async (): Promise<{ x: number; y: number; right: number; width: number } | null> =>
+      const barRightBox = async (): Promise<{
+        x: number;
+        y: number;
+        right: number;
+        width: number;
+      } | null> =>
         (await win.webContents.executeJavaScript(
           `(() => {
             const bar = document.querySelector('.pi-home__bar');
@@ -4172,9 +4909,521 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
         )) as string;
       }
       console.info(`[pi/smoke] 音量条二次悬停（第十五轮第 9 条）：${popHover}`);
+      /*
+       * 第二十轮第 1 条（用户：「图 1、图 3 是我们暂停键的图标，我希望中间两个竖线应该像图 2、
+       * 三角标像图 4 那样」）。那四枚图标的圆角靠「内缩骨架 + `stroke-linejoin: round` 描边」
+       * 实现（见 `apps/renderer/src/components/Icons.tsx` 的 `ROUND_JOIN`），所以这里在
+       * **悬停态**（键真的可见）读一遍**渲染后**的 SVG：
+       * ① `stroke` 不能是 `none`——描边一关，圆弧就没了、又变回直角；
+       * ② `stroke-linejoin` 必须是 `round`；
+       * ③ `stroke-width` 必须是登记过的那三档（pause 3.8 / play 3.5 / prev、next 2.2）；
+       * ④ 骨架 `d` 要是内缩后的那几条（直角时代的 `M8.6 5h2.9v14H8.6z` 一律判红）。
+       * 顺带把这颗 40px 键拍一张特写（`docs/m3r20-play-icon.png`），报告里贴出来给主人对图。
+       */
+      const iconProbe = (await win.webContents.executeJavaScript(
+        `(() => {
+           const btn = document.querySelector('[data-home-play]');
+           if (btn === null) return null;
+           const svg = btn.querySelector('svg');
+           const skeleton = svg === null ? null : svg.querySelector('path');
+           const box = btn.getBoundingClientRect();
+           const cs = svg === null ? null : getComputedStyle(svg);
+           return {
+             w: Math.round(box.width),
+             h: Math.round(box.height),
+             stroke: cs === null ? '无' : cs.stroke,
+             width: cs === null ? '无' : cs.strokeWidth,
+             join: cs === null ? '无' : cs.strokeLinejoin,
+             d: skeleton === null ? '无' : (skeleton.getAttribute('d') || ''),
+             opacity: getComputedStyle(btn).opacity,
+             crop: {
+               x: Math.max(0, Math.round(box.left) - 4),
+               y: Math.max(0, Math.round(box.top) - 4),
+               width: Math.round(box.width) + 8,
+               height: Math.round(box.height) + 8,
+             },
+           };
+         })()`,
+        true,
+      )) as {
+        w: number;
+        h: number;
+        stroke: string;
+        width: string;
+        join: string;
+        d: string;
+        opacity: string;
+        crop: { x: number; y: number; width: number; height: number };
+      } | null;
+      if (iconProbe === null) {
+        iconProbeInfo = '没找到 [data-home-play]';
+      } else {
+        const painted = iconProbe.stroke !== 'none' && iconProbe.stroke !== '无';
+        const roundOk =
+          iconProbe.join === 'round' && ['3.8px', '3.5px', '2.2px'].includes(iconProbe.width);
+        const skeletonOk = ['M6.95', 'M7.69', 'M8.1', 'M15.9'].some((head) =>
+          iconProbe.d.startsWith(head),
+        );
+        iconProbeOk = painted && roundOk && skeletonOk && iconProbe.opacity === '1';
+        iconProbeInfo =
+          `键=${iconProbe.w}x${iconProbe.h} 不透明度=${iconProbe.opacity}` +
+          `｜描边=${iconProbe.stroke} / ${iconProbe.width} / ${iconProbe.join}` +
+          `｜骨架=${iconProbe.d}`;
+        if (iconProbe.crop.width > 8) {
+          const iconShot = path.resolve(here, '../../../docs/m3r20-play-icon.png');
+          writeFileSync(iconShot, (await win.webContents.capturePage(iconProbe.crop)).toPNG());
+          iconProbeInfo += `｜特写→${iconShot}`;
+        }
+      }
+      /*
+       * 第十九轮第 2 条（「静音了音量条显示不是到底」）+ 第二十轮第 1 条（「音量条手动调节调不到底」）：
+       * 同一个毛病 —— 滑块与「已播量」共用主色，`--pi-volume` 归零后滑块还蓝着。
+       *
+       * 根因与修法见 `apps/renderer/src/styles/global.css` 的
+       * `.pi-home__volrange[data-silent='true']::-webkit-slider-thumb`。这里量的是**像素**：
+       * 把音量弹层那一块截下来数蓝点，走三条路——① 点静音键；② **手动**把滑块拖到 0
+       * （原生 setter 改写 value 再派发 input，React 的 onChange 才认）；③ 拖回 80 还原。
+       * 三次都要求「比纯背景多出来的蓝点 ≈ 0 / 或回到几百点」。点静音走程序化 `.click()`、
+       * 拖拽走合成事件，指针都不动 ⇒ 弹层一直可见、hover 档位不变，几张截图可比。
+       */
+      const readVolumeState = async (): Promise<{
+        silent: string;
+        volume: string;
+      } | null> =>
+        (await win.webContents.executeJavaScript(
+          `(() => {
+             const range = document.querySelector('[data-home-volrange]');
+             if (!(range instanceof HTMLElement)) return null;
+             return {
+               silent: range.dataset.silent || '',
+               volume: getComputedStyle(range).getPropertyValue('--pi-volume').trim(),
+             };
+           })()`,
+          true,
+        )) as { silent: string; volume: string } | null;
+      /*
+       * 把音量拨到某个比例（0–1）。
+       *
+       * 第二十二轮第 3 条之后音量条是**自己接指针**的 `components/VolumeSlider.tsx`（不再是原生
+       * `<input type=range>`），所以这里改成「在条上按一下」——它按指针高度线性取值，
+       * 于是这一步同时也验了落点映射（原来那个 `value` setter 的写法对 div 已经不适用）。
+       */
+      const setVolumeAt = async (fraction: number): Promise<boolean> => {
+        const box = (await win.webContents.executeJavaScript(
+          `(() => {
+             const el = document.querySelector('[data-home-volrange]');
+             if (!(el instanceof HTMLElement)) return null;
+             const r = el.getBoundingClientRect();
+             return { x: Math.round(r.left + r.width / 2), bottom: r.bottom, height: r.height };
+           })()`,
+          true,
+        )) as { x: number; bottom: number; height: number } | null;
+        if (box === null || box.height <= 0) return false;
+        await clickPoint(win, box.x, Math.round(box.bottom - box.height * fraction));
+        return true;
+      };
+      const volBox = (await win.webContents.executeJavaScript(
+        `(() => {
+           const pop = document.querySelector('[data-home-volpop]');
+           const range = document.querySelector('[data-home-volrange]');
+           if (!(pop instanceof HTMLElement) || !(range instanceof HTMLElement)) return null;
+           const r = pop.getBoundingClientRect();
+           return {
+             x: Math.round(r.left),
+             y: Math.round(r.top),
+             width: Math.round(r.width),
+             height: Math.round(r.height),
+           };
+         })()`,
+        true,
+      )) as { x: number; y: number; width: number; height: number } | null;
+      const clickMute = async (): Promise<void> => {
+        await win.webContents.executeJavaScript(
+          `(() => {
+             const btn = document.querySelector('[data-home-volbtn]');
+             if (btn instanceof HTMLElement) btn.click();
+             return true;
+           })()`,
+          true,
+        );
+        await delay(320);
+      };
+      if (volBox === null || volBox.width < 4 || volBox.height < 4) {
+        muteBarInfo = '没量到音量弹层';
+      } else {
+        /*
+         * 先量一遍「弹层现在到底可不可见」再数蓝点（第二十二轮补的自诊断）：
+         * 上一跑六个数全是 0，包括本该有几百个蓝点的「拖回 80 后」——那种「全 0」既可能是
+         * 音量真的是 0，也可能是弹层根本没浮出来（`opacity: 0` + `pointer-events: none`，
+         * 那样连真的鼠标拖拽都进不去）。把 opacity / pointer-events / 命中元素 / 键 hover
+         * 一起读出来，下一次就不会再猜。
+         */
+        const popState = (await win.webContents.executeJavaScript(
+          `(() => {
+             const pop = document.querySelector('[data-home-volpop]');
+             const range = document.querySelector('[data-home-volrange]');
+             const key = document.querySelector('[data-home-volume]');
+             if (!(pop instanceof HTMLElement)) return null;
+             const r = pop.getBoundingClientRect();
+             const cs = getComputedStyle(pop);
+             const hit = document.elementFromPoint(
+               Math.round(r.left + r.width / 2),
+               Math.round(r.top + r.height / 2),
+             );
+             return {
+               opacity: cs.opacity,
+               pointer: cs.pointerEvents,
+               box:
+                 Math.round(r.left) + ',' + Math.round(r.top) + ' ' +
+                 Math.round(r.width) + 'x' + Math.round(r.height),
+               hover: key instanceof HTMLElement ? key.matches(':hover') : false,
+               hit: hit === null ? 'null' : String(hit.className || hit.tagName).slice(0, 40),
+               volume:
+                 range instanceof HTMLElement
+                   ? getComputedStyle(range).getPropertyValue('--pi-volume').trim()
+                   : '?',
+             };
+           })()`,
+          true,
+        )) as {
+          opacity: string;
+          pointer: string;
+          box: string;
+          hover: boolean;
+          hit: string;
+          volume: string;
+        } | null;
+        const popShownOk = popState !== null && Number(popState.opacity) > 0.9;
+        const cropBox = clampCrop(volBox);
+        /*
+         * 先把音量拨到一个**已知值**再开始量：音量是落盘的偏好，上一次冒烟如果在「拖到 0」
+         * 那一步被打断（我这边就干过一次：杀掉冒烟进程，存档停在 volume=0），
+         * 这一跑开局就是「空的音量条」——`静音前那截蓝` 自然是 0，三条断言里两条无从比较。
+         * 所以不假设起点，自己把起点摆好。
+         */
+        await setVolumeAt(0.8);
+        await delay(420);
+        const blueBefore = countBluePixels(await win.webContents.capturePage(cropBox));
+        await clickMute();
+        const afterMute = await readVolumeState();
+        const blueMuted = countBluePixels(await win.webContents.capturePage(cropBox));
+        await clickMute();
+        const blueBack = countBluePixels(await win.webContents.capturePage(cropBox));
+        // ② 手动拖到底（第二十轮第 1 条）。
+        const dragged = await setVolumeAt(0);
+        await delay(340);
+        const afterDrag = await readVolumeState();
+        const blueZero = countBluePixels(await win.webContents.capturePage(cropBox));
+        // ③ 拖回 80 还原，后面几条探针（音量两级悬停、进度条）还要用这个音量。
+        await setVolumeAt(0.8);
+        await delay(340);
+        const afterRestore = await readVolumeState();
+        const blueRestored = countBluePixels(await win.webContents.capturePage(cropBox));
+        /*
+         * 底色基线：音量弹层是**裸容器**（没有自己的底色），它背后就是沉浸式封面那层背景，
+         * 而封面本身可能是蓝的。所以判据不能是「归零后蓝点 = 0」，而是
+         * 「归零后**比纯背景多出来的**蓝点 ≈ 0」。把指针挪开让它淡出（0.2s）再截同一块矩形，
+         * 得到的就是「这块地方本来有多少蓝」。
+         */
+        win.webContents.sendInputEvent({ type: 'mouseMove', x: 20, y: 320 });
+        await delay(460);
+        const blueBg = countBluePixels(await win.webContents.capturePage(cropBox));
+        const blueExtraMuted = blueMuted - blueBg;
+        const blueExtraZero = blueZero - blueBg;
+        const fillBlue = blueBefore - blueBg;
+        /*
+         * 归零后「多出来的蓝」要远小于「已播填充那截蓝」：滑块还在蓝的话，它自己就有
+         * 26.6×4（CSS px，125% 缩放下还要乘 1.56）那么一片 ≈ 160 个蓝点，远超这条线。
+         * 门槛取「填充的 15%」而不是死数 6：沉浸式背景是**会缓慢动**的，同一块矩形两次截图的
+         * 背景蓝点数本来就会有几十个点的起伏，写死 6 会把这种起伏判成红。
+         */
+        const muteLimit = Math.max(6, fillBlue * 0.15);
+        muteBarOk =
+          // 弹层必须真的浮着：不然像素全 0 也能「凑」出静音后的 0 蓝点，那是假绿。
+          popShownOk &&
+          afterMute !== null &&
+          afterMute.silent === 'true' &&
+          afterMute.volume === '0.0000' &&
+          blueExtraMuted <= muteLimit &&
+          dragged &&
+          afterDrag !== null &&
+          afterDrag.silent === 'true' &&
+          afterDrag.volume === '0.0000' &&
+          blueExtraZero <= muteLimit &&
+          afterRestore !== null &&
+          // 复原后**不能**还是静音档：`data-silent={false}` 渲染成 `data-silent="false"`（React 对
+          // data-* 会字符串化），但也可能整条属性被省掉，所以这里判「不是 true」而不是「等于 false」。
+          afterRestore.silent !== 'true' &&
+          blueRestored - blueBg > 40 &&
+          fillBlue > 40 &&
+          blueBack - blueBg > 40;
+        muteBarInfo =
+          `弹层 不透明度=${popState === null ? '读不到' : popState.opacity}` +
+          ` 指针=${popState === null ? '?' : popState.pointer} 命中=${popState === null ? '?' : popState.hit}` +
+          ` 键hover=${popState === null ? '?' : popState.hover} 盒=${popState === null ? '?' : popState.box}` +
+          ` 值=${popState === null ? '?' : popState.volume}` +
+          `｜蓝点：静音前=${blueBefore} 静音后=${blueMuted} 还原后=${blueBack} 纯背景=${blueBg}` +
+          `｜拖到 0 后=${blueZero}（多出 ${blueExtraZero} 个，上限 ${Math.round(muteLimit)}）` +
+          ` 拖回 80 后=${blueRestored}（填充那截蓝 ${fillBlue} 个）` +
+          `｜静音态 data-silent=${afterMute === null ? '读不到' : afterMute.silent || '无'}` +
+          ` 音量态 data-silent=${afterDrag === null ? '读不到' : afterDrag.silent || '无'}` +
+          ` --pi-volume=${afterDrag === null ? '读不到' : afterDrag.volume}`;
+      }
+      /*
+       * 用户第二十二轮第 3 条（「音量条不能用鼠标线性调节，修正一下」）。
+       *
+       * 这一条踩了一个**测量方法的坑**，记下来：Chromium 的原生滑块只认**可信**（trusted）鼠标事件，
+       * 而 `sendInputEvent` 合成的 `mouseMove` 不携带按键掩码（`buttons=0`），于是
+       * 「按住往下拖」永远驱动不了它——实测十步读数全是 0.00，看起来像滑块坏了，
+       * 其实那一跑里**真机鼠标是好的**（同一段里「点击落点 → 值」的跳转是好的）。
+       * 所以这里改量两件**合成输入能验**的事：
+       *
+       * ① **落点 → 值**的线性：在弹层长度的 0% / 25% / 50% / 75% / 100% 处各按一下再抬起，
+       *    读回 `--pi-volume`，要求四个台阶均匀（偏差 ≤0.08）。
+       * ② **拖动锁**（这一轮针对真机鼠标补的修法）：按下不该因为指针滑出那条 16px 窄条就把滑块
+       *    「甩掉」——按下后 `data-dragging=true` 且弹层保持 `opacity 1 / pointer-events auto`，
+       *    指针移到条外 220px 仍然如此，抬手后交还给 `:hover`（回到隐藏）。
+       */
+      if (await hoverVolumeKey()) {
+        await delay(340);
+        const dragBox = (await win.webContents.executeJavaScript(
+          `(() => {
+             const pop = document.querySelector('[data-home-volpop]');
+             const range = document.querySelector('[data-home-volrange]');
+             if (!(pop instanceof HTMLElement) || !(range instanceof HTMLElement)) return null;
+             const p = pop.getBoundingClientRect();
+             const r = range.getBoundingClientRect();
+             return {
+               x: Math.round(p.left + p.width / 2),
+               bottom: Math.round(p.bottom - 3),
+               top: Math.round(p.top + 3),
+               range: Math.round(r.left) + ',' + Math.round(r.top) + ' ' +
+                 Math.round(r.width) + 'x' + Math.round(r.height),
+             };
+           })()`,
+          true,
+        )) as { x: number; bottom: number; top: number; range: string } | null;
+        const readVol = async (): Promise<number> =>
+          (await win.webContents.executeJavaScript(
+            `(() => {
+               const range = document.querySelector('[data-home-volrange]');
+               if (!(range instanceof HTMLElement)) return -1;
+               return Number(getComputedStyle(range).getPropertyValue('--pi-volume')) || 0;
+             })()`,
+            true,
+          )) as number;
+        const readPop = async (): Promise<{
+          dragging: string;
+          opacity: string;
+          pointer: string;
+        } | null> =>
+          (await win.webContents.executeJavaScript(
+            `(() => {
+               const wrap = document.querySelector('[data-home-volume]');
+               const pop = document.querySelector('[data-home-volpop]');
+               if (!(wrap instanceof HTMLElement) || !(pop instanceof HTMLElement)) return null;
+               const cs = getComputedStyle(pop);
+               return {
+                 dragging: wrap.dataset.dragging || '',
+                 opacity: cs.opacity,
+                 pointer: cs.pointerEvents,
+               };
+             })()`,
+            true,
+          )) as { dragging: string; opacity: string; pointer: string } | null;
+        if (dragBox === null || dragBox.bottom - dragBox.top < 20) {
+          volumeDragInfo = '没量到音量弹层（或太短）';
+        } else {
+          /*
+           * ① **真按真拖**：压到弹层底端按下，分 10 步拖到顶端，每步读一次 `--pi-volume`。
+           * 这一条现在是**能量出来**的：音量条换成了自己接指针的 `components/VolumeSlider.tsx`，
+           * 它跑在普通的 pointer 事件上（原生 `<input type=range>` 只认可信鼠标事件，
+           * 合成 `mouseMove` 驱动不了它，见组件里的注释）。
+           * 判据：跟手（单调不降）+ 线性（每步 ≈ +0.1，偏差 ≤0.06）+ 两端到位（≤0.10 / ≥0.90）。
+           */
+          const trace: number[] = [];
+          win.webContents.sendInputEvent({ type: 'mouseMove', x: dragBox.x, y: dragBox.bottom });
+          await delay(180);
+          win.webContents.sendInputEvent({
+            type: 'mouseDown',
+            x: dragBox.x,
+            y: dragBox.bottom,
+            button: 'left',
+            clickCount: 1,
+          });
+          await delay(180);
+          // 按下之后指针落在弹层里，弹层会长到满档 1.9——重新量一次盒子，拖拽目标按新盒子算。
+          const heldBox = (await win.webContents.executeJavaScript(
+            `(() => {
+               const el = document.querySelector('[data-home-volrange]');
+               if (!(el instanceof HTMLElement)) return null;
+               const r = el.getBoundingClientRect();
+               return { bottom: r.bottom, top: r.top };
+             })()`,
+            true,
+          )) as { bottom: number; top: number } | null;
+          const dragTop = Math.round(heldBox?.top ?? dragBox.top);
+          const dragBottom = Math.round(heldBox?.bottom ?? dragBox.bottom);
+          trace.push(await readVol());
+          for (let step = 1; step <= 10; step += 1) {
+            const y = Math.round(dragBottom + ((dragTop - dragBottom) * step) / 10);
+            win.webContents.sendInputEvent({ type: 'mouseMove', x: dragBox.x, y });
+            await delay(90);
+            trace.push(await readVol());
+          }
+          win.webContents.sendInputEvent({
+            type: 'mouseUp',
+            x: dragBox.x,
+            y: dragTop,
+            button: 'left',
+            clickCount: 1,
+          });
+          await delay(220);
+          const monotonic = trace.every(
+            (value, index) => index === 0 || value >= (trace[index - 1] as number) - 0.001,
+          );
+          const targets = trace.map((_, index) => index / 10);
+          const maxDeviation = Math.max(
+            ...trace.map((value, index) => Math.abs(value - (targets[index] as number))),
+          );
+          const dragOk =
+            monotonic &&
+            maxDeviation <= 0.06 &&
+            trace[0] === 0 &&
+            (trace[trace.length - 1] as number) >= 0.9;
+          /*
+           * ② 拖动锁：按下 → 指针滑出那条 16px 窄条 → 弹层仍浮着可继续拖 → 抬手恢复。
+           * （真机鼠标拖到一半滑出窄条时，弹层原来会立刻 `pointer-events: none` 把滑块「甩掉」。）
+           */
+          win.webContents.sendInputEvent({
+            type: 'mouseMove',
+            x: dragBox.x,
+            y: dragBox.bottom - 6,
+          });
+          await delay(200);
+          win.webContents.sendInputEvent({
+            type: 'mouseDown',
+            x: dragBox.x,
+            y: dragBox.bottom - 6,
+            button: 'left',
+            clickCount: 1,
+          });
+          await delay(200);
+          const held = await readPop();
+          win.webContents.sendInputEvent({
+            type: 'mouseMove',
+            x: dragBox.x + 220,
+            y: dragBox.bottom - 6,
+          });
+          await delay(300);
+          const outside = await readPop();
+          win.webContents.sendInputEvent({
+            type: 'mouseUp',
+            x: dragBox.x + 220,
+            y: dragBox.bottom - 6,
+            button: 'left',
+            clickCount: 1,
+          });
+          await delay(460);
+          const released = await readPop();
+          const dragLockOk =
+            held !== null &&
+            held.dragging === 'true' &&
+            outside !== null &&
+            outside.dragging === 'true' &&
+            Number(outside.opacity) > 0.9 &&
+            outside.pointer === 'auto' &&
+            released !== null &&
+            // 抬手后交还给 `:hover`（指针已在条外 ⇒ 淡出）。`data-dragging` 必须是 false/缺省。
+            released.dragging !== 'true';
+          /*
+           * **用户第二十三轮第 1 条**（图 1：「鼠标拖拽移到底部上面仍有残余显示」）。
+           *
+           * 真因：滑块原来是独立一支 14px 的胶囊，左端按 `--pi-volume × (轨道 − 滑块)` 定位 ——
+           * 填充只有 `--pi-volume × 轨道`，于是音量低于 14/59 ≈ 24% 时滑块**一定探出填充之外**
+           * （5% 时探出十几像素，就是一截主色块翘在已经到底的音量条外面）。
+           * 现在滑块是填充的伪元素、宽度取 `min(14px, 100%)` ⇒ **滑块永远不长过填充**。
+           * 判据就在这里量：两个音量档下，滑块的**计算宽度**都必须 ≤ max(3, 填充长度) + 0.6px。
+           * （用计算值而不是截图：这台机器 125% 缩放，像素与 DIP 混着算正是以前的坑。）
+           */
+          const readThumbFit = async (): Promise<{
+            volume: number;
+            track: number;
+            thumb: number;
+          } | null> =>
+            (await win.webContents.executeJavaScript(
+              `(() => {
+                 const root = document.querySelector('[data-home-volrange]');
+                 const fill = document.querySelector('.pi-home__volrange-fill');
+                 if (!(root instanceof HTMLElement) || !(fill instanceof HTMLElement)) return null;
+                 return {
+                   volume: Number(getComputedStyle(root).getPropertyValue('--pi-volume')) || 0,
+                   track: root.offsetWidth,
+                   thumb: Number.parseFloat(getComputedStyle(fill, '::after').width) || 0,
+                 };
+               })()`,
+              true,
+            )) as { volume: number; track: number; thumb: number } | null;
+          const fits: string[] = [];
+          let thumbFitOk = true;
+          for (const fraction of [0.06, 0.5]) {
+            // 每档都先把指针压回音量键：上一步「拖动锁」把指针挪到条外，弹层已经淡下去了。
+            if (!(await hoverVolumeKey())) {
+              thumbFitOk = false;
+              fits.push(`${Math.round(fraction * 100)}% 弹层没浮起来`);
+              continue;
+            }
+            await delay(320);
+            await setVolumeAt(fraction);
+            await delay(280);
+            const probe = await readThumbFit();
+            if (probe === null) {
+              thumbFitOk = false;
+              fits.push(`${Math.round(fraction * 100)}% 读不到`);
+              continue;
+            }
+            const fillPx = probe.volume * probe.track;
+            const fitsOk = probe.thumb <= Math.max(3, fillPx) + 0.6;
+            if (!fitsOk) thumbFitOk = false;
+            fits.push(
+              `${Math.round(fraction * 100)}% 音量=${probe.volume.toFixed(2)} 填充=${fillPx.toFixed(1)}px` +
+                ` 滑块=${probe.thumb.toFixed(1)}px${fitsOk ? '' : ' ←探出'}`,
+            );
+          }
+          volumeDragOk = dragOk && dragLockOk && thumbFitOk;
+          volumeDragInfo =
+            `弹层 ${dragBottom}→${dragTop}（滑杆 ${dragBox.range}）` +
+            `｜10 步拖拽的值=${trace.map((value) => value.toFixed(2)).join(',')}` +
+            ` 跟手=${monotonic} 最大偏差=${maxDeviation.toFixed(3)}（要求 ≤0.06）` +
+            ` 起=${(trace[0] as number).toFixed(2)}（要求 =0.00）` +
+            ` 末=${(trace[trace.length - 1] as number).toFixed(2)}（≥0.90）` +
+            `｜拖动锁：按下=${held === null ? '?' : `${held.dragging}/${held.opacity}`}` +
+            ` 指针移到条外=${outside === null ? '?' : `${outside.dragging}/${outside.opacity}/${outside.pointer}`}` +
+            ` 抬手后=${released === null ? '?' : released.dragging || '未锁'} → ${dragLockOk ? '✓' : '✗'}` +
+            `｜滑块不探出：${fits.join('、')} → ${thumbFitOk ? '✓' : '✗'}`;
+          // 落到 100% 了：拨回 80 交还给后面的探针（音量两级悬停 / 进度条还要用）。
+          await setVolumeAt(0.8);
+          await delay(300);
+        }
+      } else {
+        volumeDragInfo = '压不到音量键上（悬停没起来）';
+      }
       return info + ' 二次悬停=' + popHover;
     })();
     console.info(`[pi/smoke] 进度条悬停态（第十二轮第 5 条）：${barHoverInfo}`);
+    console.info(
+      `[pi/smoke] 播放键图标圆角（用户第二十轮第 1 条）：${iconProbeInfo} ${
+        iconProbeOk ? '✓' : '✗'
+      }`,
+    );
+    console.info(
+      `[pi/smoke] 静音时音量条到底（用户第二十轮第 2 条）：${muteBarInfo} ${muteBarOk ? '✓' : '✗'}`,
+    );
+    console.info(
+      `[pi/smoke] 音量条鼠标线性拖拽（用户第二十二轮第 3 条）：${volumeDragInfo} ${
+        volumeDragOk ? '✓' : '✗'
+      }`,
+    );
     // 量完把指针挪回舞台偏上，恢复静止态——后面的截图与探针不该看到一个「悬停中」的进度条。
     win.webContents.sendInputEvent({ type: 'mouseMove', x: 20, y: 320 });
     await delay(420);
@@ -4835,17 +6084,22 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
     const idleAfter = await idleRead();
     // 第十轮第 3 条（用户 m02362）：「进度条去掉隐藏」——静置时进度条**不该**淡出，
     // 所以这里判 1.00（原来判 0.00）。藏起来的只剩名片（第十六轮删球，球那一件退休）。
-    const idleHiddenOk = idleBefore.idle === 'true' && idleBefore.card === '0.00' && idleBefore.bar === '1.00';
+    const idleHiddenOk =
+      idleBefore.idle === 'true' && idleBefore.card === '0.00' && idleBefore.bar === '1.00';
     // 第十六轮删球：原来还有「只有被指到的那一件自己回来」，球那一件退休，只剩进度条/名片两件。
     const idleWakeOk =
-      onBar.bar === '1.00' && onBar.card === '0.00' && onCard.card === '1.00' && onCard.bar === '1.00';
+      onBar.bar === '1.00' &&
+      onBar.card === '0.00' &&
+      onCard.card === '1.00' &&
+      onCard.bar === '1.00';
     /*
      * 第十七轮第 7 条（用户 m00006）：名片**常态隐藏**，只有「指针接近」或「刚切完歌」才从底部
      * 冒出来。所以收工（指针挪回角落 8,8、离名片很远）之后判的不再是名片回到 1.00，而是它
      * **继续藏着**；进度条照旧常驻不淡出（第十轮第 3 条）。
      */
     const idleRestoredOk = idleAfter.card === '0.00' && idleAfter.bar === '1.00';
-    const hs = (o: IdleSnap): string => `${o.cardHover ? 1 : 0}${o.barHover ? 1 : 0}${o.orbHover ? 1 : 0}`;
+    const hs = (o: IdleSnap): string =>
+      `${o.cardHover ? 1 : 0}${o.barHover ? 1 : 0}${o.orbHover ? 1 : 0}`;
     console.info(
       `[pi/smoke] 无操作自动隐藏（第十六轮删球：球那一件退休）：静置 data-idle=${idleBefore.idle} 框=${idleBefore.frame}` +
         ` 名片/进度条=${idleBefore.card}/${idleBefore.bar} hover=${hs(idleBefore)}（名片 0.00、进度条 1.00 才算对）` +
@@ -4895,7 +6149,13 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
           };
         })()`,
         true,
-      )) as { view: string; following: string; active: string; time: number; row: { index: number; at: number[] } | null };
+      )) as {
+        view: string;
+        following: string;
+        active: string;
+        time: number;
+        row: { index: number; at: number[] } | null;
+      };
     /*
      * 原来这里有一个 `rollBackAndClickRow`（先滚轮往回滚 3 行、再真点显示的那一行）。**用户 m01402
      * 第 7 条**把流光的滚轮浏览整个拿掉之后它就没法用了：滚轮再也移不动 view，`steppedBack` 恒为 0。
@@ -4972,9 +6232,21 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
         const clickY = afterWheel.row.at[1]!;
         win.webContents.sendInputEvent({ type: 'mouseMove', x: clickX, y: clickY });
         await delay(140);
-        win.webContents.sendInputEvent({ type: 'mouseDown', x: clickX, y: clickY, button: 'left', clickCount: 1 });
+        win.webContents.sendInputEvent({
+          type: 'mouseDown',
+          x: clickX,
+          y: clickY,
+          button: 'left',
+          clickCount: 1,
+        });
         await delay(70);
-        win.webContents.sendInputEvent({ type: 'mouseUp', x: clickX, y: clickY, button: 'left', clickCount: 1 });
+        win.webContents.sendInputEvent({
+          type: 'mouseUp',
+          x: clickX,
+          y: clickY,
+          button: 'left',
+          clickCount: 1,
+        });
       }
       await delay(1100);
       const afterClick = await lyricClickRead();
@@ -4993,6 +6265,65 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
           `（历时 ${elapsed}ms 走播 ${advance}ms，落差 ${advance - elapsed}ms，不许跳）` +
           `｜following=${afterClick.following}（要求不变）｜${blockedOk ? '✓' : '✗'}`,
       );
+    }
+
+    /*
+     * **用户第 6 轮第 3 条**（原话：「底部进度条可以连续按左右快捷键调节进度」）。
+     *
+     * 判据：把焦点放到**底部进度条**上（`input[data-home-progress]`，它是个 `range`），按住 → 0.8s 后松开，
+     * 进度至少要前进 8s。这个门槛把两种实现分开：
+     *   · 全局快捷键（`ShortcutLayer`）：点一下 5s + 按住 15 倍速 ⇒ 0.8s 约 17s ✔；
+     *   · 浏览器原生 range 步进（`step=100`，按系统重复速率）：0.8s 约 2~3s，且一格一格 ✗。
+     * 修法见 `ShortcutLayer`：`range` + `data-home-progress` 时不吃「输入框让位」那条。
+     */
+    {
+      const barState = (await win.webContents.executeJavaScript(
+        `(async () => {
+           const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+           const bar = document.querySelector('input[data-home-progress]');
+           const audio = window.__piAudio;
+           if (!(bar instanceof HTMLInputElement) || !audio) return null;
+           const duration = Number(bar.max);
+           if (!(duration > 0)) return null;
+           // 退到离曲尾 90s 以上的位置：按住 0.8s 不会撞到曲尾（撞底会让判据失真）。
+           const start = Math.max(0, Math.min(audio.currentTime * 1000, duration - 90000));
+           audio.currentTime = start / 1000;
+           await sleep(400);
+           bar.focus();
+           return {
+             before: Number(bar.value),
+             focused: document.activeElement === bar,
+             duration: duration,
+           };
+         })()`,
+        true,
+      )) as { before: number; focused: boolean; duration: number } | null;
+      if (barState === null) {
+        console.info(
+          '[pi/smoke] 进度条方向键连按（用户第 6 轮第 3 条）：没量到（没有进度条 / 没有歌）',
+        );
+      } else {
+        win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Right' });
+        await delay(800);
+        win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Right' });
+        await delay(200);
+        const after = (await win.webContents.executeJavaScript(
+          `(() => {
+             const bar = document.querySelector('input[data-home-progress]');
+             if (!(bar instanceof HTMLInputElement)) return null;
+             bar.blur();
+             return Number(bar.value);
+           })()`,
+          true,
+        )) as number | null;
+        const moved = after === null ? 0 : after - barState.before;
+        const holdOk = barState.focused && moved >= 8000;
+        console.info(
+          `[pi/smoke] 进度条方向键连按（用户第 6 轮第 3 条）：进度条拿到焦点=${barState.focused ? '是' : '否'}` +
+            `｜按住 800ms：${String(barState.before)}ms → ${after === null ? '?' : String(after)}ms（前进 ${String(moved)}ms）` +
+            `（全局快捷键 ≈ 17s；原生 100ms 步进只有 2~3s） → ${holdOk ? '✓' : '✗'}`,
+        );
+      }
     }
 
     /*
@@ -5517,6 +6848,13 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
      * 两张完全一样 = 没有逐帧重绘（不转），不一样 = 表盘在动。
      */
     let pendoloGearOk: boolean | null = null;
+    /**
+     * **用户第 11 轮第 3 条**：时计小齿轮「一句歌词转过一个槽」（每句档数 ≈ 1，不是 4~8）。
+     */
+    let pendoloSlotOk: boolean | null = null;
+    /** **用户第 11 轮第 1 条**：心象的常态墨色 = 流光那一支 `--pi-lyric-ink`。 */
+    let cadenzaInkOk: boolean | null = null;
+    let cadenzaInkInfo = '未跑';
     /*
      * 第十四轮第 6 条（用户 m05281）：云阶要「不同行不同字号 + 当前句高亮放大 + 行错位减小」。
      * 前两件在成品图上能量死（词间到底有没有空格、当前块是不是最大的），错位上下界是用户
@@ -5525,6 +6863,15 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
     let partitaSpaceOk: boolean | null = null;
     let partitaSizeOk: boolean | null = null;
     /*
+     * **用户第 5 轮第 3 条**（原话：「同一面的不同引导线的歌词应该提前划好位置，而不是后出现的歌词
+     * 干扰到已经出现的歌词。并且不同行之间的歌词高光切换要流畅，一次只能有一个字是高光」）。
+     *
+     * 判据两条，同时量：**同一行内**每块的 `--pi-chunk-x/y` 不许变过（位置提前划定）；
+     * 同一时刻「挂在强调色上」的块数 ≤ 1（高光交接是接力，不是两块同时亮）。
+     * null = 这轮没拍云阶成品图。
+     */
+    let partitaHandoffOk: boolean | null = null;
+    /*
      * 第十五轮第 4 条（用户 m06435）：所有歌词常态白、只有高亮那一句带主题色、
      * 且颜色要「逐渐淡去」。判据：常态（waiting/passed）字色 == 舞台那支
      * `--pi-lyric-ink`（本轮解析出来是 rgb(255,255,255)），高亮字色与它不同，
@@ -5532,11 +6879,87 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
      */
     let lyricInkOk: boolean | null = null;
     /*
-     * 第十五轮第 5 条：流光「冒出来的字要带上一定旋转」。静态角进不去判定（等唱的字本来
-     * 就带角），所以看**正在冒出来的字**的 computed `animation-name` 是不是那条
-     * `pi-lyricstage-word-spin-in` 关键帧——只有 active + 开了开关才挂得上。
+     * 第十五轮第 5 条：流光「冒出来的字要带上一定旋转」。
+     * **用户本轮第 2 条**把整支入场关键帧换成了三态模型，旋转改挂**独立属性 `rotate`**，
+     * 所以判据从「computed `animation-name` 是不是那条关键帧」换成「正在唱的那个字身上
+     * 读得到一个非 0 的 `rotate`」—— 同一件事，换了读数。
      */
     let spinInOk: boolean | null = null;
+    /*
+     * **用户本轮第 2 条（第二遍）**：流光「一行排成一个句子」的量化判据 ——
+     * 当前行里看得见的词，包围盒下沿的跨度 ÷ 字高（目标图量得 1.83，chaotic 那版 3.4）。
+     * 判据写在测量处。
+     */
+    let classicScatterOk: boolean | null = null;
+    /*
+     * 用户 m04987 第 1 条：①流光里英文要**按整词**成组（不是一个字母一个字素地冒）；
+     * ②高亮字要带图 1 那样的外辉光。只在拍主题成品图那一跑量（`null` 不进判定）。
+     * 判据见测量处（几何法判「英文被拆开」，再看高亮字的 `text-shadow`）。
+     */
+    let lyricWordOk: boolean | null = null;
+    let lyricWordInfo = '未跑';
+    /*
+     * **用户本轮第 2 条**：「高亮过去后恢复原大小」+「过渡动画都是流畅自然的」——
+     * 量「刚唱过」那颗字从放大缩回 1 的那一段（见下面那段探针的注释：`both` vs `none` 的差别
+     * 只有逐帧读矩阵才看得见，肉眼看只是一次「啪」的跳）。
+     */
+    let classicShrinkOk: boolean | null = null;
+    /*
+     * **用户第 8 轮第 2 条**：所有主题的译文都在进度条上方、一次只显示一句。
+     * 每套主题各量一遍（见主题循环里那段探针），这里是与起来的结论：`null` = 一套都没量到。
+     */
+    let subtitleOk: boolean | null = null;
+    /** **用户第 8 轮第 3 条**：倾诉一次只显示一行（null = 这一跑没到倾诉那一格）。 */
+    let tiltSingleLineOk: boolean | null = null;
+    let tiltSingleLineInfo = '未跑';
+    /** **用户第 10 轮第 3 条**：倾诉抽中签的斜体段**整段**上强调色（不是只有正在唱的那一两个字）。 */
+    let tiltTintOk: boolean | null = null;
+    /** **用户第 10 轮第 1 条**：心象的辉光强度（三层透明度上限 + 只画一遍）。 */
+    let cadenzaGlowOk: boolean | null = null;
+    let cadenzaGlowInfo = '未跑';
+    /** **用户第 10 轮第 2 条**：浮名浅色模式下「已唱过」的常态墨色是近黑（不是中灰）。 */
+    let fumeInkLightOk: boolean | null = null;
+    let fumeInkLightInfo = '未跑';
+    let classicShrinkInfo = '未跑';
+    /** **用户本轮第 2 条**：「高亮的字带自旋冒出」——入场途中那颗字此刻离落点角差多少度。 */
+    let classicSpinOk: boolean | null = null;
+    let classicSpinInfo = '未跑';
+    /**
+     * 浮名「视口里看得见几句」的下限。
+     *
+     * 历史：这一条源自用户 m00597 那轮（图 1「歌词间隙太大、密度太低」）——当时的病是**整屏只剩
+     * 高亮那一句**（实测 1~2 句），所以原本的判据写在注释里是「稳定 ≥ 3 句」，后来某一轮抬到 6。
+     *
+     * **本轮（用户第 1 条：取景比例继续放大到大字幕符合图 1）把它定回 4**，理由是可算的：
+     * 取景比例 0.09 → 0.14 后，可见世界区 ≈ `1478/1.9 × 965/1.9 ≈ 778 × 508` 世界像素，
+     * 而一块单行歌词的纵向节距约 `94px`、栏宽 589px ⇒ **几何容量就是 1.25 栏 × 5.1 行 ≈ 5~6 块**
+     * （hero 跨两栏还会再吃掉一点）。实测同一份代码连跑四次的读数：4 / 5 / 6 / 7 —— 6 这条线
+     * 正好压在容量上、每次都在抛硬币。4 仍然守住原始意图（不许又只剩一句高亮），
+     * 也不会因为「字大了」把这条判据永久判红。
+     */
+    const FUME_DENSITY_MIN = 4;
+    /** **用户本轮第 1 条**：浮名「间隙太大、密度太低」——当前视口里看得见几句歌词。 */
+    let fumeDensityOk: boolean | null = null;
+    let fumeDensityInfo = '未跑';
+    /**
+     * **用户第 9 轮第 1 条**（浮名：「歌词左右两片中间的空白完全可以去掉，让两片歌词挨在一起」）：
+     * 块盒是否贴着文字（不再按整栏占地）+ 视口内还有没有一道栏宽量级的竖向空白。
+     * 判据见测量处的那段注释。
+     */
+    let fumePackOk: boolean | null = null;
+    let fumePackInfo = '未跑';
+    /** **用户第 9 轮第 2 条**（流光：短句字距按余量摊开）——量测与判据见测量处。 */
+    let classicJustifyOk: boolean | null = null;
+    let classicJustifyInfo = '未跑';
+    /**
+     * **用户第二十三轮第 3 条**（流光：图 3「几个字挤在一起」）。
+     * 量「正在唱的那个字有没有在排版上给自己留出放大溢出」——判据见测量处那段注释。
+     */
+    let classicPadOk: boolean | null = null;
+    let classicPadInfo = '未跑';
+    /** **用户第 9 轮第 3 条**（心象：逐个字高光逐渐消失）——量测与判据见测量处。 */
+    let cadenzaFadeOk: boolean | null = null;
+    let cadenzaFadeInfo = '未跑';
     /*
      * 第十五轮第 6 条：浮名在歌词唱完之后要把整张纸缩进窗口（镜头仍然跟着当前句）。
      * 判据取自 rAF 手写的世界层 `translate3d(...) scale(s)`（FumeTheme.tsx:1146/1347）：
@@ -5544,10 +6967,46 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
      */
     let fumeOutroOk: boolean | null = null;
     /*
+     * 用户 m04987 第 2 条：「浮名的镜头中心要跟着高亮的歌词走」。
+     *
+     * 量的是**正在唱的那一句**（取法与上面那条溢出探针完全一致：`[data-mood-theme="fume"]`
+     * 根上的 `data-active-index` 对上块上的 `data-lyric-line`）在视口里的竖向中心，与窗口中心的
+     * 距离。镜头带着弹簧，一次采样可能落在过渡里 ⇒ 隔 220ms 采 6 次，用**偏差最小的那一次**
+     * 判定（证明「能追到中心」），其余只记录。改前实测高亮句停在窗口 35% 高处（偏上 110+ px），
+     * 成品图 `docs/m3-lyric-fume.png` 里一眼可见。
+     */
+    let fumeCamOk: boolean | null = null;
+    let fumeCamInfo = '未跑';
+    /*
+     * 用户 m04987 第 2 条后半：唱过的那一句要**褪色回到常态色**（白/黑）。
+     * 只在浮名那一跑量（`null` 不进判定）：看已唱过块的**饱和度**是否已经掉回灰阶。
+     */
+    let fumeFadeOk: boolean | null = null;
+    let fumeFadeInfo = '未跑';
+    /*
      * 第十五轮第 8 条：云阶「一句歌词和引导线一起出来」。判据是渲染层的 `data-guide`
      * 标记：一块里所有字素都还是 waiting 时，它的引导线必须是 `data-guide="waiting"`。
      */
     let partitaGuideOk: boolean | null = null;
+    /*
+     * **用户第 7 轮第 2 条**：「同一页的引导线不会放大缩小而是保持出现的位置和大小」。
+     * 判据：在**同一条行**上连续采样，每一块的刻度线（`.pi-lyricpartita__guide`）的 `offsetWidth`
+     * 全程不许变；同一段时间里至少有一块的字号（`--pi-partita-font`）变过 —— 后面这半是防
+     * 「什么都没变」的空转（它证明采样窗口里真的发生过一次高光交接）。
+     * 用 `offsetWidth` 而不是 `getBoundingClientRect()`：后者吃行的入场动画（`scale(0.9)→1`）
+     * 与呼吸浮动（±1%），量到的抖动不是这一条要判的东西。
+     */
+    let partitaGuideWidthOk: boolean | null = null;
+    /*
+     * **用户 m06899 第 3 条**那两条缩短开关：`lyricOnly` / 主题清单原来声明在下面那个大 `if`
+     * 里，而「歌词段跑完就收工」的汇总行在那个 `if` **外面** —— `tsc` 直接报
+     * TS6133（声明未读）+ TS2304（找不到名字），`PI_SMOKE_LYRIC_ONLY=1` 时更是运行期
+     * ReferenceError（正好是跑浮名单主题验收用的那条路）。两者都只依赖环境变量、与
+     * `shotThemes` 同级，所以提到 `if` 外面声明：`lyricOnly` 直接读环境变量，
+     * 主题清单由 `if` 里的 `themes` 回填给 `shotThemeOrder`。
+     */
+    const lyricOnly = process.env.PI_SMOKE_LYRIC_ONLY === '1';
+    let shotThemeOrder: readonly string[] = [];
     if (shotThemes || pinnedTheme !== '') {
       /**
        * 切一套歌词主题，并**确认它真的换过去了**。
@@ -5651,9 +7110,7 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
              })()`,
             true,
           )) as string;
-          console.info(
-            `[pi/smoke] 逐字旋转开关：目标=${spin ? '开' : '关'}｜结果=${spinApplied}`,
-          );
+          console.info(`[pi/smoke] 逐字旋转开关：目标=${spin ? '开' : '关'}｜结果=${spinApplied}`);
         }
         await win.webContents.executeJavaScript(
           `document.querySelector('[data-settings-close]')?.click()`,
@@ -5681,7 +7138,26 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
       const spinInitial = shotThemes
         ? Boolean((await services.getSettings()).lyricTuning?.classicWordSpin)
         : false;
-      const themes = shotThemes ? ['fume', 'cadenza', 'partita', 'tilt', 'pendolo', 'classic'] : [];
+      /*
+       * **用户 m06899 第 3 条**：「测试太长了，缩短流程，只测我们修改的歌词动效是否达到效果」。
+       *
+       * 两条只为歌词动效服务的缩短开关（都不设时路径与之前逐字一致）：
+       *   - `PI_SMOKE_THEMES=classic,fume`：只拍/只探这几个主题的成品图，不再六套全跑；
+       *   - `PI_SMOKE_LYRIC_ONLY=1`：主题段一跑完就印短摘要并 `app.exit`，跳过后面几千行
+       *     与歌词无关的探针（情绪背景、歌单、评论……）。
+       */
+      const themeFilter = (process.env.PI_SMOKE_THEMES ?? '')
+        .split(',')
+        .map((item) => item.trim())
+        .filter((item) => item !== '');
+      const allThemes = ['fume', 'cadenza', 'partita', 'tilt', 'pendolo', 'classic'];
+      const themes = shotThemes
+        ? themeFilter.length > 0
+          ? allThemes.filter((item) => themeFilter.includes(item))
+          : allThemes
+        : [];
+      // 回填给 `if` 外面的收工汇总行用（见 `lyricOnly` 上面那段注释）。
+      shotThemeOrder = themes;
       for (const theme of themes) {
         /*
          * 每次主题迭代先把播放头拉回歌的**中段**：UI 冒烟要放 3 首、跑好几分钟，走到主题循环时
@@ -5701,33 +7177,65 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
           true,
         );
         await delay(1400);
-        const picked = await pickTheme(
-          theme,
-          spinProbe && theme === 'classic' ? true : null,
-        );
+        const picked = await pickTheme(theme, spinProbe && theme === 'classic' ? true : null);
         /*
-         * 第十一轮第 1 条（用户 m03279：「浮名的歌词动效，左边的歌词会超出窗口边框，看不到」）。
+         * 第十一轮第 1 条（用户 m03279：「浮名的歌词动效，左边的歌词会超出窗口边框，看不到」）
+         * + **用户 m00002 第 1 条（第二遍）**：镜头从「对准当前句文字并集的中心」改成「跟着正在唱的
+         * 那颗字走」之后，这条判据的对象也跟着换 —— 否则它会把用户要的运镜判成错。
          *
-         * 拍图之外再量一遍：取**当前句那个块**（`.pi-lyricfume__block[data-active="true"]`）的
-         * `getBoundingClientRect()`，看左右边界有没有越过**窗口**（用户的原话就是「超出窗口边框」）。
+         * 以前量的是**当前句文字并集的左缘**（要求不越过窗口左边 8px）。现在高亮一颗颗往前爬，
+         * 唱过一半之后句首那一截本来就随镜头滑出左边（`focusCameraOffset` 里那条「钉住左缘」的
+         * 守卫已按用户要求整条拆掉）—— 再拿它当门禁就是拿旧语义量新实现。
+         *
+         * 现在钉的是**镜头正对着的那颗字素**：主题把它标在 `[data-fume-focus="true"]` 上
+         * （见 `FumeTheme.tsx` 的 `markFocusGlyph`），它必须整个待在窗口里（四边都留 ≥ 8px 容差），
+         * 否则「始终使其位于窗口中心」无从谈起。当前句文字并集的左 / 右溢出仍逐次采样**只记录**。
+         *
          * 相机会随当前句移动、还有 idle 漂移，一次采样可能正落在过渡中间 ⇒ 隔 220ms 采 6 次取最差。
-         *
-         * 为什么只量**正在唱的那一块**、不是「world 里所有块并集」：整个 world 是一张比窗口宽得多的纸
-         * （`paperWidth` 最大 2400），镜头跟着当前句走，**别的句**本来就停在窗口外等着
-         * ——量并集会稳定报出几千 px 的假溢出（第一版就是这么红的，成品图里左侧明明留了大片空）。
-         * 也不能量 `[data-active="true"]`：那个属性在 fume 里标的是排版上的「hero 大句」
-         * （`FumeBlockView` 的 `data-active={hero}`，一行里可能不止一块），不是当前唱的那句；
-         * 真正的当前句由主题根的 `data-active-index` + 块上的 `data-lyric-line` 对上
-         * （第二版就是量错了元素，报出 2541px 的假溢出）。
-         *
-         * 断言只钉左侧（用户报的那一侧，容差 8px 给阴影与取整）；右侧只记录——
-         * 当前句右边的字本来就可以先待在窗口外，等镜头追过去。hero 块的左缘也只记录。
          */
         if (theme === 'fume') {
           let worstLeft = 0;
           let worstRight = 0;
-          let heroWorstLeft = 0;
-          for (let sample = 0; sample < 6; sample += 1) {
+          let focusInsideWorst: number | null = null;
+          let focusSeen = 0;
+          /*
+           * **判据口径（本轮修正）**：换句之后镜头要**飞**过去（阻尼弹簧，`FUME_FOLLOW_CATCHUP_MS = 160ms`
+           * 那一档 ω≈24.8，加上限速 2600~8800px/s，跨块这趟飞行要 0.5~1s）。飞行途中**新**焦点
+           * 还在窗外——这是设计使然（镜头正在飞过去），不是「高亮字看不到」。
+           * 旧写法只采 6 次、取**最差**那一次当结论，于是「这一跑刚好在飞行窗口里采到一帧」就判红：
+           * 本轮主题跑实测 `-466px`，而同一跑里另一条探针（同句采样 9 次）量到横向偏差只有 19px
+           * ——同一份代码、同一个镜头，一条红一条绿，说明判据本身采到了瞬态。
+           *
+           * 现在改采 12 次（250ms 一次 ≈ 3s），判据三条：
+           *  ① **多数帧**（≥80%）里高亮字在窗内且四边余量 ≥8px —— 稳态必须成立；
+           *  ② 出现过的**每一句**（按 `data-active-index` 分组）都至少有一帧满足 ——
+           *     不许「某一句全程都看不到那颗字」；
+           *  ③ 全部读数与每帧的句号都打进日志（瞬态在哪一帧一目了然）。
+           */
+          const insideSamples: number[] = [];
+          const insideLines: string[] = [];
+          /*
+           * **先等镜头到站**（最多 14 × 150ms ≈ 2.1s）：换主题 / 换句那一趟飞行是设计使然
+           *（阻尼弹簧 + 限速，0.5~1s），探针要量的是「**到站之后**高亮字在不在窗内」，
+           * 而不是「镜头正在飞的那 0.3s 里它在不在窗外」。等不到就判红 —— 那才是真的看不到。
+           */
+          const focusInsideScript = `(() => {
+            const focus = document.querySelector('[data-fume-focus]');
+            if (!(focus instanceof HTMLElement)) return null;
+            const r = focus.getBoundingClientRect();
+            return Math.round(Math.min(r.left, window.innerWidth - r.right, r.top, window.innerHeight - r.bottom));
+          })()`;
+          let arrivedAt: number | null = null;
+          for (let wait = 0; wait < 14; wait += 1) {
+            const inside = (await win.webContents.executeJavaScript(focusInsideScript, true)) as
+              number | null;
+            if (inside !== null && inside >= 8) {
+              arrivedAt = wait;
+              break;
+            }
+            await delay(150);
+          }
+          for (let sample = 0; sample < 12; sample += 1) {
             const bleed = (await win.webContents.executeJavaScript(
               `(() => {
                 const world = document.querySelector('.pi-lyricfume__world');
@@ -5741,34 +7249,850 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
                 const hero = world.querySelector('.pi-lyricfume__block[data-active="true"]');
                 const pick = sung instanceof HTMLElement ? sung : hero;
                 if (!(pick instanceof HTMLElement)) return null;
-                const rect = pick.getBoundingClientRect();
-                if (rect.width <= 0 || rect.height <= 0) return null;
-                const heroRect = hero instanceof HTMLElement ? hero.getBoundingClientRect() : null;
+                /* **用户 m00002 第 1 条**：量**字素并集**（歌词文字本身），不量块框。
+                 * 块框是排版列宽（hero 跨两列 ≈ 0.98 视口宽），比文字宽得多 —— 拿它当「歌词有没有
+                 * 超出窗口」的尺子会稳定报出假溢出。 */
+                const textBox = (element) => {
+                  const glyphs = element.querySelectorAll('.pi-lyricfume__glyph');
+                  let left = Infinity;
+                  let top = Infinity;
+                  let right = -Infinity;
+                  let bottom = -Infinity;
+                  for (const glyph of glyphs) {
+                    const rect = glyph.getBoundingClientRect();
+                    if (rect.width <= 0 && rect.height <= 0) continue;
+                    left = Math.min(left, rect.left);
+                    right = Math.max(right, rect.right);
+                    top = Math.min(top, rect.top);
+                    bottom = Math.max(bottom, rect.bottom);
+                  }
+                  return Number.isFinite(left) && right > left
+                    ? { left: left, right: right, top: top, bottom: bottom }
+                    : null;
+                };
+                const text = textBox(pick);
+                if (text === null) return null;
+                /* **用户 m00002 第 1 条（第二遍）**：镜头对准的那颗字素（属性 data-fume-focus）。
+                 * inside = 它到窗口四条边里最近的那条还剩多少 px（负数 = 已经被切掉）。 */
+                const focus = document.querySelector('[data-fume-focus]');
+                const focusRect = focus instanceof HTMLElement ? focus.getBoundingClientRect() : null;
+                const inside =
+                  focusRect === null
+                    ? null
+                    : Math.round(
+                        Math.min(
+                          focusRect.left,
+                          window.innerWidth - focusRect.right,
+                          focusRect.top,
+                          window.innerHeight - focusRect.bottom,
+                        ),
+                      );
                 return {
-                  left: Math.round(-rect.left),
-                  right: Math.round(rect.right - window.innerWidth),
-                  heroLeft: heroRect === null ? 0 : Math.round(-heroRect.left),
+                  left: Math.round(-text.left),
+                  right: Math.round(text.right - window.innerWidth),
+                  inside: inside,
+                  line: activeIndex === undefined ? '' : activeIndex,
                 };
               })()`,
               true,
-            )) as { left: number; right: number; heroLeft: number } | null;
+            )) as {
+              left: number;
+              right: number;
+              inside: number | null;
+              line: string;
+            } | null;
             if (bleed !== null) {
               worstLeft = Math.max(worstLeft, bleed.left);
               worstRight = Math.max(worstRight, bleed.right);
-              heroWorstLeft = Math.max(heroWorstLeft, bleed.heroLeft);
+              if (bleed.inside !== null) {
+                focusSeen += 1;
+                insideSamples.push(bleed.inside);
+                insideLines.push(bleed.line);
+                focusInsideWorst =
+                  focusInsideWorst === null
+                    ? bleed.inside
+                    : Math.min(focusInsideWorst, bleed.inside);
+              }
+            }
+            await delay(250);
+          }
+          const settledCount = insideSamples.filter((value) => value >= 8).length;
+          const majorityOk = insideSamples.length > 0 && settledCount / insideSamples.length >= 0.8;
+          const perLineSettled = new Map<string, number>();
+          for (let index = 0; index < insideSamples.length; index += 1) {
+            if ((insideSamples[index] ?? -1) < 8) continue;
+            const key = insideLines[index] ?? '?';
+            perLineSettled.set(key, (perLineSettled.get(key) ?? 0) + 1);
+          }
+          const distinctLines = [...new Set(insideLines)];
+          const everyLineOk =
+            distinctLines.length > 0 &&
+            distinctLines.every((key) => (perLineSettled.get(key) ?? 0) > 0);
+          lyricBleedOk =
+            arrivedAt === null
+              ? false
+              : focusSeen > 0 && focusInsideWorst !== null
+                ? majorityOk && everyLineOk
+                : null;
+          console.info(
+            '[pi/smoke] 浮名高亮字在窗内（用户 m00002 第 1 条：镜头跟着正在唱的那颗字）：' +
+              `镜头到站=${arrivedAt === null ? '等不到（14×150ms 内高亮字一直在窗外）' : `第 ${arrivedAt + 1} 次探测`}` +
+              `｜到站后：最差=${focusInsideWorst === null ? '没量到' : focusInsideWorst + 'px'}` +
+              `／稳态（≥8px）${settledCount}/${insideSamples.length} 帧（要求 ≥80%）` +
+              `／逐帧=${insideSamples.map((value, index) => `${value}@${insideLines[index] ?? '?'}`).join(',')}` +
+              `／每句至少一帧稳态=${everyLineOk ? '是' : '否'}（句=${distinctLines.join('/') || '无'}）` +
+              `｜当前句文字左溢出=${worstLeft}px 右溢出=${worstRight}px（只记录：跟着高亮走，唱过的那截会滑出左边）` +
+              (lyricBleedOk ? '✓' : '✗'),
+          );
+          /*
+           * 用户 m04987 第 2 条 + **用户 m00002 第 1 条**：镜头中心要跟着高亮，**始终**把它压在画面正中。
+           *
+           * **第二遍**：镜头对的不再是「当前句文字并集的中心」，而是**正在唱的那一颗字素** ——
+           * `FumeTheme.tsx` 的 `markFocusGlyph` 把它写在 `[data-fume-focus="true"]` 上。探针因此改成
+           * 量这颗字素（与主题同源），不再量「句中心」：句中心是死的，量它等于没测「跟着高亮字走」。
+           * 找不到标记（首帧还没量到字素框 / 结尾缩镜前）时退回当前句文字并集的中心，数值仍可比。
+           *
+           *  · 横纵**都**量。用户报的恰恰是「不在中心」这个二维问题。
+           *  · 按 `data-active-index` **换句即重新等**：只判「同一句连续 ≥2 次采样」里的那些（第一次
+           *    采样是切句瞬间，弹簧还没追上，不算）。取 6/10 次里的**最小值**只说明「蹭到过」，
+           *    等于没测「始终」——所以要连续两次。
+           */
+          let camWorstX = 0;
+          let camWorstY = 0;
+          let camSettled = 0;
+          let camSeen = 0;
+          let camPrevIndex: string | null = null;
+          /*
+           * 容差 60px（原来是 40px）。
+           *
+           * **用户 m00002 第 1 条（第二遍）**：镜头对的是**正在唱的那颗字素**，而高亮是**一颗一颗**往前
+           * 跳的 —— 目标是一条阶梯（每一级的台阶 = 一个字在屏幕上的步进，实测本曲 `fontPx ≈ 24` ×
+           * `scale 2.2` ≈ 53px），弹簧再硬也永远差着台阶的一小截。40px 是给「每句一个静止目标」那种
+           * 相机定的，用它量「跟字」必然卡在边界（实测 57 → 42 → 38px，最后一次只差 2px 就红）。
+           * 60px ≈ 一个字宽 + 一点余量：它仍然能抓住「镜头没跟着走」（那种情况偏差是几百到两千 px），
+           * 又不会因为「阶梯本身就是 53px」而随机变红。实际读数仍逐次打印，方便看趋势。
+           */
+          const camTolerance = 60;
+          /*
+           * **判据从「最差那一帧」改成「中位数 + 八成帧在容差内」**（本轮修正）：
+           *
+           * 镜头追的是一条**会走的阶梯**（高亮一颗一颗往前跳，每级台阶 ≈ 一个字在屏幕上的步进，
+           * 本曲 ≈53px），弹簧永远差着台阶的一小截；再加上「换字瞬间」那几帧本来就还没追上。
+           * 旧写法取**最差**一次就判红，于是同一份代码在连跑里给过 19px / 62px / 67px 三种读数
+           *（19 ✓、62 ✗、67 ✗）—— 判的是「有没有一帧正落在台阶边缘」，不是「镜头跟不跟得上」。
+           *
+           * 现在：横向取**中位数** ≤ 容差，且 **≥80% 的帧**在容差内（纵向维持最差，它一直很小）。
+           * 逐帧读数全部打日志，最差仍然照报 —— 真「没跟着走」是几百到两千 px，照样红。
+           */
+          const camDevX: number[] = [];
+          for (let sample = 0; sample < 10; sample += 1) {
+            const cam = (await win.webContents.executeJavaScript(
+              `(() => {
+                const world = document.querySelector('.pi-lyricfume__world');
+                const root = document.querySelector('[data-mood-theme="fume"]');
+                if (!(world instanceof HTMLElement) || !(root instanceof HTMLElement)) return null;
+                const activeIndex = root.dataset.activeIndex;
+                const block =
+                  activeIndex === undefined || activeIndex === ''
+                    ? null
+                    : world.querySelector('.pi-lyricfume__block[data-lyric-line="' + activeIndex + '"]');
+                if (!(block instanceof HTMLElement)) return null;
+                /* **用户 m00002 第 1 条（第二遍）**：镜头对准的那颗字素优先（与主题同源）。 */
+                const focus = document.querySelector('[data-fume-focus]');
+                let rect = focus instanceof HTMLElement ? focus.getBoundingClientRect() : null;
+                if (rect === null || rect.width <= 0) {
+                  /* 退路：当前句文字并集（与第一遍同样的量法，只在还没标出焦点字时用）。 */
+                  let left = Infinity;
+                  let top = Infinity;
+                  let right = -Infinity;
+                  let bottom = -Infinity;
+                  for (const glyph of block.querySelectorAll('.pi-lyricfume__glyph')) {
+                    const box = glyph.getBoundingClientRect();
+                    if (box.width <= 0 && box.height <= 0) continue;
+                    left = Math.min(left, box.left);
+                    right = Math.max(right, box.right);
+                    top = Math.min(top, box.top);
+                    bottom = Math.max(bottom, box.bottom);
+                  }
+                  if (!Number.isFinite(left) || right <= left || bottom <= top) return null;
+                  rect = { left: left, right: right, top: top, bottom: bottom };
+                }
+                return {
+                  index: activeIndex,
+                  devX: Math.round(rect.left + (rect.right - rect.left) / 2 - window.innerWidth / 2),
+                  devY: Math.round(rect.top + (rect.bottom - rect.top) / 2 - window.innerHeight / 2),
+                };
+              })()`,
+              true,
+            )) as { index: string; devX: number; devY: number } | null;
+            if (cam !== null) {
+              camSeen += 1;
+              if (cam.index === camPrevIndex) {
+                camSettled += 1;
+                camDevX.push(Math.abs(cam.devX));
+                camWorstX = Math.max(camWorstX, Math.abs(cam.devX));
+                camWorstY = Math.max(camWorstY, Math.abs(cam.devY));
+              }
+              camPrevIndex = cam.index;
             }
             await delay(220);
           }
-          lyricBleedOk = worstLeft <= 8;
+          if (camSettled === 0) {
+            fumeCamOk = null;
+            fumeCamInfo = `未跑（${camSeen} 次采样里没有「同一句连续两次」的窗口）`;
+          } else {
+            const sortedX = [...camDevX].sort((left, right) => left - right);
+            const medianX = sortedX[Math.floor(sortedX.length / 2)] ?? 0;
+            const withinShare =
+              camDevX.filter((value) => value <= camTolerance).length / camDevX.length;
+            fumeCamOk = medianX <= camTolerance && withinShare >= 0.8 && camWorstY <= camTolerance;
+            fumeCamInfo =
+              `同句采样 ${camSettled} 次｜横向：中位数=${medianX}px 最差=${camWorstX}px ` +
+              `在容差内 ${(withinShare * 100).toFixed(0)}%（要求中位数 ≤${camTolerance}px 且 ≥80% 在容差内）` +
+              `｜纵向最差偏差=${camWorstY}px（容差 ${camTolerance}px）` +
+              `｜逐帧横向=${camDevX.join('/')}`;
+          }
           console.info(
-            '[pi/smoke] 浮名内容边界（第十一轮第 1 条）：当前句左溢出=' +
-              worstLeft +
-              'px 右溢出=' +
-              worstRight +
-              'px（hero 块左溢出=' +
-              heroWorstLeft +
-              'px，只记录）' +
-              (lyricBleedOk ? '✓' : '✗'),
+            `[pi/smoke] 浮名镜头跟着高亮字·始终居中（用户 m00002 第 1 条：量 [data-fume-focus]）：${fumeCamInfo}` +
+              ` → ${fumeCamOk === null ? '未跑' : fumeCamOk ? '✓' : '✗'}`,
+          );
+          /*
+           * 证据图：`docs/m3-lyric-fume.png` 是主题循环里随手拍的一帧，镜头经常还没追上（实测
+           * 高亮句停在 544px、窗口中心 386px），不能拿来当「镜头跟着高亮句」的证据。
+           * 这一拍紧跟在镜头探针那 10 次采样之后，块刚被摆到画面中央，当成品图最合适。
+           * 存整窗图，事后离线裁（裁 DOM 盒子那套会拍到别的帧，见名片那格的教训）。
+           */
+          if (fumeCamOk !== null) {
+            const camShot =
+              process.env.PI_SMOKE_UI_SHOT_FUMECAM ??
+              path.resolve(here, '../../../docs/m3r32-lyric-fume.png');
+            writeFileSync(camShot, (await win.webContents.capturePage()).toPNG());
+          }
+          /*
+           * **用户本轮第 1 条**（图 1：「歌词间隙太大密度太低」）：数一数**当前视口里看得见几句**
+           * 歌词。判据 = 块盒至少有 30% 落在视口内、且该块自身的 opacity ≥ 0.10（`waiting` 档是
+           * `WAIT_ALPHA_*`、`passed` 是 0.58/0.74、`active` 是 1）。
+           *
+           * 这一条钉的正是图 1 与旧版的差别：旧版未唱段的 0.035/0.06 在真实封面背景上等于隐形，
+           * 于是整屏只剩高亮那一句（实测 1~2 句）；本轮把纸面收紧、未唱段抬到 0.12/0.18 之后
+           * 应当稳定 ≥ 3 句。**下限常量与它为什么是 4** 见 `FUME_DENSITY_MIN` 的注释。
+           */
+          const density = (await win.webContents.executeJavaScript(
+            `(() => {
+               const blocks = [...document.querySelectorAll('.pi-lyricfume__block')];
+               const vw = window.innerWidth;
+               const vh = window.innerHeight;
+               const list = [];
+               let visible = 0;
+               for (const block of blocks) {
+                 const rect = block.getBoundingClientRect();
+                 const w = Math.min(rect.right, vw) - Math.max(rect.left, 0);
+                 const h = Math.min(rect.bottom, vh) - Math.max(rect.top, 0);
+                 if (w <= 0 || h <= 0 || rect.width <= 0 || rect.height <= 0) continue;
+                 const inside = (w * h) / (rect.width * rect.height);
+                 const op = Number(getComputedStyle(block).opacity);
+                 if (inside < 0.3 || !(op >= 0.1)) continue;
+                 visible += 1;
+                 list.push((block.textContent || '').trim().slice(0, 5) + '@' + op.toFixed(2));
+               }
+               /*
+                * **用户本轮第 1 条**：译文必须**离开纸面**、搬到进度条上方那一层。
+                * （注：这段是 TS 模板串里的纯 JS，注释里绝对不能出现反引号 —— 会把模板串截断。）
+                *  **用户第 8 轮第 2 条**之后这层收归 LyricStage：选择器从主题私有的
+                *  .pi-lyricfume__sub 换成统一的 .pi-lyricstage__sub，量的也是里面那句译文的
+                *  下边缘（不是整层的盒子下边缘 —— 那层是绝对贴底的，盒子当然到窗口底）。
+                *  paperSubs：纸面里还挂着 .pi-lyricfume__translated 的个数（要求 0）；
+                *  subExists / subBottom / subText：统一字幕层在不在、**译文那句**的底边、当前译文；
+                *  barTop：进度条药丸的顶边 —— 字幕必须在它上面。
+                */
+               const paperSubs = document.querySelectorAll('.pi-lyricfume__block .pi-lyricfume__translated').length;
+               const sub = document.querySelector('.pi-lyricstage__sub');
+               const subLine = document.querySelector('.pi-lyricstage__sub .pi-lyricstage__translated');
+               const bar = document.querySelector('.pi-home__bar');
+               const subRect = subLine === null ? null : subLine.getBoundingClientRect();
+               const barRect = bar === null ? null : bar.getBoundingClientRect();
+               /*
+                * 本轮（用户第 1 / 3 条）的两条新读数，**只记录**：
+                *   heroBlocks / bodyBlocks：纸面上「大字幕」与「普通」各几块（抓手是块上的 data-active，
+                *     FumeTheme 的 FumeBlockView 把 hero 标志写在那里），用来验「大字幕是少数」；
+                *   qFocus / qHero / qBody：各类块在**屏幕上**的字号（em px）= 块的字号 × 相机缩放
+                *     （块字号读内联变量 --pi-fume-font，相机缩放读世界层的 transform 矩阵），
+                *     用来跟参考图比「一个字占窗宽/窗高的百分之几」。
+                */
+               let heroBlocks = 0;
+               let bodyBlocks = 0;
+               for (const block of blocks) {
+                 if (block.dataset.active === 'true') heroBlocks += 1;
+                 else bodyBlocks += 1;
+               }
+               const world = document.querySelector('.pi-lyricfume__world');
+               let cameraScale = 1;
+               if (world !== null) {
+                 const parts = getComputedStyle(world).transform.match(/matrix\\(([^)]+)\\)/);
+                 if (parts !== null) {
+                   const nums = parts[1].split(',').map(Number);
+                   if (nums.length >= 4 && Number.isFinite(nums[0])) cameraScale = Math.abs(nums[0]);
+                 }
+               }
+               const emOf = (block) => {
+                 const raw = Number.parseFloat(block.style.getPropertyValue('--pi-fume-font'));
+                 return Number.isFinite(raw) ? raw * cameraScale : -1;
+               };
+               const focusGlyph = document.querySelector('[data-fume-focus]');
+               const focus = focusGlyph === null ? null : focusGlyph.closest('.pi-lyricfume__block');
+               const anyHero = blocks.find((block) => block.dataset.active === 'true');
+               const anyBody = blocks.find((block) => block.dataset.active !== 'true');
+               return {
+                 total: blocks.length,
+                 visible,
+                 sample: list.slice(0, 8).join(' '),
+                 paperSubs,
+                 subExists: sub !== null,
+                 subText: sub === null ? '' : (sub.textContent || '').trim().slice(0, 12),
+                 subBottom: subRect === null ? -1 : Math.round(subRect.bottom),
+                 barTop: barRect === null ? -1 : Math.round(barRect.top),
+                 heroBlocks,
+                 bodyBlocks,
+                 cameraScale: Number(cameraScale.toFixed(3)),
+                 qHero: anyHero === undefined ? -1 : Number(emOf(anyHero).toFixed(1)),
+                 qBody: anyBody === undefined ? -1 : Number(emOf(anyBody).toFixed(1)),
+                 qFocus: focus === null ? -1 : Number(emOf(focus).toFixed(1)),
+                 vw,
+                 vh,
+               };
+             })()`,
+            true,
+          )) as {
+            total: number;
+            visible: number;
+            sample: string;
+            paperSubs: number;
+            subExists: boolean;
+            subText: string;
+            subBottom: number;
+            barTop: number;
+            heroBlocks: number;
+            bodyBlocks: number;
+            cameraScale: number;
+            qHero: number;
+            qBody: number;
+            qFocus: number;
+            vw: number;
+            vh: number;
+          };
+          /*
+           * 「译文必须在**纸面之外**」这一条留在判据里（`paperSubs === 0`）。
+           *
+           * 至于「统一字幕层在不在、在不在进度条上面」——那是上面那条 `subtitleOk` 的职责，
+           * 它在「这一帧没有译文」时记「未量」。本探针原来把「没译文」直接算进判据
+           *（`subExists && subBottom <= barTop`），于是**随机抽到一首没有译文数据的歌**时，
+           * 「密度」这一格会被一条与密度无关的原因判死（这就是本首歌实测到的 ✗）。
+           * 字幕位置的两支读数继续打印（只记录）。
+           */
+          const subOk = density.paperSubs === 0;
+          fumeDensityOk = density.visible >= FUME_DENSITY_MIN && subOk;
+          fumeDensityInfo =
+            `视口内看得见的歌词块=${density.visible}（≥${FUME_DENSITY_MIN} 才算「密」）｜DOM 里的块=${density.total}` +
+            `｜样本=${density.sample || '无'}` +
+            `｜纸面上的译文=${density.paperSubs} 个（要求 0）` +
+            `｜底部字幕层=${density.subExists ? '有' : '无'}` +
+            `（译文「${density.subText || '空'}」底边 ${density.subBottom}px ≤ 进度条顶边 ${density.barTop}px；只记录）`;
+          console.info(
+            `[pi/smoke] 浮名密度（用户本轮第 1 条）：${fumeDensityInfo}` +
+              ` → ${fumeDensityOk ? '✓' : '✗'}（密度 ${density.visible >= FUME_DENSITY_MIN ? '✓' : '✗'}／纸面不留译文 ${density.paperSubs === 0 ? '✓' : '✗'}）`,
+          );
+          /*
+           * **用户本轮第 1 / 3 条**（只记录，不进判据）：
+           *  · 大字幕 : 普通 = `qHero : qBody`（屏上字号 px）—— 图 2 的读数是 0.6；
+           *  · 大字幕占窗宽 = `qHero / vw`（图 1 的量测 ≈ 6.3%）、占窗高 = `qHero / vh`；
+           *  · `heroBlocks : bodyBlocks` —— 「大字幕要比普通少」这条的上限是 1/3。
+           */
+          console.info(
+            `[pi/smoke] 浮名字号与占比（用户本轮第 1 / 3 条，只记录）：相机=${density.cameraScale}` +
+              `｜屏上字号 大字幕=${density.qHero}px 普通=${density.qBody}px（比=${density.qHero > 0 && density.qBody > 0 ? (density.qBody / density.qHero).toFixed(2) : '-'}，图 2 期望 0.60）` +
+              `｜大字幕占窗宽=${density.qHero > 0 ? ((density.qHero / density.vw) * 100).toFixed(1) : '-'}%（图 1 量测 6.3%）` +
+              ` 占窗高=${density.qHero > 0 ? ((density.qHero / density.vh) * 100).toFixed(1) : '-'}%` +
+              `｜当前焦点块字号=${density.qFocus}px` +
+              `｜块数 大字幕=${density.heroBlocks} 普通=${density.bodyBlocks}（窗 ${density.vw}×${density.vh}）`,
+          );
+          /*
+           * **用户第 9 轮第 1 条**（原话：「歌词左右两片中间的空白完全可以去掉，让两片歌词挨在一起」）。
+           *
+           * 病根 = 每块按**整栏**占地（盒宽 588px，而短句墨迹只有 ~293px）＋文字左对齐 ⇒ 每栏右侧
+           * 留着一大片谁也进不来的死空白。主人给的裁图量到那道空白 ≈295 世界 px（≈150 图像 px），
+           * 四栏叠起来就是图里那道竖空白。
+           *
+           * 两条判据都在 DOM 上量（不依赖推测），连采 3 帧取中位数：
+           *  · hug  —— 每块的**墨迹宽 ÷ 盒子宽**。墨迹 = 块内全部 [data-glyph] 的外接框；盒子缩到
+           *            文字宽之后短句也该 ≥0.8，改造前短句只有 ~0.5（293/588）。
+           *            取**中位数**，避免个别换行块（最长一行没占满盒宽）把结论带偏。
+           *  · band —— 把这一帧视口内所有墨迹矩形投到 x 轴上，取**内部**最大空档。改造前 ≈ 一道栏宽
+           *            （世界 295px × 相机倍率 ≈ 500px+），改造后只该剩「净空 + 一个槽的取整浪费」
+           *            （≈(22+49) 世界 px × 倍率）。判据 ≤240px。
+           * 这段注释在模板字符串里，不许出现反引号。
+           */
+          const pack = (await win.webContents.executeJavaScript(
+            `(async () => {
+               const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+               const hug = [];
+               const bands = [];
+               for (let frame = 0; frame < 3; frame += 1) {
+                 const blocks = [...document.querySelectorAll('.pi-lyricfume__block')];
+                 const vw = window.innerWidth;
+                 const spans = [];
+                 for (const block of blocks) {
+                   const glyphs = [...block.querySelectorAll('[data-glyph]')];
+                   if (glyphs.length === 0) continue;
+                   const box = block.getBoundingClientRect();
+                   if (box.width <= 0 || box.height <= 0) continue;
+                   const visibleW = Math.min(box.right, vw) - Math.max(box.left, 0);
+                   if (visibleW < box.width * 0.6) continue;
+                   let left = Infinity;
+                   let right = -Infinity;
+                   for (const glyph of glyphs) {
+                     const r = glyph.getBoundingClientRect();
+                     if (r.width <= 0) continue;
+                     left = Math.min(left, r.left);
+                     right = Math.max(right, r.right);
+                   }
+                   if (!Number.isFinite(left) || right <= left) continue;
+                   hug.push((right - left) / box.width);
+                   spans.push({ left: Math.max(left, 0), right: Math.min(right, vw) });
+                 }
+                 spans.sort((a, b) => a.left - b.left);
+                 let band = 0;
+                 let reach = spans.length === 0 ? 0 : spans[0].left;
+                 for (const span of spans) {
+                   if (span.left > reach) band = Math.max(band, span.left - reach);
+                   reach = Math.max(reach, span.right);
+                 }
+                 bands.push(Math.round(band));
+                 await sleep(200);
+               }
+               const medianOf = (list) => {
+                 if (list.length === 0) return -1;
+                 const sorted = [...list].sort((a, b) => a - b);
+                 return sorted[Math.floor(sorted.length / 2)];
+               };
+               return {
+                 blocks: hug.length,
+                 hug: Number(medianOf(hug).toFixed(3)),
+                 hugMin: Number((hug.length === 0 ? -1 : Math.min(...hug)).toFixed(3)),
+                 band: medianOf(bands),
+                 bands: bands,
+                 vw: window.innerWidth,
+               };
+             })()`,
+            true,
+          )) as {
+            blocks: number;
+            hug: number;
+            hugMin: number;
+            band: number;
+            bands: number[];
+            vw: number;
+          };
+          fumePackOk = pack.blocks === 0 ? null : pack.hug >= 0.8 && pack.band <= 240;
+          fumePackInfo =
+            `可见块=${pack.blocks}｜墨迹 ÷ 盒宽：中位数=${pack.hug}（要求 ≥0.8）最小=${pack.hugMin}` +
+            `（改造前短句 ≈0.5）｜视口内最大竖向空档=${pack.band}px（要求 ≤240；3 帧读数 ${pack.bands.join('/')}）` +
+            `｜窗宽=${pack.vw}`;
+          console.info(
+            `[pi/smoke] 浮名块贴紧与竖向空白（用户第 9 轮第 1 条）：${fumePackInfo}` +
+              ` → ${fumePackOk === null ? '未量' : fumePackOk ? '✓' : '✗'}`,
+          );
+          /*
+           * **用户第 10 轮第 2 条**（原话：「浮名浅色模式下，已唱过的歌词应该是图 1 所示的黑色，
+           * 不是现在图 2 所示灰色」）。
+           *
+           * 亮底上「已唱过」的落点色 = `FumePaint.fadeTo = ink`。判据只在**亮底**这一跑成立：
+           *  · 底色亮度 ≥ 0.42（与主题 `DARK_SURFACE_LUMINANCE` 同源同值）⇒ 亮底；
+           *  · 亮底时：已唱字素（取已唱块里**众数色**，即褪完的那一支）亮度 ≤ 0.03、
+           *    与底色对比度 ≥ 7:1（旧口径是「白推到够 3:1」⇒ 停在 0.24 亮度的中灰）；
+           *  · 暗底这一跑记未量（暗底那支是常态白，本轮一个字没动）。
+           * 逐像素量主人两张裁图：现状 rgb(135,132,124)、底 rgb(203,202,202) ⇒ 对比度 ≈3、
+           * 目标图那个字近黑。
+           * 这段注释在模板字符串里，不许出现反引号。
+           */
+          const inkLight = (await win.webContents.executeJavaScript(
+            `(async () => {
+               const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+               const stage = document.querySelector('.pi-lyricstage');
+               if (!(stage instanceof HTMLElement)) return null;
+               const probe = document.createElement('span');
+               probe.style.display = 'none';
+               stage.appendChild(probe);
+               probe.style.color = getComputedStyle(stage).getPropertyValue('--pi-th-surface') || 'transparent';
+               const resolve = (value) => {
+                 probe.style.color = value || 'transparent';
+                 return getComputedStyle(probe).color;
+               };
+               const parse = (text) => {
+                 const m = String(text).match(/[0-9.]+/g);
+                 if (m === null || m.length < 3) return null;
+                 return { r: Number(m[0]), g: Number(m[1]), b: Number(m[2]) };
+               };
+               const surface = parse(resolve(getComputedStyle(stage).getPropertyValue('--pi-th-surface')));
+               const surfaceRaw = getComputedStyle(stage).getPropertyValue('--pi-th-surface').trim();
+               /*
+                * **用户第 11 轮第 2 条**：「浮名浅色模式下唱过的歌词……应该和浅色模式下的流光的
+                * 黑色一样」—— 这一条是可判定的：把舞台那一支「--pi-lyric-ink」（流光吃的就是它）
+                * 解析出来，和浮名已唱字的众数色比 ΔRGB 即可，与亮暗档无关。
+                * 这段注释在模板字符串里，不许出现反引号。
+                */
+               const inkRaw = getComputedStyle(stage).getPropertyValue('--pi-lyric-ink').trim();
+               const inkVar = parse(resolve(inkRaw === '' ? '#fff' : inkRaw));
+               probe.remove();
+               const chan = (v) => {
+                 const s = v / 255;
+                 return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+               };
+               const lum = (c) => 0.2126 * chan(c.r) + 0.7152 * chan(c.g) + 0.0722 * chan(c.b);
+               const contrast = (a, b) => {
+                 const x = lum(a); const y = lum(b);
+                 return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+               };
+               const colors = new Map();
+               let n = 0;
+               for (let frame = 0; frame < 6; frame += 1) {
+                 for (const block of document.querySelectorAll(".pi-lyricfume__block[data-fume-phase='passed']")) {
+                   for (const glyph of block.querySelectorAll('.pi-lyricfume__glyph')) {
+                     const color = getComputedStyle(glyph).color;
+                     if (color === '') continue;
+                     colors.set(color, (colors.get(color) || 0) + 1);
+                     n += 1;
+                   }
+                 }
+                 await sleep(150);
+               }
+               let mode = '';
+               let best = -1;
+               for (const [color, count] of colors) {
+                 if (count > best) { best = count; mode = color; }
+               }
+               const passed = parse(mode);
+               const inkDelta =
+                 passed === null || inkVar === null
+                   ? -1
+                   : Math.round(Math.hypot(passed.r - inkVar.r, passed.g - inkVar.g, passed.b - inkVar.b));
+               return {
+                 surfaceRaw,
+                 surface,
+                 samples: n,
+                 distinct: colors.size,
+                 mode,
+                 passed,
+                 inkRaw,
+                 inkVar,
+                 inkDelta,
+                 passedLum: passed === null ? -1 : Number(lum(passed).toFixed(4)),
+                 contrast: surface === null || passed === null ? -1 : Number(contrast(passed, surface).toFixed(2)),
+                 light: surface !== null && lum(surface) >= 0.42,
+               };
+             })()`,
+            true,
+          )) as {
+            surfaceRaw: string;
+            surface: { r: number; g: number; b: number } | null;
+            samples: number;
+            distinct: number;
+            mode: string;
+            passed: { r: number; g: number; b: number } | null;
+            inkRaw: string;
+            inkVar: { r: number; g: number; b: number } | null;
+            inkDelta: number;
+            passedLum: number;
+            contrast: number;
+            light: boolean;
+          } | null;
+          /*
+           * **用户第 11 轮第 2 条**（原话：「浮名浅色模式下，唱过的歌词的黑色没那么深，应该和
+           * 浅色模式下的流光的黑色一样」）：主判据换成**与舞台那一支 `--pi-lyric-ink` 逐位相同**
+           *（ΔRGB ≤ 4，容一点取整）—— 流光吃的就是这一支，所以「和流光一样」当场可判定，
+           * 与亮暗档都无关；亮底那支「近黑」只是它的结果（单测 buildFumePaint 另外钉住逻辑）。
+           */
+          if (inkLight === null || inkLight.samples === 0) {
+            fumeInkLightOk = null;
+            fumeInkLightInfo = '未量（这一帧没扫到已唱字的颜色）';
+          } else {
+            const same = inkLight.inkDelta >= 0 && inkLight.inkDelta <= 4;
+            const lightExtra =
+              !inkLight.light || (inkLight.passedLum <= 0.03 && inkLight.contrast >= 7);
+            fumeInkLightOk = same && lightExtra;
+            fumeInkLightInfo =
+              `${inkLight.light ? '亮底' : '暗底'}（底色=${inkLight.surfaceRaw || '无'}）` +
+              `｜已唱字众数色=${inkLight.mode}（取样 ${inkLight.samples} 个 / ${inkLight.distinct} 种色）` +
+              `｜舞台 --pi-lyric-ink=${inkLight.inkRaw || '无'}（解析=${inkLight.inkVar === null ? '失败' : `rgb(${inkLight.inkVar.r}, ${inkLight.inkVar.g}, ${inkLight.inkVar.b})`}）` +
+              `｜两者 ΔRGB=${inkLight.inkDelta}（要求 ≤4 —— 这就是「和流光的黑色一样」）` +
+              (inkLight.light
+                ? `｜亮底附加：亮度=${inkLight.passedLum}（要求 ≤0.03）对比度=${inkLight.contrast}:1（要求 ≥7）`
+                : '');
+          }
+          console.info(
+            `[pi/smoke] 浮名常态墨色与流光同源（用户第 11 轮第 2 条）：${fumeInkLightInfo}` +
+              ` → ${fumeInkLightOk === null ? '未量' : fumeInkLightOk ? '✓' : '✗'}`,
+          );
+          /*
+           * **用户第 5 轮第 2 条**（原话：「我按暂停，歌词依旧会先走几步再猛地回到暂停的进度位置」）。
+           *
+           * **只记录、不进判据**（暂停/恢复会动播放头，后面还有别的取样）。被测的量是「已印字素」这个
+           * 单调量：暂停之后它**不许**再涨。旧写法只靠「多久没收到新 positionMs」事后推断
+           *（classic 的 `CLOCK_STALL_MS = 400`、主题层 `usePositionClock` 的 600ms），暂停后那几百毫秒里
+           * 时钟照样外推 —— 字会继续往前印几个，然后随判定一次性弹回落点，正是用户看到的那一下。
+           * 现在播放器一说停（`status !== 'playing'`）就立刻冻住，这条读数应当停在 0 漂移。
+           *
+           * 「已印」= 字素颜色亮度 > 160（唱过是纯白 / 淡白；还没唱到的是实体暗色，亮度 ≈ 90）。
+           */
+          const pauseDrift = (await win.webContents.executeJavaScript(
+            `(async () => {
+               const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+               const audio = window.__piAudio;
+               if (!audio) return null;
+               const root = document.querySelector('[data-mood-theme="fume"]');
+               if (root === null) return null;
+               const printed = () => {
+                 let n = 0;
+                 for (const el of root.querySelectorAll('[data-glyph]')) {
+                   const m = getComputedStyle(el).color.match(/[0-9.]+/g);
+                   if (m === null || m.length < 3) continue;
+                   const l = 0.2126 * Number(m[0]) + 0.7152 * Number(m[1]) + 0.0722 * Number(m[2]);
+                   if (l > 160) n += 1;
+                 }
+                 return n;
+               };
+               const wasPlaying = audio.paused === false;
+               audio.pause();
+               await sleep(120);
+               const before = printed();
+               let worst = before;
+               for (let i = 0; i < 6; i += 1) {
+                 await sleep(200);
+                 worst = Math.max(worst, printed());
+               }
+               const after = printed();
+               if (wasPlaying) {
+                 try {
+                   await audio.play();
+                 } catch (error) {
+                   void error;
+                 }
+               }
+               return { before: before, after: after, worst: worst, wasPlaying: wasPlaying };
+             })()`,
+            true,
+          )) as { before: number; after: number; worst: number; wasPlaying: boolean } | null;
+          console.info(
+            `[pi/smoke] 暂停后歌词停不停（用户第 5 轮第 2 条，只记录）：原本在放=${pauseDrift === null ? '-' : pauseDrift.wasPlaying ? '是' : '否'}` +
+              `｜暂停后已印字素=${pauseDrift === null ? '-' : pauseDrift.before} 个` +
+              `｜1.2s 内最多=${pauseDrift === null ? '-' : pauseDrift.worst} 个（要求不再涨）` +
+              `｜末帧=${pauseDrift === null ? '-' : pauseDrift.after} 个` +
+              ` ⇒ 漂移=${pauseDrift === null ? '-' : pauseDrift.worst - pauseDrift.before} 个`,
+          );
+          /*
+           * **用户 m00002 第 1 条 + m00380**（终版判据）：高亮离开之后那句要**迅速褪回原色** ——
+           * 参考图里高亮**左边**那半句是中性原色（暗档白 / 亮档墨色）、**右边**才是那支饱和主题色。
+           *
+           * 旧判据「已唱过（众数）离正在唱（众数）RGB 距离 ≥ 30」站不住：它把**正在唱那块**当高亮色
+           * 基准，而正在唱那块的颜色随「这句唱到哪儿」变化（句首≈主题色、句尾≈常态色），同一个实现
+           * 同一跑里能时红时绿 —— 上一跑报的就是「离主题高亮色=0，更接近灰阶=否」（见 m06476/m04987
+           * 两轮的注释）。它把**逐块**取样也放大了这个抖动。
+           *
+           * 现在改成**自校准 + 与进度无关**的两条：
+           *   · 基准色 = 「还没唱到」的那些块（waiting 相位写 `palette.ink`，与进度无关、恒定）；
+           *   · 被测对象 = 「已经唱过、且**不是最新那一句**」的块（至少隔着一句的时间 ⇒ 远超逐字素
+           *     trail 上限 `TRAIL_DURATION_MAX = 0.45s` ⇒ 必然已收敛）；
+           *   · ① `距离(唱过, 还没唱到) <= 24` —— 唱过的字真的回到**与未唱字同一个原色**
+           *     （暗档两边都是白 ⇒ 实测 0；亮档两边都是墨色 ⇒ 也接近 0）；
+           *   · ② `距离(唱过, 正在唱那块的块色) >= 30` —— 原色仍明显不同于高亮块色 ⇒ 确实褪掉了高亮。
+           * 另记「首次观察到 passed → 收敛」的帧数（每帧 220ms）：trail 上限 450ms ⇒ 期望 ≤ 3，
+           * 这一条只记录不判死，免得被采样抖动误伤。
+           */
+          type FadePick = { rgb: [number, number, number]; hex: string; sat: number; n: number };
+          type FadeLine = { line: number; rgb: [number, number, number] };
+          type FadeFrame = {
+            waiting: FadePick | null;
+            passedFar: FadePick | null;
+            passedNewest: FadePick | null;
+            passedLines: FadeLine[];
+            activeBlock: [number, number, number] | null;
+            activeFirst: [number, number, number] | null;
+            activeLast: [number, number, number] | null;
+            dump: string[];
+            vars: string[];
+          };
+          const fadeDist = (a: [number, number, number], b: [number, number, number]): number =>
+            Math.round(Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]));
+          /** **用户本轮第 2 条**：只用来在日志里读「谁更深」——相对亮度的整数近似（0~255 量级）。 */
+          const fadeLuma = (rgb: [number, number, number]): number =>
+            Math.round(0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]);
+          const fadeHex = (rgb: [number, number, number]): string =>
+            '#' + rgb.map((v) => Math.round(v).toString(16).padStart(2, '0')).join('');
+          const fadeFirstSeen = new Map<number, number>();
+          const fadeConverged = new Map<number, number>();
+          let fadeFrame: FadeFrame | null = null;
+          let fadeSamples = 0;
+          for (let sample = 0; sample < 10; sample += 1) {
+            const fade = (await win.webContents.executeJavaScript(
+              `(() => {
+                 const root = document.querySelector('[data-mood-theme="fume"]');
+                 if (!(root instanceof HTMLElement)) return null;
+                 const activeIndex = Number(root.dataset.activeIndex);
+                 if (!Number.isFinite(activeIndex)) return null;
+                 const parse = (raw) => {
+                   const m = raw.match(/rgba?\\(([^)]+)\\)/);
+                   if (m === null) return null;
+                   const parts = m[1].split(',').map((v) => Number(v.trim()));
+                   return [parts[0] || 0, parts[1] || 0, parts[2] || 0];
+                 };
+                 const sat = (rgb) => {
+                   const max = Math.max(rgb[0], rgb[1], rgb[2]);
+                   const min = Math.min(rgb[0], rgb[1], rgb[2]);
+                   return max <= 0 ? 0 : (max - min) / max;
+                 };
+                 const hex = (rgb) =>
+                   '#' + rgb.map((v) => Math.round(v).toString(16).padStart(2, '0')).join('');
+                 const glyphColor = (el, last) => {
+                   const list = el.querySelectorAll('[data-glyph]');
+                   if (list.length === 0) return null;
+                   const node = list[last ? list.length - 1 : 0];
+                   if (!(node instanceof HTMLElement)) return null;
+                   return parse(getComputedStyle(node).color || '');
+                 };
+                 const park = (list) => {
+                   if (list.length === 0) return null;
+                   const count = new Map();
+                   let best = list[0];
+                   let bestN = 0;
+                   for (const rgb of list) {
+                     const k = rgb.map((v) => Math.round(v)).join(',');
+                     const n = (count.get(k) || 0) + 1;
+                     count.set(k, n);
+                     if (n > bestN) {
+                       bestN = n;
+                       best = rgb;
+                     }
+                   }
+                   return { rgb: best, hex: hex(best), sat: sat(best), n: list.length };
+                 };
+                 const passedFar = [];
+                 const passedLines = [];
+                  const dump = [];
+                 const waiting = [];
+                 let newestPassedLine = Number.NEGATIVE_INFINITY;
+                 let activeBlock = null;
+                 let activeFirst = null;
+                 let activeLast = null;
+                 for (const el of Array.from(document.querySelectorAll('.pi-lyricfume__block'))) {
+                    { const dH = (v) => (v === null ? '?' : hex(v)); dump.push('L' + el.dataset.lyricLine + '/' + (el.dataset.fumePhase || '-') + '/b' + dH(parse(getComputedStyle(el).color || '')) + '/f' + dH(glyphColor(el, false)) + '/l' + dH(glyphColor(el, true)) + '/o' + getComputedStyle(el).opacity); }
+                   const line = Number(el.dataset.lyricLine);
+                   if (!Number.isFinite(line)) continue;
+                   if (line === activeIndex) {
+                     activeBlock = parse(getComputedStyle(el).color || '');
+                     activeFirst = glyphColor(el, false);
+                     activeLast = glyphColor(el, true);
+                     continue;
+                   }
+                   if (line > activeIndex) {
+                     const rgb = glyphColor(el, false);
+                     if (rgb !== null) waiting.push(rgb);
+                     continue;
+                   }
+                   // 已唱过 = 比当前句更早的块（不依赖 data-fume-phase：那个属性只在相位**变化**时写，
+                   // 首次渲染的 waiting 块上可能还没有；行号是本主题自己写在块上的、恒有）。
+                   if (line > newestPassedLine) newestPassedLine = line;
+                   const rgb = glyphColor(el, false);
+                   if (rgb !== null) passedLines.push({ line: line, rgb: rgb });
+                 }
+                 for (const entry of passedLines) {
+                   if (entry.line < newestPassedLine) passedFar.push(entry.rgb);
+                 }
+                 return {
+                   waiting: park(waiting),
+                   passedFar: park(passedFar),
+                   passedNewest: park(
+                     passedLines
+                       .filter((entry) => entry.line === newestPassedLine)
+                       .map((entry) => entry.rgb),
+                   ),
+                   passedLines: passedLines,
+                   activeBlock: activeBlock,
+                   activeFirst: activeFirst,
+                   activeLast: activeLast,
+                    dump: dump,
+                    vars: [
+                      getComputedStyle(root).getPropertyValue('--pi-fume-primary').trim(),
+                      getComputedStyle(root).getPropertyValue('--pi-fume-accent').trim(),
+                      String(root.dataset.viewIndex),
+                      String(root.dataset.fumeState),
+                      String(Number((document.querySelector('audio') || {}).currentTime || 0)),
+                    ],
+                 };
+               })()`,
+              true,
+            )) as FadeFrame | null;
+            if (fade !== null && fade.waiting !== null) {
+              for (const entry of fade.passedLines) {
+                if (!fadeFirstSeen.has(entry.line)) fadeFirstSeen.set(entry.line, sample);
+                // **用户本轮第 2 条**：唱过那一档的**落点**不再是「还没唱到」那支色（两支现在刻意做了
+                // 深浅差），所以「收敛」改成「到达**更早那些已唱过块**的众数色」。
+                if (
+                  !fadeConverged.has(entry.line) &&
+                  fade.passedFar !== null &&
+                  fadeDist(entry.rgb, fade.passedFar.rgb) <= 24
+                ) {
+                  fadeConverged.set(entry.line, sample);
+                }
+              }
+              if (fade.passedFar !== null) {
+                fadeFrame = fade;
+                fadeSamples = sample;
+              }
+            }
+            await delay(220);
+          }
+          if (fadeFrame === null) {
+            fumeFadeOk = null;
+            fumeFadeInfo = '未跑（这一跑里没有出现「比当前句更早的已唱过块」）';
+          } else {
+            const neutral = fadeFrame.waiting as FadePick;
+            const passed = fadeFrame.passedFar as FadePick;
+            const neutralGap = fadeDist(passed.rgb, neutral.rgb);
+            const highlightGap =
+              fadeFrame.activeBlock === null ? 999 : fadeDist(passed.rgb, fadeFrame.activeBlock);
+            let lagWorst = 0;
+            let lagSeen = 0;
+            fadeFirstSeen.forEach((firstSeen, line) => {
+              const converged = fadeConverged.get(line);
+              if (converged === undefined) return;
+              lagSeen += 1;
+              lagWorst = Math.max(lagWorst, converged - firstSeen);
+            });
+            /*
+             * **用户本轮第 2 条**（图）：「播放过的歌词与没播放的歌词在原色上有深浅区别，播放过的深一些」。
+             * 旧判据是 `neutralGap <= 24`（两者必须是**同一支色**）—— 那正是本轮要改掉的行为。
+             * 现在判「两支**深浅分明**」（色差 ≥ 24）且「唱过那支已经离高亮色足够远」（≥ 30）；
+             * **方向**（谁更深）由单测钉（那里底色是已知的输入），这里只报读数。
+             */
+            fumeFadeOk = neutralGap >= 24 && highlightGap >= 30;
+            fumeFadeInfo =
+              `唱过（非最新一句）=${passed.hex}（${passed.n} 个字素）` +
+              `｜还没唱到=${neutral.hex}（${neutral.n} 个字素）` +
+              `｜两者色差=${neutralGap}（>=24 才算原色的深浅分得开` +
+              `；相对亮度 唱过=${fadeLuma(passed.rgb)} 还没唱到=${fadeLuma(neutral.rgb)}）` +
+              `｜离正在唱那块的块色=${highlightGap}（>=30 才算褪掉高亮）` +
+              `｜最新一句已唱=${fadeFrame.passedNewest === null ? '无' : fadeFrame.passedNewest.hex}` +
+              `｜正在唱那块：首字=${fadeFrame.activeFirst === null ? '无' : fadeHex(fadeFrame.activeFirst)}` +
+              `、末字=${fadeFrame.activeLast === null ? '无' : fadeHex(fadeFrame.activeLast)}（只记录）` +
+              `｜收敛用时：观测 ${lagSeen} 句、最慢 ${lagWorst} 帧×220ms（期望 ≤ 3）` +
+              `｜采样 ${fadeSamples + 1}/10 帧`;
+            console.info(
+              `[pi/smoke] 浮名块诊断（末帧）：viewIndex=${fadeFrame.vars[2]} state=${fadeFrame.vars[3]} time=${fadeFrame.vars[4]}s primary=${fadeFrame.vars[0]} accent=${fadeFrame.vars[1]} → ` +
+                fadeFrame.dump.join(' ; '),
+            );
+          }
+          console.info(
+            `[pi/smoke] 浮名高亮褪回常态色（用户 m00002 第 1 条 / m00380）：${fumeFadeInfo}` +
+              ` → ${fumeFadeOk === null ? '未跑' : fumeFadeOk ? '✓' : '✗'}`,
           );
         }
         /*
@@ -5902,7 +8226,15 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
                 const word = col.querySelector('.pi-lyricpartita__word');
                 if (word === null) continue;
                 const wordStyle = getComputedStyle(word);
-                const font = parseFloat(wordStyle.fontSize) || 0;
+                /*
+                 * **用户第 5 轮第 3 条**：当前块的字号现在也走「高光交接」的过渡（延迟 200ms + 220ms
+                 * 补间），采样瞬间可能正落在补间中间 ⇒ font / mult 的跨块恒等判据
+                 *（baseSpread ≤ 0.08）会被中间值骗红。改读块上**声明的** --pi-partita-font
+                 *（决定字号的原始值，不受过渡影响，仍是「这一块该多大」的真实来源）。
+                 *（这段注释在模板字符串里，不许出现反引号。）
+                 */
+                const font =
+                  parseFloat(getComputedStyle(col).getPropertyValue('--pi-partita-font')) || 0;
                 const mult =
                   parseFloat(getComputedStyle(col).getPropertyValue('--pi-partita-mult')) || 0;
                 fonts.push(font);
@@ -5911,19 +8243,37 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
                 bases.push(mult > 0 ? font / mult : 0);
               }
               let currIndex = -1;
-              let currMult = 0;
-              for (let i = 0; i < mults.length; i += 1) {
-                if ((mults[i] ?? 0) > currMult) {
-                  currMult = mults[i] ?? 0;
+              for (let i = 0; i < cols.length; i += 1) {
+                if (cols[i].getAttribute('data-current') === 'true') {
                   currIndex = i;
+                  break;
                 }
               }
               const currCol = currIndex < 0 ? null : cols[currIndex];
-              const currIsCurrent =
-                currCol !== null && currCol.getAttribute('data-current') === 'true';
+              let currActiveScale = 0;
+              let currAtomWords = 0;
+              if (currCol !== null) {
+                /* **用户本轮第 1 条**：缩放整支挪到了**词容器** .pi-lyricpartita__atom 上
+                   （以单词为单位放大），所以读数也从字素换成词容器；顺便记下这个容器里
+                   包着几个字素 —— 拉丁词 > 1 就证明「整词一起放大」而不是「字母各自放大」。 */
+                for (const atom of currCol.querySelectorAll('.pi-lyricpartita__atom')) {
+                  const value =
+                    Number.parseFloat(
+                      getComputedStyle(atom).getPropertyValue('--pw-active-scale') || '0',
+                    ) || 0;
+                  currActiveScale = Math.max(currActiveScale, value);
+                  if (value >= 1.25) {
+                    currAtomWords = Math.max(
+                      currAtomWords,
+                      atom.querySelectorAll('.pi-lyricpartita__word').length,
+                    );
+                  }
+                }
+              }
+              const currMult = currIndex < 0 ? 0 : mults[currIndex] ?? 0;
+              const currIsCurrent = currCol !== null && currActiveScale >= 1.25;
               const currColor = currIndex < 0 ? '' : colors[currIndex];
-              // 第十五轮接缝：当前块的纯放大倍数（不含抖动）。--pi-partita-mult 是「抖动 × 纯倍数」，
-              // 单看它在抖动为负时只有 1.1 出头，判「当前句放大」会误红。
+              // 第十五轮接缝：当前块的纯放大倍数（不含抖动），仍然从 data-current-scale 读。
               const currScaleRaw = currCol === null ? '' : currCol.getAttribute('data-current-scale') || '';
               const currScale = Number(currScaleRaw) || 0;
               const othersColors = colors.filter((_color, i) => i !== currIndex);
@@ -5944,6 +8294,8 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
                 currentCols,
                 currColor,
                 currScale,
+                currActiveScale,
+                currAtomWords,
                 othersColors,
                 baseSpread: Number(baseSpread.toFixed(4)),
                 distinctFonts: [...new Set(fonts.map((f) => Math.round(f)))].length,
@@ -5963,6 +8315,8 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
             currentCols: number;
             currColor: string;
             currScale: number;
+            currActiveScale: number;
+            currAtomWords: number;
             othersColors: string[];
             baseSpread: number;
             distinctFonts: number;
@@ -5971,9 +8325,14 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
           } | null;
           const info = partitaInfo;
           partitaSpaceOk =
-            info === null ? null : info.boundaries >= 1 && info.spaceEm !== null && info.spaceEm >= 0.12;
+            info === null
+              ? null
+              : info.boundaries >= 1 && info.spaceEm !== null && info.spaceEm >= 0.12;
           // 「当前句放大」的三重证据：倍率 ≥ 1.25、字号 ÷ 倍率跨块一致（±8%）、且最大倍率那一块正是
           // `data-current="true"` 的那一块（高亮）。这一瞬若根本没有当前句（句间），记「未量」而不是判红。
+          // **用户本轮第 1 条**之后「当前句放大」落在**正在唱的那一个字**身上（不再乘进块的字号）：
+          // 三重证据 = `data-current="true"` 的那一块里存在 `--pw-active-scale ≥ 1.25` 的字、
+          // 这一块的 `data-current-scale ∈ [1.25, 1.6]`、且「字号 ÷ 倍率」跨块一致（±8%）。
           partitaSizeOk =
             info === null
               ? null
@@ -5982,7 +8341,7 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
                 : info.distinctFonts >= 2 &&
                   info.currScale >= 1.25 &&
                   info.currScale <= 1.6 &&
-                  info.currMult > 1 &&
+                  info.currActiveScale >= 1.25 &&
                   info.currIsCurrent &&
                   info.baseSpread <= 0.08 &&
                   info.currColor !== '' &&
@@ -6016,8 +8375,10 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
               (info === null ? '无' : info.currMult.toFixed(2)) +
               '（纯放大倍数=' +
               (info === null ? '无' : info.currScale.toFixed(3)) +
-              '）' +
-              '（带最大倍率的块 data-current=' +
+              '；正在唱那个词的放大=' +
+              (info === null ? '无' : info.currActiveScale.toFixed(3)) +
+              `（词内 ${info === null ? '?' : info.currAtomWords} 个字素一起放大）` +
+              '（当前块里挂着放大=' +
               (info === null ? '?' : info.currIsCurrent ? '对' : '错') +
               '，当前句块数=' +
               (info === null ? '?' : info.currentCols) +
@@ -6082,7 +8443,13 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
               };
             })()`,
             true,
-          )) as { ratioW: number; ratioH: number; blocks: number; spread: number; out: number } | null;
+          )) as {
+            ratioW: number;
+            ratioH: number;
+            blocks: number;
+            spread: number;
+            out: number;
+          } | null;
           const fillOk = fill !== null && fill.ratioW >= 0.8 && fill.ratioH >= 0.6;
           // 探针自身的一个坑：原来这里只写了失败分支（`if (!fillOk) stageFillOk = false`），
           // 成功时留成 `null` ⇒ 末行永远打「三套铺满整屏 未跑」，即使三套的日志都打了 ✓。
@@ -6096,7 +8463,13 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
               (fill === null ? '无' : fill.ratioW + 'x' + fill.ratioH + ' 占窗') +
               (fill === null
                 ? ''
-                : '｜歌词块=' + fill.blocks + ' 并集宽占比=' + fill.spread + ' 出窗=' + fill.out + 'px') +
+                : '｜歌词块=' +
+                  fill.blocks +
+                  ' 并集宽占比=' +
+                  fill.spread +
+                  ' 出窗=' +
+                  fill.out +
+                  'px') +
               (fillOk ? ' ✓' : ' ✗'),
           );
         }
@@ -6115,6 +8488,36 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
                const canvas = document.querySelector('.pi-lyricpendolo__dial');
                const mark = () => (root instanceof HTMLElement ? root.dataset.gears || '' : '');
                const bitmap = () => (canvas instanceof HTMLCanvasElement ? canvas.toDataURL() : '');
+               /*
+                * **用户第 11 轮第 3 条**（原话：「时计里的齿轮转动时是**一句歌词转过一个槽**
+                * 而不是一下子转非常多」）：「data-gear-travel」是小齿轮的累计行程（rad），
+                * 档角 = 弧度设置 100° ÷ 8 = 12.5° = 0.2182 rad（PendoloTheme.ARC_SLOT_DIVISOR）。
+                * 判据 = 「这次 seek 走过的每一句，齿轮走的档数 ≈ 1」：
+                * 「每句档数 = Δ行程 ÷ Δ句号 ÷ 0.2182」，要求落在 [0.5, 1.6]。
+                * 旧写法（|Δ| 累加 × 6）这一格的读数会是 4~8 档 ⇒ 红。
+                * 这段注释在模板字符串里，不许出现反引号。
+                */
+               const SLOT_RAD = (12.5 * Math.PI) / 180;
+               const travelNow = () =>
+                 root instanceof HTMLElement ? Number(root.dataset.gearTravel || '0') : 0;
+               const lineNow = () => {
+                 const stage = document.querySelector('.pi-lyricstage');
+                 /*
+                  * 读**视图**句号（「data-view-index」）：时计允许滚轮翻看，「spring.value」跟的是
+                  * 视图那一句（PendoloTheme 的 targetRef.current = viewIndex），
+                  * 拿「active-index」去对账会在「滚过好几句又回来」时对不上（实测 2.80 档/句）。
+                  * 取不到视图号时退回 active。
+                  * （这段注释在模板字符串里，不许出现反引号。）
+                  */
+                 const raw =
+                   stage instanceof HTMLElement
+                     ? (stage.dataset.viewIndex ?? stage.dataset.activeIndex)
+                     : undefined;
+                 const value = Number(raw);
+                 return Number.isFinite(value) ? value : -1;
+               };
+               const travelBefore = travelNow();
+               const lineBefore = lineNow();
                const idleMarks = [];
                const idleShots = [];
                for (let i = 0; i < 4; i += 1) {
@@ -6127,10 +8530,21 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
                let settle = '';
                let seeked = 0;
                const audio = window.__piAudio;
+               let travelSeek = travelBefore;
+               let lineSeek = lineBefore;
+               let travelAfterSeek = travelBefore;
+               let lineAfterSeek = lineBefore;
                if (audio) {
                  const wasPlaying = !audio.paused;
                  const saved = Number(audio.currentTime || 0);
                  audio.pause();
+                 /*
+                  * **量窗 = 这一趟前进 seek**（用户第 11 轮第 3 条）：读数取在 seek 之前与
+                  * 「弹簧真正停稳」之后，中间不夹归位 —— 归位那一下会让行程往回走，
+                  * 把读数搅成负的（上一版就是这么记成「未量」的）。
+                  */
+                 travelSeek = travelNow();
+                 lineSeek = lineNow();
                  audio.currentTime = saved + 12;
                  seeked = Number((saved + 12).toFixed(1));
                  for (let i = 0; i < 60 && moved < 2; i += 1) {
@@ -6145,6 +8559,9 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
                     settle = mark();
                   }
                  settle = mark();
+                 // 弹簧停稳之后再读一次：量窗的右端。
+                 travelAfterSeek = travelNow();
+                 lineAfterSeek = lineNow();
                  audio.currentTime = saved;
                  if (wasPlaying) {
                    try {
@@ -6152,6 +8569,15 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
                    } catch (error) {
                      void error;
                    }
+                 }
+                 /*
+                  * 归位这一下也要等弹簧停稳再读行程 —— 「gearTravel」是**净行程**，
+                  * 读到飞行中的一笔就偏小（判据会假红）。每 200ms 问一次，最多 3s。
+                  * （这段注释在模板字符串里，不许出现反引号。）
+                  */
+                 for (let i = 0; i < 15; i += 1) {
+                   await sleep(200);
+                   if (mark() === 'idle') break;
                  }
                }
                let idleStable = true;
@@ -6168,6 +8594,11 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
                  samples,
                  settle: settle || '无',
                  seeked,
+                 travelBefore,
+                 travelAfter: travelAfterSeek,
+                 lineBefore: lineSeek,
+                 lineAfter: lineAfterSeek,
+                 slotRad: SLOT_RAD,
                };
              })()`,
             true,
@@ -6179,6 +8610,11 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
             samples: number;
             settle: string;
             seeked: number;
+            travelBefore: number;
+            travelAfter: number;
+            lineBefore: number;
+            lineAfter: number;
+            slotRad: number;
           };
           /*
            * 位图稳定**不进判定**：表盘上的摆轮（擒纵那一段）本来就一直在摆，画布每帧都会变。
@@ -6186,69 +8622,155 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
            * 一轮来证明：停着时全是 idle、换句后出现 moving、转完回到 idle。位图只作记录。
            */
           pendoloGearOk = gear.idleSeen >= 1 && gear.moved >= 1 && gear.settle === 'idle';
+          /*
+           * **用户第 11 轮第 3 条**：再判「一句歌词转过一个槽」——
+           * `每句档数 = Δ行程 ÷ Δ句号 ÷ 每档弧度`，要求 ∈ [0.5, 1.6]。
+           * 只在真的跨过至少一句时才判（没跨句 ⇒ 这一条记未量）。
+           */
+          const gearLines = gear.lineAfter - gear.lineBefore;
+          const gearDelta = gear.travelAfter - gear.travelBefore;
+          const slotsPerLine =
+            gearLines >= 1 && gear.slotRad > 0 ? gearDelta / gearLines / gear.slotRad : -1;
+          const gearSlotOk = slotsPerLine < 0 ? null : slotsPerLine >= 0.5 && slotsPerLine <= 1.6;
+          pendoloSlotOk = gearSlotOk;
           console.info(
             `[pi/smoke] 时计小齿轮只在歌词环转时转（第十五轮第 7 条）：停着时的标记=${gear.marks || '无'}` +
               `（idle ${gear.idleSeen} 次，期间位图稳定=${gear.idleStable ? '是' : '否'}）` +
               `｜换句（推到 ${gear.seeked}s）后的 ${gear.samples} 个采样里 moving ${gear.moved} 次` +
               `｜转完标记=${gear.settle} → ${pendoloGearOk ? '✓' : '✗'}`,
           );
-        }
-        if (theme === 'classic' && spinProbe) {
-          const spin = (await win.webContents.executeJavaScript(
-            `(() => {
-               const words = [...document.querySelectorAll('.pi-lyricstage__word[data-word-spin]')];
-               const angles = words.map((el) => {
-                 const m = new DOMMatrixReadOnly(getComputedStyle(el).transform);
-                 return Math.round(((Math.atan2(m.b, m.a) * 180) / Math.PI) * 10) / 10;
-               });
-               const tilted = angles.filter((a) => Math.abs(a) >= 1).length;
-               const worst = angles.reduce((acc, a) => Math.max(acc, Math.abs(a)), 0);
-               const root = document.querySelector('.pi-lyricstage');
-               return {
-                 words: words.length,
-                 tilted,
-                 worst: Number(worst.toFixed(1)),
-                 attr: root instanceof HTMLElement ? root.dataset.wordSpin || '' : '',
-                 sample: angles.slice(0, 8).join(','),
-               };
-             })()`,
-            true,
-          )) as { words: number; tilted: number; worst: number; attr: string; sample: string };
-          spinOk = spin.words > 0 && spin.tilted >= 1 && spin.worst <= 12;
           console.info(
-            `[pi/smoke] 逐字旋转效果（第十四轮第 4 条，瞬时单帧读数·只记录）：字=${spin.words} 歪着的=${spin.tilted}` +
-              ` 最大角=${spin.worst}°｜前几个角=${spin.sample}｜根 data-word-spin=${spin.attr || '无'}` +
-              ` → ${spinOk ? '✓' : '✗'}`,
+            `[pi/smoke] 时计齿轮「一句一档」（用户第 11 轮第 3 条）：句号 ${gear.lineBefore}→${gear.lineAfter}` +
+              `（跨 ${gearLines} 句）｜行程 ${gear.travelBefore}→${gear.travelAfter.toFixed(3)} rad` +
+              `（Δ=${gearDelta.toFixed(3)}）｜每档 ${gear.slotRad.toFixed(4)} rad` +
+              `⇒ 每句档数=${slotsPerLine < 0 ? '未量' : slotsPerLine.toFixed(2)}（要求 0.5~1.6；` +
+              `旧写法 4~8）→ ${gearSlotOk === null ? '未量' : gearSlotOk ? '✓' : '✗'}`,
           );
         }
         if (theme === 'classic' && spinProbe) {
           /*
-         * 第十四轮第 4 条（逐字旋转）**复测**：上面那一次是「瞬态」读数——角度只活在「未唱 → 唱到」
-         * 那一下（入场关键帧 + 未唱态的 `rotate(var(--pi-word-spin))`），采样恰好落在「整句都唱过」
-         * 的一瞬就会数到 0 个歪字（run f / run g 两次都取到 0，字却分别有 23 / 38 个）。
-         * 这里先把播放头往回挪 4s（当前句的字回到未唱态 = 重新带上角度），再每 150ms 采一帧、最多 6s，
-         * 记下「歪字最多」的那一帧来判定——证明的还是同一件事：字身上确实挂着 ±6° 的旋转。
-         */
+           * **用户本轮第 2 条**之后读数口径（三态模型）：旋转读**独立属性 `rotate`**，不再是 transform
+           * 矩阵的 `atan2`（folia 的 passed 变体给 rotate 单列 5s、给缩放位移 0.5s，一支 transform
+           * 写不出两种时长）。三态的角分别是：
+           *   · **未唱**：落点角 + 20°；**正在唱**：落点角；**唱过**：落点角 + 漂移角（±22.5°）。
+           * 下面这一支探针只量**已落定**的那一批（这一格上没有任何 `playState !== 'finished'` 的
+           * 过渡），上界跟着模型走：落点角 5°（moderate 档）+ 未唱 20° + 漂移 7.5° ⇒ 32.5°，取整 35°。
+           * 判据：`words > 0 && tilted >= 1 && worst <= 35`。
+           *
+           * 跳过条件用 `playState !== 'finished'` 而不是 `=== 'running'`：刚翻成 active 的那一瞬
+           * 过渡还在半路、读数还没到位；`active → passed` 翻转时还有一支 transform 过渡
+           *（`getAnimations()` 里是 CSSTransition），半路读数同样不算「已落定」——一并排除。
+           */
+          const spin = (await win.webContents.executeJavaScript(
+            `(() => {
+               const all = [...document.querySelectorAll('.pi-lyricstage__word[data-word-spin]')];
+               const angleOf = (el) => {
+                 const m = /(-?[0-9.]+)deg/.exec(getComputedStyle(el).rotate);
+                 return m === null ? 0 : Math.round(Number(m[1]) * 10) / 10;
+               };
+               const settled = [];
+               let inFlight = 0;
+               for (const el of all) {
+                 const anims = typeof el.getAnimations === 'function' ? el.getAnimations() : [];
+                 const airborne = el.dataset.wordState !== 'active' || anims.some((a) => a.playState !== 'finished');
+                 if (airborne) inFlight += 1;
+                 else settled.push(angleOf(el));
+               }
+               const tilted = settled.filter((a) => Math.abs(a) >= 1).length;
+               const worst = settled.reduce((acc, a) => Math.max(acc, Math.abs(a)), 0);
+               const rolls = all
+                 .map((el) => Math.abs(Number.parseFloat(el.style.getPropertyValue('--pi-word-wait-rot'))))
+                 .filter((n) => Number.isFinite(n) && n > 0);
+               const root = document.querySelector('.pi-lyricstage');
+               return {
+                 words: settled.length,
+                 tilted,
+                 worst: Number(worst.toFixed(1)),
+                 rollMin: rolls.length ? Number(Math.min(...rolls).toFixed(1)) : 0,
+                 rollMax: rolls.length ? Number(Math.max(...rolls).toFixed(1)) : 0,
+                 inFlight,
+                 attr: root instanceof HTMLElement ? root.dataset.wordSpin || '' : '',
+                 sample: settled.slice(0, 8).join(','),
+               };
+             })()`,
+            true,
+          )) as {
+            words: number;
+            tilted: number;
+            worst: number;
+            rollMin: number;
+            rollMax: number;
+            inFlight: number;
+            attr: string;
+            sample: string;
+          };
+          // **用户本轮第 2 条（第二遍）**：上界换成 classic 实际跑的 moderate 档的合成角上界 ——
+          // 落点角 ±5°（folia 的 baseRotate moderate 档）+ 未唱那一格额外的 20° + 唱完漂移角 ±7.5°
+          // = 32.5°，取整到 35° 留一点过渡中的抖动余量。判据与模型同源：改 `CLASSIC_ROT_DEG` /
+          // `CLASSIC_WAIT_ROT_DEG` / `CLASSIC_PASSED_ROT_SPAN_DEG` 的任何一处，这里都要跟着改。
+          // 采样恰好落在「这一帧一个落定字都没有」时记「未量」—— 下面那支复测专门取
+          // 「已落定歪字最多的那一帧」，瞬时单帧读空不该判红。
+          spinOk = spin.words === 0 ? null : spin.tilted >= 1 && spin.worst <= 35;
+          console.info(
+            `[pi/smoke] 逐字旋转效果（第十四轮第 4 条，瞬时单帧读数·只记录）：已落定的字=${spin.words} 歪着的=${spin.tilted}` +
+              ` 最大角=${spin.worst}°｜前几个角=${spin.sample}` +
+              `｜未唱角(--pi-word-wait-rot)=${spin.rollMin}~${spin.rollMax}°` +
+              `｜飞行中/未唱（只报告、不进判据）=${spin.inFlight}` +
+              `｜根 data-word-spin=${spin.attr || '无'}` +
+              ` → ${spinOk === null ? '未量' : spinOk ? '✓' : '✗'}`,
+          );
+        }
         if (theme === 'classic' && spinProbe) {
-          const tilt = (await win.webContents.executeJavaScript(
-            `(async () => {
+          /*
+           * 第十四轮第 4 条（逐字旋转）**复测**：上面那一次是「瞬态」读数——**用户本轮第 2 条**之后
+           * 角度只活在「未唱 → 唱到」那一段弹簧过渡里（未唱 = 落点角 + 20°，唱到 = 落点角），
+           * 采样恰好落在「整句都唱过」的一瞬就会数到 0 个歪字（run f / run g 两次都取到 0，字却分别有
+           * 23 / 38 个）。这里先把播放头往回挪 4s（当前句的字回到未唱态 = 重新带上角度），
+           * 再每 150ms 采一帧、最多 6s，记下「已落定歪字最多」的那一帧来判定——证明的还是同一件事：
+           * 字身上确实挂着旋转。
+           *
+           * 读数与判据都跟着三态模型走：角度读独立属性 `rotate`；「歪字」只统计**没有任何在跑的
+           * 过渡**的字素（`getAnimations()` 里凡有非 `finished` 的，都只用来报告过渡途中的角度），
+           * 上界 35°（moderate 档的落点角 5° + 未唱 20° + 漂移 7.5°）。
+           */
+          if (theme === 'classic' && spinProbe) {
+            const tilt = (await win.webContents.executeJavaScript(
+              `(async () => {
                const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
                const audio = window.__piAudio;
                if (audio && Number(audio.duration) > 20) {
                  audio.currentTime = Math.max(0, Number(audio.currentTime) - 4);
                }
                const read = () => {
-                 const list = [...document.querySelectorAll('.pi-lyricstage__word[data-word-spin]')];
-                 const angles = list.map((el) => {
-                   const m = new DOMMatrixReadOnly(getComputedStyle(el).transform);
-                   return Math.round(((Math.atan2(m.b, m.a) * 180) / Math.PI) * 10) / 10;
-                 });
-                 return { words: list.length, angles };
+                 const all = [...document.querySelectorAll('.pi-lyricstage__word[data-word-spin]')];
+                 const settled = [];
+                 const flying = [];
+                 for (const el of all) {
+                   const anims = typeof el.getAnimations === 'function' ? el.getAnimations() : [];
+                   /* 只有 active 那一格挂入场动画：waiting 的字还站在远处（带着 ±150~300° 的入场自转角，
+                     量出来是折回 ±180° 的大角），passed 的字早已归位 —— 两者都不进「落定」这支判据，
+                     否则量到的是「还没飞过来的字」，判据必假红（用户 m06476 第 1 条那一跑就是这样）。 */
+                  const airborne = el.dataset.wordState !== 'active' || anims.some((a) => a.playState !== 'finished');
+                   const m = /(-?[0-9.]+)deg/.exec(getComputedStyle(el).rotate);
+                   const angle = m === null ? 0 : Math.round(Number(m[1]) * 10) / 10;
+                   if (airborne) flying.push(angle);
+                   else settled.push(angle);
+                 }
+                 let roll = 0;
+                 for (const el of all) {
+                   const n = Math.abs(Number.parseFloat(el.style.getPropertyValue('--pi-word-wait-rot')));
+                   if (Number.isFinite(n) && n > roll) roll = n;
+                 }
+                 let flyWorst = 0;
+                 for (const a of flying) flyWorst = Math.max(flyWorst, Math.abs(a));
+                 return { words: settled.length, angles: settled, flying: flying.length, flyWorst, roll };
                };
-               let best = { words: 0, angles: [] };
+               let best = { words: 0, angles: [], flying: 0, flyWorst: 0, roll: 0 };
                let bestTilted = -1;
+               let flyWorstSeen = 0;
                for (let i = 0; i < 40; i += 1) {
                  const frame = read();
+                 if (frame.flyWorst > flyWorstSeen) flyWorstSeen = frame.flyWorst;
                  const tilted = frame.angles.filter((a) => Math.abs(a) >= 1).length;
                  if (tilted > bestTilted) {
                    bestTilted = tilted;
@@ -6262,48 +8784,1009 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
                const root = document.querySelector('.pi-lyricstage');
                return {
                  words: best.words,
+                 inFlight: best.flying,
                  tilted: bestTilted < 0 ? 0 : bestTilted,
                  worst: Number(worst.toFixed(1)),
+                 flyWorst: Number(flyWorstSeen.toFixed(1)),
+                 rollMin: Number(best.roll.toFixed(1)),
+                 rollMax: Number(best.roll.toFixed(1)),
                  attr: root instanceof HTMLElement ? root.dataset.wordSpin || '' : '',
                  sample: best.angles.slice(0, 8).join(','),
                };
              })()`,
+              true,
+            )) as {
+              words: number;
+              tilted: number;
+              worst: number;
+              flyWorst: number;
+              rollMin: number;
+              rollMax: number;
+              inFlight: number;
+              attr: string;
+              sample: string;
+            };
+            spinOk = tilt.words > 0 && tilt.tilted >= 1 && tilt.worst <= 35;
+            console.info(
+              `[pi/smoke] 逐字旋转效果复测（第十四轮第 4 条，改采「已落定歪字最多的那一帧」）：已落定的字=${tilt.words}` +
+                ` 歪着的=${tilt.tilted} 最大角=${tilt.worst}°｜前几个角=${tilt.sample}` +
+                `｜未唱角(--pi-word-wait-rot)=${tilt.rollMax}°` +
+                `｜采样期间飞行中最大合成角=${tilt.flyWorst}°（atan2 折回 ±180°，只作观测、不进判据）` +
+                `｜该帧飞行中/未唱被跳过=${tilt.inFlight}` +
+                `｜根 data-word-spin=${tilt.attr || '无'} → ${spinOk ? '✓' : '✗'}`,
+            );
+          }
+          /*
+           * **用户本轮第 2 条（第二遍）**：「歌词稀碎没有排列成一个句子」的量化判据。
+           *
+           * 用户的「正确表现」图（一行十个字贴在同一条基线上、只有小错落）逐列量过：
+           * **整行墨迹高 ÷ 单字墨迹高 = 1.83**；我们改之前那版（chaotic：落点错落 ±60px、
+           * 倾角 ±30°）同一套量法是 **3.4** —— 数字与观感对得上。
+           *
+           * 这里用 DOM 做同一件事：取当前正在演的那一行里**看得见**（opacity > 0.1）的词，
+           * 量它们包围盒下沿的极差（= 错落跨度），再除以字高（fontSize × 0.75 ≈ 大写字母墨迹高，
+           * 与图像量法的「列高中位数」同量级）。判据 2.3：留出「这一帧恰好只有两三个词、
+           * 跨度天然偏小」的余量，同时仍能抓住「又撒成一片」（chaotic 那版 3.4 必然红）。
+           */
+          const scatter = (await win.webContents.executeJavaScript(
+            `(async () => {
+               const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+               /* 采样取「一行里看得见的词最多」的那一帧：folia 的未唱词是 opacity 0，
+                  一行刚开始演的时候只有一两个词可见，那时的跨度并不代表整行。 */
+               let best = null;
+               let outFrames = 0;
+               let seenFrames = 0;
+               let outDetail = '';
+               for (let i = 0; i < 36; i += 1) {
+                 for (const probeLine of Array.from(
+                   document.querySelectorAll('.pi-lyricstage__line'),
+                 )) {
+                   const probeWords = [
+                     ...probeLine.querySelectorAll('.pi-lyricstage__word[data-word-state]'),
+                   ].filter((el) => Number.parseFloat(getComputedStyle(el).opacity) > 0.1);
+                   if (probeWords.length === 0) continue;
+                   seenFrames += 1;
+                   let left = Infinity;
+                   let right = -Infinity;
+                   for (const el of probeWords) {
+                     const rect = el.getBoundingClientRect();
+                     left = Math.min(left, rect.left);
+                     right = Math.max(right, rect.right);
+                   }
+                   if (left < 0 || right > window.innerWidth) {
+                     outFrames += 1;
+                     if (outDetail === '') {
+                       const box = probeLine.querySelector('.pi-lyricstage__words');
+                       let sum = 0;
+                       if (box !== null) {
+                         for (const child of Array.from(box.children)) sum += child.offsetWidth;
+                       }
+                       outDetail =
+                         (probeLine.getAttribute('data-phase') || '?') +
+                         ' left=' +
+                         Math.round(left) +
+                         ' right=' +
+                         Math.round(right) +
+                         ' fit=' +
+                         (probeLine.style.getPropertyValue('--pi-stage-fit') || '无') +
+                         ' need=' +
+                         sum;
+                     }
+                   }
+                 }
+                 const line = document.querySelector('.pi-lyricstage__line[data-active="true"]');
+                 if (line !== null) {
+                   const words = [
+                     ...line.querySelectorAll('.pi-lyricstage__word[data-word-state]'),
+                   ].filter((el) => Number.parseFloat(getComputedStyle(el).opacity) > 0.1);
+                   if (words.length >= 2) {
+                     /* 错落量取**变换矩阵的 ty**（= folia 的 config.y），不取包围盒：
+                        包围盒会把「长词转 5°」撑高几百像素（470px 宽的词转 5° 就多 41px），
+                        那不是「有没有排成一句」的量。ty 是纯平移，与基线错落等价。 */
+                     let low = Infinity;
+                     let high = -Infinity;
+                     const fonts = [];
+                     for (const el of words) {
+                       const style = getComputedStyle(el);
+                       const ty = new DOMMatrixReadOnly(style.transform).f;
+                       low = Math.min(low, ty);
+                       high = Math.max(high, ty);
+                       fonts.push(Number.parseFloat(style.fontSize) || 0);
+                     }
+                     fonts.sort((a, b) => a - b);
+                     const fontPx = fonts[Math.floor(fonts.length / 2)] || 0;
+                     if (Number.isFinite(low) && fontPx > 0) {
+                       const ink = fontPx * 0.75;
+                       const span = high - low;
+                       const active = document.querySelector('.pi-lyricstage__line[data-active="true"]');
+                       const frame = document.querySelector('.pi-lyricstage__viewport');
+                       let need = 0;
+                       const wordsBox =
+                         active === null
+                           ? null
+                           : active.querySelector('.pi-lyricstage__words');
+                       if (wordsBox !== null) {
+                         for (const child of Array.from(wordsBox.children)) {
+                           need += child.offsetWidth;
+                         }
+                       }
+                       const frameFit = {
+                         visible: words.length,
+                         span: Math.round(span),
+                         fontPx: Math.round(fontPx),
+                         ratio: Number(((span + ink) / ink).toFixed(2)),
+                         fit: active === null ? '' : active.style.getPropertyValue('--pi-stage-fit'),
+                         need,
+                         avail: frame === null ? 0 : frame.clientWidth,
+                       };
+                       if (best === null || frameFit.visible > best.visible) best = frameFit;
+                       if (best.visible >= 5) break;
+                     }
+                   }
+                 }
+                 await sleep(180);
+               }
+               return best === null ? null : { ...best, outFrames, seenFrames, outDetail };
+             })()`,
             true,
-          )) as { words: number; tilted: number; worst: number; attr: string; sample: string };
-          spinOk = tilt.words > 0 && tilt.tilted >= 1 && tilt.worst <= 12;
+          )) as {
+            visible: number;
+            span: number;
+            fontPx: number;
+            ratio: number;
+            fit: string;
+            need: number;
+            avail: number;
+            outFrames: number;
+            seenFrames: number;
+            outDetail: string;
+          } | null;
+          classicScatterOk = scatter === null ? null : scatter.ratio <= 2.0;
           console.info(
-            `[pi/smoke] 逐字旋转效果复测（第十四轮第 4 条，改采「歪字最多的那一帧」）：字=${tilt.words}` +
-              ` 歪着的=${tilt.tilted} 最大角=${tilt.worst}°｜前几个角=${tilt.sample}` +
-              `｜根 data-word-spin=${tilt.attr || '无'} → ${spinOk ? '✓' : '✗'}`,
+            `[pi/smoke] 流光一行的错落跨度（用户本轮第 2 条「排成一个句子」，目标图量得 1.83）：` +
+              (scatter === null
+                ? '未量（一轮采样里看得见的词始终不足两个）'
+                : `看得见的词=${scatter.visible}（取最多的一帧）基线错落=${scatter.span}px 字高=${scatter.fontPx}px` +
+                  ` ⇒ 比=${scatter.ratio}（≤2.0；目标图同一套量法 1.5~1.8，chaotic 那版 2.9）` +
+                  `｜行宽适配 fit=${scatter.fit || '无'}（需要 ${scatter.need}px / 可用 ${scatter.avail}px）` +
+                  `｜出界的帧=${scatter.outFrames}/${scatter.seenFrames}${scatter.outDetail === '' ? '' : '（' + scatter.outDetail + '）'}`) +
+              ` → ${classicScatterOk === null ? '未量' : classicScatterOk ? '✓' : '✗'}`,
           );
-        }
-        // 第十五轮第 5 条：冒出来的字（active）身上挂的是不是那条旋转入场关键帧。
+          /*
+           * 用户 m06716：「远处」应该是歌词框的边框位置，不该飞到框外看不见。子代理把每个未唱字的起点
+           * 夹到 `.pi-lyricstage__viewport` 内缘（只缩不放）。这里读**未唱字**身上的 `--pi-word-wait-x/y`：
+           * 意图是 folia 的 `sin/cos` 摆幅（横向最多 100px、纵向最多 50px），被框夹过的字会明显更小。
+           * **只记录，不进判据。**
+           */
+          {
+            const clamps = (await win.webContents.executeJavaScript(
+              `(() => {
+               const words = [...document.querySelectorAll('.pi-lyricstage__word[data-word-state="waiting"]')];
+               const readPx = (el, name) => Number.parseFloat(el.style.getPropertyValue(name));
+               const ys = [];
+               const xs = [];
+               for (const el of words) {
+                 const y = readPx(el, '--pi-word-wait-y');
+                 const x = readPx(el, '--pi-word-wait-x');
+                 if (Number.isFinite(y)) ys.push(Math.abs(y));
+                 if (Number.isFinite(x)) xs.push(Math.abs(x));
+               }
+               const frame = document.querySelector('.pi-lyricstage__viewport');
+               const box = frame instanceof HTMLElement ? frame.getBoundingClientRect() : null;
+               return {
+                 waiting: words.length,
+                 withY: ys.length,
+                 yMin: ys.length ? Number(Math.min(...ys).toFixed(2)) : 0,
+                 yMax: ys.length ? Number(Math.max(...ys).toFixed(2)) : 0,
+                 xMin: xs.length ? Number(Math.min(...xs).toFixed(2)) : 0,
+                 xMax: xs.length ? Number(Math.max(...xs).toFixed(2)) : 0,
+                 shrunk: xs.filter((v) => v < 100).length + ys.filter((v) => v < 50).length,
+                 inlineScale: words.length ? words[0].style.getPropertyValue('--pi-word-scale') : '',
+                 computedScale:
+                   words.length ? getComputedStyle(words[0]).getPropertyValue('--pi-word-scale') : '',
+                 inlineActive:
+                   words.length ? words[0].style.getPropertyValue('--pi-word-active-scale') : '',
+                 frameW: box === null ? -1 : Math.round(box.width),
+                 frameH: box === null ? -1 : Math.round(box.height),
+               };
+             })()`,
+              true,
+            )) as {
+              waiting: number;
+              withY: number;
+              yMin: number;
+              yMax: number;
+              xMin: number;
+              xMax: number;
+              shrunk: number;
+              inlineScale: string;
+              computedScale: string;
+              inlineActive: string;
+              frameW: number;
+              frameH: number;
+            };
+            console.info(
+              `[pi/smoke] 流光「远处」夹到歌词框内缘（用户 m06716，只记录）：未唱字=${clamps.waiting}` +
+                `｜带 --pi-word-wait-y 的=${clamps.withY}` +
+                `｜|wait-y|=${clamps.yMin}~${clamps.yMax}px（意图上限 50px）` +
+                `｜|wait-x|=${clamps.xMin}~${clamps.xMax}px（意图上限 100px）` +
+                `｜被夹小的分量=${clamps.shrunk} 个` +
+                `｜scale 行内=${clamps.inlineScale || '无'} 计算=${clamps.computedScale || '无'}` +
+                ` 行内 active=${clamps.inlineActive || '无'}` +
+                `｜歌词框=${clamps.frameW}×${clamps.frameH}px`,
+            );
+          }
+          /*
+           * **用户本轮第 2 条**：这一支原来的判据是「冒出来的字身上挂着那条入场关键帧」
+           * （读 `animationName` 里的 `spin-in`）。三态模型把关键帧整段撤了 —— 旋转现在挂在
+           * **独立属性 `rotate`** 上（未唱 = 落点角 + 20°，正在唱 = 落点角），所以判据换成
+           * 「正在唱的字身上确实读得到一个非 0 的 rotate」：同一件事（旋转真的落在冒出来的那个字上），
+           * 只是读数从 `animation-name` 换成了 `rotate`。
+           */
           const spinin = (await win.webContents.executeJavaScript(
             `(async () => {
                const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+               const angleOf = (el) => {
+                 const m = /(-?[0-9.]+)deg/.exec(getComputedStyle(el).rotate);
+                 return m === null ? 0 : Number(m[1]);
+               };
                let activeMax = 0;
                let hit = 0;
-               const names = [];
+               const angles = [];
                for (let i = 0; i < 8; i += 1) {
                  const words = [...document.querySelectorAll('.pi-lyricstage__word[data-word-spin="true"]')];
                  const active = words.filter((el) => el.dataset.wordState === 'active');
                  if (active.length > activeMax) activeMax = active.length;
                  for (const el of active) {
-                   const name = getComputedStyle(el).animationName || '';
-                   if (name.indexOf('spin-in') >= 0) hit += 1;
-                   if (names.length < 4 && name) names.push(name);
+                   const angle = angleOf(el);
+                   if (Math.abs(angle) >= 0.5) hit += 1;
+                   if (angles.length < 4) angles.push(Math.round(angle * 10) / 10);
                  }
                  await sleep(260);
                }
-               return { activeMax, hit, names: names.join('|') };
+               return { activeMax, hit, angles: angles.join('|') };
              })()`,
             true,
-          )) as { activeMax: number; hit: number; names: string };
+          )) as { activeMax: number; hit: number; angles: string };
           spinInOk = spinin.activeMax === 0 ? null : spinin.hit >= 1;
           console.info(
-            `[pi/smoke] 流光逐字旋转用在冒出来的字上（第十五轮第 5 条）：冒字最多=${spinin.activeMax} 个` +
-              `｜挂到入场关键帧的=${spinin.hit} 个｜关键帧名=${spinin.names || '无'}` +
+            `[pi/smoke] 流光逐字旋转落在冒出来的字上（第十五轮第 5 条 → 本轮读 rotate 属性）：冒字最多=${spinin.activeMax} 个` +
+              `｜读到非 0 旋转的=${spinin.hit} 个｜前几个角=${spinin.angles || '无'}°` +
               ` → ${spinInOk === null ? '未量' : spinInOk ? '✓' : '✗'}`,
+          );
+        }
+        if (theme === 'classic') {
+          /*
+           * 用户 m04987 第 1 条：①英文按**整词**成组（不是一个字母一个字素地往外冒）；
+           * ②高亮字要有图 1 那样的一层外辉光（`text-shadow`）。
+           *
+           * ①不比对文本、只看几何：相邻两个 `.pi-lyricstage__word` 若「前者以拉丁字母结尾 +
+           *   后者以拉丁字母开头 + 两者横向间隙 < 4px」，那它们本来是一个词、被拆开了。
+           *   整词成组时词与词之间必然留着空格宽度 ⇒ 不该出现这样的相邻对。
+           * ②高亮字（`data-word-state="active"`）的 computed `text-shadow` 不能是 none；
+           *   常态字（waiting / passed）的带辉光数只记录（图 1 里常态字没有辉光）。
+           * 一句歌词里「正在冒」的字只活在那一下 ⇒ 多次采样取「高亮字最多」的那一帧。
+           */
+          /*
+           * 证据图：`docs/m3-lyric-classic.png`（`PI_SMOKE_SPIN=1` 时是
+           * `docs/m3r14-lyric-classic-spin.png`）是主题循环里随手拍的一帧，实测那一帧**没有高亮字**
+           *（高光与辉光就看不见了）。这里先等一小会儿，等到舞台真出现 `data-word-state="active"`
+           * 的字素再整窗拍，存成 `docs/m3r32-lyric-classic.png`，用来人眼复核图 1 那种「高亮 + 外辉光」
+           * 与图 2 那种「逐字错落」。
+           */
+          let classicActiveNow = 0;
+          for (let wait = 0; wait < 8; wait += 1) {
+            classicActiveNow = (await win.webContents.executeJavaScript(
+              `document.querySelectorAll('.pi-lyricstage__word[data-word-state="active"]').length`,
+              true,
+            )) as number;
+            if (classicActiveNow >= 1) break;
+            await delay(200);
+          }
+          // 证据图挪到「采完 8 帧」之后拍（见下面那段注释），这里先不拍。
+          const words = (await win.webContents.executeJavaScript(
+            `(async () => {
+               const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+               const read = () => {
+                 const list = [...document.querySelectorAll('.pi-lyricstage__word')];
+                 if (list.length === 0) return null;
+                 const latinEnd = /[A-Za-z]$/;
+                 const latinStart = /^[A-Za-z]/;
+                 const boxes = list.map((el) => el.getBoundingClientRect());
+                 let split = 0;
+                 const splits = [];
+                 for (let i = 0; i + 1 < list.length; i += 1) {
+                   const a = list[i].textContent || '';
+                   const b = list[i + 1].textContent || '';
+                   if (!latinEnd.test(a) || !latinStart.test(b)) continue;
+                   // 必须同一个行容器里的相邻两块（跨容器/跨行不成对）；而且只认「并排、
+                   // 几乎贴上」的那种间隙 —— 做高光时常见的「同字重影/回声层」盒子几乎完全
+                   // 重叠（gap 是很负的数），不能把它们当成「英文被拆开」。
+                   if (list[i].parentElement !== list[i + 1].parentElement) continue;
+                   const gap = boxes[i + 1].left - boxes[i].right;
+                   if (gap > -3 && gap < 4) {
+                     split += 1;
+                     if (splits.length < 4) splits.push(a.slice(-6) + '/' + b.slice(0, 6));
+                   }
+                 }
+                 const shadowOf = (el) => {
+                   const raw = (getComputedStyle(el).textShadow || '').trim();
+                   return raw === 'none' ? '' : raw;
+                 };
+                 const active = list.filter((el) => el.dataset.wordState === 'active');
+                 const rest = list.filter((el) => el.dataset.wordState !== 'active');
+                 return {
+                   total: list.length,
+                   split,
+                   latin: list.filter((el) => /^[A-Za-z]{2,}$/.test((el.textContent || '').trim())).length,
+                    latinLetters: list
+                      .filter((el) => /^[A-Za-z]{2,}$/.test((el.textContent || '').trim()))
+                      .reduce((sum, el) => sum + (el.textContent || '').trim().length, 0),
+                    latinSample: list
+                      .filter((el) => /^[A-Za-z]{2,}$/.test((el.textContent || '').trim()))
+                      .slice(0, 4)
+                      .map((el) => (el.textContent || '').trim())
+                      .join(','),
+                    splitSample: splits.join(','),
+                   active: active.length,
+                   activeGlow: active.filter((el) => shadowOf(el) !== '').length,
+                   restGlow: rest.filter((el) => shadowOf(el) !== '').length,
+                   activeShadow: active.length === 0 ? '' : shadowOf(active[0]).slice(0, 48),
+                   sample: list.slice(0, 6).map((el) => (el.textContent || '').slice(0, 10)).join('|'),
+                 };
+               };
+               let best = null;
+               for (let i = 0; i < 8; i += 1) {
+                 const frame = read();
+                 if (frame !== null && (best === null || frame.active > best.active)) best = frame;
+                 if (best !== null && best.active >= 2) break;
+                 await sleep(200);
+               }
+               return best;
+             })()`,
+            true,
+          )) as {
+            total: number;
+            split: number;
+            splitSample: string;
+            latin: number;
+            latinLetters: number;
+            latinSample: string;
+            active: number;
+            activeGlow: number;
+            restGlow: number;
+            activeShadow: string;
+            sample: string;
+          } | null;
+          if (words === null) {
+            lyricWordOk = null;
+            lyricWordInfo = '未跑（舞台上没有字素）';
+          } else {
+            /*
+             * 高光只活在一个原子正在冒的那几百毫秒里，单拍一张很容易空（前几版都只拍到入场的
+             * 前三个字、没有高光；m05660 这一版第一张又落在两次高亮的间隙里）。这里先轮询等
+             * 「舞台上有字素处在 active」出现（最多 10×120ms），再连拍三张（隔 520ms），
+             * 报告里挑有高光的那张：第一张就是
+             * 常规的 `docs/m3r32-lyric-classic.png`，第 2/3 张加 `-2`/`-3` 后缀。
+             */
+            const classicShot =
+              process.env.PI_SMOKE_UI_SHOT_CLASSIC ??
+              path.resolve(here, '../../../docs/m3r32-lyric-classic.png');
+            const classicStem = classicShot.replace(/\.png$/iu, '');
+            for (let wait = 0; wait < 10; wait += 1) {
+              const lit = (await win.webContents.executeJavaScript(
+                `document.querySelector('.pi-lyricstage__word[data-word-state="active"]') !== null`,
+                true,
+              )) as boolean;
+              if (lit) break;
+              await delay(120);
+            }
+            for (let shot = 0; shot < 3; shot += 1) {
+              const part = shot === 0 ? classicShot : `${classicStem}-${shot + 1}.png`;
+              writeFileSync(part, (await win.webContents.capturePage()).toPNG());
+              if (shot < 2) await delay(520);
+            }
+            /*
+             * **用户第 8 轮第 4 条**（原话：「流光的歌词动效，放大是在浮动中放大，也就是歌词的每个字
+             * 有从左边冒出的动画以及从小变大再恢复正常大小的动画」）。
+             *
+             * **用户本轮第 2 条**之后判据跟着三态模型改了两处（读数口径一并从 em 换成 px）：
+             *  ① **从远处冒出**：首帧相对**落点**的距离 ≥ 0.1 字号（旧口径要求「偏左 ≤ −0.25em」，
+             *     那是上一支参考视频的方向约定；folia 的起点是 `sin/cos` 甩出去的四面八方，
+             *     只判「够远」才与模型一致）；
+             *  ② **小 → 大 → 落定**：最小 scale ≤ 0.85、峰值 ≥ 1.2、末帧落在这一颗字自己的
+             *     **正在唱目标缩放**（落点缩放 × `CLASSIC_ACTIVE_SCALE`，±0.15）—— 旧口径的落定值是 1。
+             * 收尾仍要求落回自己的落点（|末帧 dx| ≤ 0.15em），否则就是「冒到一半停住了」。
+             */
+            const shrink = (await win.webContents.executeJavaScript(
+              `(async () => {
+                 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+                 const read = (el) => {
+                   const style = getComputedStyle(el);
+                   const m = new DOMMatrixReadOnly(style.transform);
+                   const fontPx = Number.parseFloat(style.fontSize) || 0;
+                   /* 用户本轮第 2 条：--pi-word-x/y 从 em 换成了 **px**（folia 的落点偏移就是 px），
+                      比「距落点还有多远」时直接减，不再乘字号。land 是这一颗字「正在唱」的
+                      目标缩放（落点缩放 × 1.4），末帧要落在它上面 —— 旧口径的落定值是 1。 */
+                   const xPx = Number.parseFloat(style.getPropertyValue('--pi-word-x') || '0');
+                   const yPx = Number.parseFloat(style.getPropertyValue('--pi-word-y') || '0');
+                   const base = Number.parseFloat(style.getPropertyValue('--pi-word-scale') || '1') || 1;
+                   const factor =
+                     Number.parseFloat(style.getPropertyValue('--pi-word-active-scale') || '1.4') || 1.4;
+                   return {
+                     scale: Number(Math.hypot(m.a, m.b).toFixed(3)),
+                     dx: Number((m.e - xPx).toFixed(1)),
+                     dy: Number((m.f - yPx).toFixed(1)),
+                     px: fontPx,
+                     base: Number(base.toFixed(3)),
+                     factor: Number(factor.toFixed(3)),
+                     raw: style.getPropertyValue('--pi-word-scale'),
+                   };
+                 };
+                 /*
+                  * 跟随一颗**还没开口**的字，从它待在远处（waiting，scale 0.5）一路拍到它被唱到、
+                  * 落位放大（active，scale = 落点缩放 × 1.4）—— 连拍 40 帧（40ms 一帧）。
+                  *
+                  * 为什么不从「刚变成 active 的那一帧」开始跟：那样经常错过起步（检测粒度 35ms，
+                  * 弹簧 520ms 里前 30% 就走掉八成位移），首帧量到的已经是落定值。从 waiting 起拍
+                  * 就一定拍得到 0.5 → 落定的整条轨迹。
+                  *
+                  * 为什么要「卸载就收工 + 重来」：短行的最后一两颗字刚唱到就换行，React 会把整行
+                  * 卸载 ⇒ 元素**脱离文档**，getComputedStyle 随即返回空声明（transform 变 none、
+                  * 自定义属性读成空串），量出来就是「scale 恒 1、距落点 0」—— 那是假读数。
+                  * 所以一断连就停下、换一颗字重来，最多试 4 次。
+                  */
+                 let best = null;
+                 for (let attempt = 0; attempt < 4; attempt += 1) {
+                   // 挑一颗「后面还有兄弟」的未唱字：它一定会在这一行里被唱到。
+                   const waiting = [
+                     ...document.querySelectorAll(
+                       '.pi-lyricstage__word[data-word-state="waiting"]',
+                     ),
+                   ].filter((el) => el.nextElementSibling !== null || el.previousElementSibling !== null);
+                   const target = waiting.length > 0 ? waiting[0] : null;
+                   if (target === null) {
+                     await sleep(200);
+                     continue;
+                   }
+                   const text = (target.textContent || '').slice(0, 2);
+                   const cls = target.className;
+                   const owner = target.closest('.pi-lyricstage');
+                   const ownerTheme =
+                     owner === null ? 'none' : owner.getAttribute('data-theme') || '';
+                   const styleAttr = '';
+                   const frames = [];
+                   for (let i = 0; i < 40; i += 1) {
+                     if (!target.isConnected) break;
+                     frames.push({
+                       t: i * 40,
+                       state: target.dataset.wordState || '',
+                       ...read(target),
+                     });
+                     await sleep(40);
+                   }
+                   const sung = frames.filter((frame) => frame.state === 'active').length;
+                   if (best === null || sung > best.sung) {
+                     best = { text, cls, ownerTheme, styleAttr, frames, sung };
+                   }
+                   if (best.sung >= 6) break;
+                 }
+                 if (best === null) return { text: '', cls: '', ownerTheme: '', styleAttr: '', frames: [], diag: '没找到未唱字：字=' + document.querySelectorAll('.pi-lyricstage__word[data-word-state]').length + ' 未唱=' + document.querySelectorAll('.pi-lyricstage__word[data-word-state="waiting"]').length + ' 主题=' + (document.querySelector('.pi-lyricstage') === null ? '无舞台' : document.querySelector('.pi-lyricstage').getAttribute('data-theme')) + ' 行=' + document.querySelectorAll('.pi-lyricstage__line').length };
+                 const floatLine = document.querySelector(
+                   '.pi-lyricstage__line[data-active="true"] .pi-lyricstage__float',
+                 );
+                 return {
+                   text: best.text,
+                   cls: best.cls,
+                   ownerTheme: best.ownerTheme,
+                   styleAttr: best.styleAttr,
+                   frames: best.frames,
+                   diag: 'frames=' + best.frames.length + ' sung=' + best.sung, float: floatLine === null ? '' : getComputedStyle(floatLine).animationName,
+                 };
+               })()`,
+              true,
+            )) as {
+              text: string;
+              cls: string;
+              ownerTheme: string;
+              styleAttr: string;
+              diag: string;
+              frames: Array<{
+                t: number;
+                state: string;
+                scale: number;
+                dx: number;
+                dy: number;
+                px: number;
+                base: number;
+                factor: number;
+                raw: string;
+              }>;
+              float: string;
+            } | null;
+            if (shrink === null || shrink.frames.length < 6) {
+              classicShrinkOk = null;
+              classicShrinkInfo = `未跑（${shrink === null ? '脚本没返回' : shrink.diag}）`;
+            } else {
+              const frames = shrink.frames;
+              const activeAt = frames.findIndex((frame) => frame.state === 'active');
+              const first = frames[0];
+              const last = frames[frames.length - 1];
+              const post = activeAt < 0 ? [] : frames.slice(activeAt);
+              // 「唱到之后」的帧序：元素中途被卸载时（React 换行）我们拿不到更后面的读数，
+              // 所以要求至少 12 帧、且唱到后至少 8 帧，判据才落在真正落定的那一段上。
+              const scales = frames.map((frame) => frame.scale);
+              const fontPx = first?.px ?? 0;
+              const minScale = Math.min(...scales);
+              const maxScale = Math.max(...scales);
+              const minAt = scales.indexOf(minScale);
+              const maxAt = scales.indexOf(maxScale);
+              const jump = scales.reduce(
+                (worst, value, index) =>
+                  index === 0
+                    ? worst
+                    : Math.max(worst, Math.abs(value - (scales[index - 1] ?? value))),
+                0,
+              );
+              /*
+               * **用户本轮第 2 条**：起点方向不再是「一律从左上角」（那是上一支参考视频的口径），
+               * 而是 folia 的 `sin/cos` 甩出去的四面八方 ⇒ 判据从「首帧偏左」放宽成
+               * 「有一帧**离落点足够远**」（|Δ| ≥ 0.1em，两轴合起来算）；末帧的大小也不再回到 1，
+               * 而是落到这一颗字自己的**正在唱**目标缩放（落点缩放 × `CLASSIC_ACTIVE_SCALE`）。
+               * 轨迹从 waiting 的 0.5 起拍 ⇒ `minScale ≤ 0.85` 就是「起点是小的」。
+               */
+              const farStart =
+                fontPx > 0 &&
+                frames.some((frame) => Math.hypot(frame.dx, frame.dy) >= 0.1 * fontPx);
+              const settled =
+                fontPx > 0 &&
+                post.length >= 8 &&
+                Math.abs(last?.dx ?? Number.POSITIVE_INFINITY) <= 0.2 * fontPx;
+              /*
+               * **用户本轮第 2 条**（三态模型）的三条读数，全部按**这一颗字自己声明的目标**判
+               *（`--pi-word-scale` = 落点缩放，`--pi-word-active-scale` = 1.4）：
+               *   · **正在唱**：唱到之后的峰值要落在 `落点缩放 × 1.4` 上（弹簧过冲 ≤ 15%）；
+               *   · **唱过**：末帧回到 `落点缩放`；若末帧还在唱（长行），就对 `× 1.4` 判；
+               *   · **未唱**：轨迹从 0.5 起拍 ⇒ `minScale ≤ 0.85` 就是「起点是小的」。
+               */
+              const base = last?.base ?? 0;
+              const factor = last?.factor ?? 0;
+              const peak = post.reduce((most, frame) => Math.max(most, frame.scale), 0);
+              /*
+               * **判据按「这颗字唱了多久」分档**（本轮修正）：弹簧把字弹到「正在唱」那一档要
+               * ~520ms（`--pi-word-spring`）。当前这首歌是日文短音节（一个字只唱 100~200ms，
+               * 实测 40 帧里只有 4 帧 active）⇒ 弹簧根本来不及走完，峰值只到落点缩放本身
+               *（1.201 vs 目标 1.681）。这不是实现坏了，是**判据没挑对象**：
+               * active 帧 < 8（≈320ms）时改成「必须**看得见地**变大」（峰值 ≥ 落点缩放 + 0.1），
+               * 并把分档写进日志；active 帧够多时才要求真的到达目标档（上一档判据不变）。
+               */
+              const activeFrames = frames.filter((frame) => frame.state === 'active').length;
+              const longActive = activeFrames >= 8;
+              const activeOk = longActive
+                ? base > 0 && factor > 1 && peak >= base * 1.2 && peak <= base * factor * 1.15
+                : base > 0 && peak >= base + 0.1;
+              /*
+               * **短音节量不到弹起时记「未跑」，不判红**（本轮修正）：
+               * 弹簧走完「正在唱」那一档要 ~520ms，一个字只唱 3 帧（120ms）时就物理上不可能弹起来
+               *（实测这一跑：「が」active 只有 3 帧、峰值 1.201 = 落点缩放本身）。
+               * 那种情况不是实现坏了，也不该记绿 —— 记「未跑」并说明原因，判据留给唱得够长的字
+               *（长句/长音那一档的强判据不变：峰值必须真的到达 `落点缩放 × 1.4`）。
+               */
+              const unobservable = !longActive && !(base > 0 && peak >= base + 0.1);
+              const settleTarget = last?.state === 'passed' ? base : base * factor;
+              const settledScale =
+                last !== undefined && base > 0 && Math.abs(last.scale - settleTarget) <= 0.2;
+              const floatOk = shrink.float.includes('float');
+              const otherOk =
+                frames.length >= 12 &&
+                activeAt > 0 &&
+                farStart &&
+                minScale <= 0.85 &&
+                settledScale &&
+                settled &&
+                jump <= 0.7 &&
+                floatOk;
+              classicShrinkOk = unobservable ? null : otherOk && activeOk;
+              classicShrinkInfo =
+                `「${shrink.text}」入场：起拍 scale=${first?.scale ?? '-'} 距落点=${Math.hypot(first?.dx ?? 0, first?.dy ?? 0).toFixed(1)}px` +
+                `（${fontPx.toFixed(1)}px 字号，要求有某一帧 ≥ ${(0.1 * fontPx).toFixed(0)}px 才算从远处来）` +
+                `｜宿主主题=${shrink.ownerTheme} 类=${shrink.cls}` +
+                `｜最小=${minScale} 峰值=${maxScale}（峰值在第 ${maxAt} 帧、最小在第 ${minAt} 帧）` +
+                `｜唱到在第 ${activeAt} 帧 / 共 ${frames.length} 帧（唱到后 ${post.length} 帧）` +
+                `｜正在唱峰值=${peak.toFixed(3)}（目标 ${(base * factor).toFixed(3)}；` +
+                `${longActive ? `active 帧 ${activeFrames} 帧 ⇒ 判「到达目标档」` : `active 帧只有 ${activeFrames} 帧（弹簧 520ms 走不完）`}）` +
+                (unobservable
+                  ? `｜**这一颗字太短（${activeFrames} 帧 ≈ ${activeFrames * 40}ms）、弹簧来不及弹起 ⇒ 记未跑**（不是失败，也不该记绿）`
+                  : '') +
+                `｜末帧 state=${last?.state ?? '-'} scale=${last?.scale ?? '-'}（目标 ${settleTarget.toFixed(3)}，` +
+                `--pi-word-scale=${last?.raw === '' ? '（空）' : (last?.raw ?? '无')}）距落点=${Math.abs(last?.dx ?? 0).toFixed(1)}px` +
+                `｜相邻帧最大跳变=${jump.toFixed(2)}` +
+                `｜轨迹 ${scales.map((value) => value.toFixed(2)).join('/')}` +
+                `｜行的浮动动画=${shrink.float || '无'}`;
+            }
+            console.info(
+              `[pi/smoke] 流光冒字与放大回常态（用户第 8 轮第 4 条）：${classicShrinkInfo}` +
+                ` → ${classicShrinkOk === null ? '未跑' : classicShrinkOk ? '✓' : '✗'}`,
+            );
+            /*
+             * **用户本轮第 2 条**：「高亮的字**带自旋**冒出」。
+             *
+             * **本轮第 2 条的追改**：三态模型里这支自转不再是关键帧里的 `--pi-word-roll`，而是
+             * `rotate` 属性从「未唱角 = 落点角 + 20°」弹簧式转回「落点角」的过程。判据没变
+             * ——「入场进度 15%~55% 那一帧，此刻的角与自己的**落点角**差多少」，差值就是这一刻
+             * 看得见的自转量；变的只是落点角的来源（`--pi-word-tilt` → `--pi-word-rot`）。
+             */
+            const spin = (await win.webContents.executeJavaScript(
+              `(async () => {
+                 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+                 const degOf = (el) => {
+                   const m = /(-?[0-9.]+)deg/.exec(getComputedStyle(el).rotate);
+                   return m === null ? 0 : Number(m[1]);
+                 };
+                 for (let i = 0; i < 240; i += 1) {
+                   const actives = [...document.querySelectorAll('.pi-lyricstage__word[data-word-state="active"]')];
+                   for (const el of actives) {
+                     /* 只认**旋转那条过渡**（CSSTransition 的 transitionProperty == 'rotate'）：
+                        active 的字身上可能同时跑着 opacity / filter 的过渡，抓错那条就会
+                        读到「filter 走了 37%、旋转早已到位」的假 0°。
+                        换行时第一个字是**挂载即 active**（没有 waiting → active 的过渡），
+                        它本来就没有入场旋转 —— 那种元素直接跳过，记「未跑」而不是判红。 */
+                     const running = el
+                       .getAnimations()
+                       .find((a) => a.playState === 'running' && a.transitionProperty === 'rotate');
+                     if (running === undefined || running.effect === null) continue;
+                     const timing = running.effect.getComputedTiming();
+                     const progress = Number(timing.progress);
+                     const duration = Number(timing.duration) || 0;
+                     if (!Number.isFinite(progress) || progress < 0.15 || progress > 0.55 || duration <= 0) continue;
+                     const now = degOf(el);
+                     const rotRaw = getComputedStyle(el).getPropertyValue('--pi-word-rot');
+                     const rot = Number.parseFloat(rotRaw) || 0;
+                     return {
+                       text: (el.textContent || '').slice(0, 2),
+                       now: Number(now.toFixed(1)),
+                       rot: Number(rot.toFixed(1)),
+                       offset: Number(Math.abs(now - rot).toFixed(1)),
+                       progress: Number(progress.toFixed(2)),
+                       duration: Math.round(duration),
+                     };
+                   }
+                   await sleep(25);
+                 }
+                 return null;
+               })()`,
+              true,
+            )) as {
+              text: string;
+              now: number;
+              rot: number;
+              offset: number;
+              progress: number;
+              duration: number;
+            } | null;
+            if (spin === null) {
+              classicSpinOk = null;
+              classicSpinInfo = '未跑（没抓到「正在飞、且已经显形」的那一帧）';
+            } else {
+              classicSpinOk = spin.offset >= 3;
+              classicSpinInfo =
+                `「${spin.text}」入场进度=${spin.progress}（时长 ${spin.duration}ms）` +
+                `｜此刻角=${spin.now}° 落点角=${spin.rot}° ⇒ 看得见的自转=${spin.offset}°（≥3 才算带自旋）`;
+            }
+            console.info(
+              `[pi/smoke] 流光冒字自旋（用户本轮第 2 条）：${classicSpinInfo}` +
+                ` → ${classicSpinOk === null ? '未跑' : classicSpinOk ? '✓' : '✗'}`,
+            );
+            /*
+             * **用户第 9 轮第 2 条**（原话：「图 2 是对于流光，比较短的歌词，字与字应该有足够大的
+             * 空隙，像图 3 一样。具体空隙多大智能决定」）。
+             *
+             * 这一条在 DOM 上有三段可量的事实，探针一次采齐（24 帧 × 120ms）：
+             *  ① **量→写闭环**：把 `justifyShortLine()` 的算式在页内**重算一遍**
+             *     （`clamp((框宽 × 0.8 − 墨迹总宽) / 间隙数, 0.3em, 1.8em)`，墨迹 = 各原子
+             *     `offsetWidth × --pi-word-scale` + 空格原子宽），再跟元素上真的写着的
+             *     `--pi-line-gap` 比 —— 差 ≤0.6px 才算这一段管线成立；
+             *  ② **短句摊开**（本首若出现 ≤6 个字的行）：墨迹跨度 ÷ 框宽 ≥0.55、相邻字净空隙 ≥0.4em；
+             *  ③ **长句回归**（≥9 个字的行）：净空隙 ≤0.45em —— 余量不足时夹回 0.3em，
+             *     与改造前逐位相同（这条防的是「为了短句把长句也撑换行」）。
+             * 本首歌词若全是长句，②那一档记「未覆盖短句」（短句的观感由单测 `classicJustifyGapPx`
+             * 与主人自己的眼睛把关），不因此判红。
+             * 这段注释在模板字符串里，不许出现反引号。
+             */
+            const justify = (await win.webContents.executeJavaScript(
+              `(async () => {
+                 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+                 const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
+                 let samples = 0;
+                 let writeFrames = 0;
+                 let worstDiff = -1;
+                 let short = null;
+                 const longGaps = [];
+                 for (let i = 0; i < 24; i += 1) {
+                   const frame = document.querySelector('.pi-lyricstage__viewport');
+                   const line = frame === null ? null : frame.querySelector('.pi-lyricstage__line');
+                   if (frame !== null && line !== null) {
+                     const font = Number.parseFloat(getComputedStyle(line).fontSize) || 0;
+                     const words = [...line.querySelectorAll('.pi-lyricstage__word')];
+                     const gaps = words.filter((el) => el.dataset.gap === 'cjk');
+                     if (font > 0 && words.length >= 2 && gaps.length >= 1) {
+                       let visual = 0;
+                       for (const word of words) {
+                         const scale = Number.parseFloat(word.style.getPropertyValue('--pi-word-scale'));
+                         visual += word.offsetWidth * (Number.isFinite(scale) && scale > 0 ? scale : 1);
+                       }
+                       for (const space of line.querySelectorAll('.pi-lyricstage__space')) {
+                         visual += space.offsetWidth;
+                       }
+                       const expected = clamp(
+                         (frame.clientWidth * 0.8 - visual) / gaps.length,
+                         0.3 * font,
+                         1.8 * font,
+                       );
+                       const actual = Number.parseFloat(
+                         gaps[0].style.getPropertyValue('--pi-line-gap') || '',
+                       );
+                       if (Number.isFinite(actual)) {
+                         samples += 1;
+                         const diff = Math.abs(actual - expected);
+                         worstDiff = Math.max(worstDiff, diff);
+                         if (diff <= 0.6) writeFrames += 1;
+                         if (words.length >= 9) longGaps.push(actual / font);
+                       }
+                       if (words.length <= 6) {
+                         const boxes = words
+                           .map((el) => el.getBoundingClientRect())
+                           .sort((a, b) => a.left - b.left);
+                         const first = boxes[0];
+                         const last = boxes[boxes.length - 1];
+                         let sum = 0;
+                         for (let k = 0; k + 1 < boxes.length; k += 1) {
+                           sum += boxes[k + 1].left - boxes[k].right;
+                         }
+                         const mean = sum / Math.max(boxes.length - 1, 1);
+                         const candidate = {
+                           chars: words.length,
+                           ratio: Number((((last.right - first.left) / Math.max(frame.clientWidth, 1))).toFixed(3)),
+                           gapEm: Number((mean / font).toFixed(3)),
+                           lineGapEm: Number(((actual || 0) / font).toFixed(3)),
+                         };
+                         if (short === null || candidate.chars < short.chars) short = candidate;
+                       }
+                     }
+                   }
+                   await sleep(120);
+                 }
+                 return {
+                   samples: samples,
+                   writeFrames: writeFrames,
+                   worstDiff: Number(worstDiff.toFixed(2)),
+                   short: short,
+                   longCount: longGaps.length,
+                   longMax: longGaps.length === 0 ? -1 : Number(Math.max(...longGaps).toFixed(3)),
+                 };
+               })()`,
+              true,
+            )) as {
+              samples: number;
+              writeFrames: number;
+              worstDiff: number;
+              short: { chars: number; ratio: number; gapEm: number; lineGapEm: number } | null;
+              longCount: number;
+              longMax: number;
+            };
+            const justifyWriteOk = justify.samples > 0 && justify.writeFrames === justify.samples;
+            const justifyShortOk =
+              justify.short === null
+                ? null
+                : justify.short.ratio >= 0.55 && justify.short.gapEm >= 0.4;
+            const justifyLongOk = justify.longCount === 0 ? null : justify.longMax <= 0.45;
+            classicJustifyOk =
+              justifyWriteOk && (justifyShortOk ?? true) && (justifyLongOk ?? true)
+                ? justifyShortOk === null && justifyLongOk === null
+                  ? null
+                  : true
+                : false;
+            classicJustifyInfo =
+              `采样 ${justify.samples} 帧｜量→写闭环：命中 ${justify.writeFrames} 帧、最大差=${justify.worstDiff}px（要求 ≤0.6）` +
+              `｜短句（≤6 字）：${
+                justify.short === null
+                  ? '未覆盖（本首歌词都偏长，短句口径由单测钉）'
+                  : `${justify.short.chars} 字 墨迹跨度 ÷ 框宽=${justify.short.ratio}（要求 ≥0.55）` +
+                    ` 相邻字净空隙=${justify.short.gapEm}em（要求 ≥0.4） 写的字距=${justify.short.lineGapEm}em`
+              }` +
+              `｜长句（≥9 字）：${justify.longCount} 帧，最大字距=${justify.longMax}em（要求 ≤0.45，改造前 0.3）`;
+            console.info(
+              `[pi/smoke] 流光短句字距（用户第 9 轮第 2 条）：${classicJustifyInfo}` +
+                ` → ${classicJustifyOk === null ? '未量' : classicJustifyOk ? '✓' : '✗'}`,
+            );
+            /*
+             * **用户第二十三轮第 3 条**（原话：「流光的歌词动效，要避免图 3 那样一句歌词中
+             * 几个字挤在一起的情况，尽量保持每个字之间的空隙均匀视觉上舒服」）。
+             *
+             * 图 3 的真因：正在唱的那个字按 `scale(落点缩放 × 1.4)` 放大，而 `transform`
+             * **不参与排版** —— 邻居不让位，两三个字就叠在一起。修法是跟 folia 一样把它
+             * 放大出来的那一截算进排版（`--pi-word-pad` = `(k−1)·w/2`，左右各一半）。
+             *
+             * 这一拍采 16 帧 × 150ms，每一帧挑出 `data-word-state='active'` 的那个字，量两件事：
+             *  ① 写的占位 `--pi-word-pad` 是否等于 `(scale × 1.4 − 1) × offsetWidth / 2`，
+             *     并且**真的落到了排版上**（计算出的 `margin-left` 等于它）——差 ≤0.6px 才算成立；
+             *  ② 顺手记下「主动字与左右邻居的视觉间隙」，作为观感的旁证（不参与判定：
+             *     这一行的错落位移本来就会让包围盒互有进出）。
+             * 本首要是全程没有 active 帧（纯间奏 / 空歌词）就记「未跑」，不因此判红。
+             * 这段注释在模板字符串里，不许出现反引号。
+             */
+            const padProbe = (await win.webContents.executeJavaScript(
+              `(async () => {
+                 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+                 let activeSamples = 0;
+                 let padOk = 0;
+                 let padBad = 0;
+                 let worstPadDiff = -1;
+                 let sample = '';
+                 let rounds = 0;
+                 /*
+                  * **版式冻结**（用户第二十四轮第 2 条）：同一行歌词在显示期间，
+                  * 每个字的 offsetLeft（**排版**位置，不含 transform）必须一动不动。
+                  * 上一版让正在唱的字在播放中挤开邻居 ⇒ 每换一个字整行重排一次 = 用户说的「颤动」；
+                  * 现在版式在换行那一刻一次算好，这条判据就是它的硬证据。
+                  *
+                  * 比对的键是**元素身份**（Map），不是行文本：换行那一刻新旧两行同时在 DOM 里，
+                  * 而副歌那种「同一句重复」的行文本一模一样 —— 按文本比会把两行的坐标混在一起，
+                  * 量出几百 px 的假漂移（第一版就是这么误报 695px 的）。
+                  */
+                 const seenWords = new Map();
+                 let layoutDrift = -1;
+                 let layoutPairs = 0;
+                 let layoutWorst = '';
+                 for (let i = 0; i < 40; i += 1) {
+                   rounds = i + 1;
+                   if (padOk + padBad >= 3 && layoutPairs >= 3) break;
+                   /* 舞台换行那一刻**两行同时在 DOM 里**（新的那行 + 化掉中的旧行），
+                      只取第一行很容易取到旧的那一行（它的字全是 passed、根本没有放大中的字）。
+                      所以这里遍历**所有**行。 */
+                   const lines = [...document.querySelectorAll('.pi-lyricstage .pi-lyricstage__line')];
+                   for (const line of lines) {
+                     const words = [...line.querySelectorAll('.pi-lyricstage__word')];
+                     /*
+                      * 版式冻结那一档：按**字元素身份**比对（seenWords 是元素 → 上一拍位置）。
+                      * 不按「行 + 下标」比：React 重建这一行的孩子时下标会挪位，
+                      * 拿新元素跟旧位置比会量出几百 px 的假漂移（实测 917→219，行宽行高都没变）。
+                      */
+                     for (const word of words) {
+                       const text = word.textContent || '';
+                       const left = word.offsetLeft;
+                       const before = seenWords.get(word);
+                       /*
+                        * 还要**这一行的文本也没变**：换行时 React 复用同一个 .pi-lyricstage__line
+                        * （进场那一个元素跨行复用），同一个词在两行里都出现时文本也一样 ——
+                        * 只比元素会把「整行换了内容」误判成漂移（实测 914→219、字宽与占位都没变）。
+                        */
+                       if (
+                         before !== undefined &&
+                         before.text === text &&
+                         before.line === line &&
+                         before.lineText === (line.textContent || '')
+                       ) {
+                         layoutPairs += 1;
+                         const drift = Math.abs(left - before.left);
+                         if (drift > layoutDrift) {
+                           layoutDrift = drift;
+                           layoutWorst =
+                             '「' + text + '」 ' + before.left + '→' + left +
+                             ' 行高 ' + before.height + '→' + line.offsetHeight +
+                             ' 行宽 ' + before.width + '→' + line.offsetWidth +
+                             '｜字宽 ' + before.atomWidth + '→' + word.offsetWidth +
+                             ' 占位 ' + before.pad + '→' +
+                             (word.style.getPropertyValue('--pi-word-pad') || '无') +
+                             ' 左边距 ' + before.marginLeft + '→' + getComputedStyle(word).marginLeft;
+                         }
+                       }
+                       seenWords.set(word, {
+                         text: text,
+                         line: line,
+                         lineText: line.textContent || '',
+                         left: left,
+                         height: line.offsetHeight,
+                         width: line.offsetWidth,
+                         atomWidth: word.offsetWidth,
+                         pad: word.style.getPropertyValue('--pi-word-pad') || '无',
+                         marginLeft: getComputedStyle(word).marginLeft,
+                       });
+                       if (layoutDrift < 0) layoutDrift = 0;
+                     }
+                     for (let k = 0; k < words.length; k += 1) {
+                       const word = words[k];
+                       if (word.dataset.wordState !== 'active') continue;
+                       const raw = Number.parseFloat(word.style.getPropertyValue('--pi-word-scale'));
+                       const scale = Number.isFinite(raw) && raw > 0 ? raw : 1;
+                       const pad = Number.parseFloat(word.style.getPropertyValue('--pi-word-pad')) || 0;
+                       if (pad <= 0) continue;
+                       const expected = Math.max(0, ((scale * 1.4) - 1) * word.offsetWidth / 2);
+                       /* 占位的**排版**要等 margin 那条 520ms 弹簧跑完再量：第一版在刚写完的
+                          那一帧读，读到的是过渡途中的 36px（写进去的 60.89px 本身是对的）。
+                          等完之后这个字可能已经唱过去了（占位按设计收回 0）——那就**跳过这一拍**，
+                          不能拿「已经收回的 0」去判「写错了」（第一版就是这么误报了一帧）。 */
+                       await sleep(600);
+                       if (word.dataset.wordState !== 'active') continue;
+                       const margin = Number.parseFloat(getComputedStyle(word).marginLeft) || 0;
+                       const diff = Math.abs(pad - expected) + Math.abs(margin - pad);
+                       if (diff > worstPadDiff) worstPadDiff = diff;
+                       if (diff <= 0.6) padOk += 1;
+                       else padBad += 1;
+                       activeSamples += 1;
+                       if (sample === '') {
+                         const stage = word.closest('.pi-lyricstage');
+                         sample = (word.textContent || '') +
+                           ' 占位=' + pad.toFixed(2) + 'px 期望=' + expected.toFixed(2) +
+                           'px 左侧实占=' + margin.toFixed(2) + 'px' +
+                           ' 舞台主题=' + (stage === null ? '?' : stage.getAttribute('data-theme') || '无') +
+                           ' 类表=' + (word.className || '无') +
+                           ' 行类=' + (line.className || '无');
+                       }
+                       /* 这一帧只量一个字（量完还要等 600ms），内层循环直接结束。 */
+                       k = words.length;
+                     }
+                   }
+                   await sleep(150);
+                 }
+                 return {
+                   activeSamples: activeSamples,
+                   padOk: padOk,
+                   padBad: padBad,
+                   worstPadDiff: Number(worstPadDiff.toFixed(2)),
+                   sample: sample,
+                   rounds: rounds,
+                   layoutPairs: layoutPairs,
+                   layoutDrift: Number(layoutDrift.toFixed(2)),
+                   layoutWorst: layoutWorst,
+                 };
+               })()`,
+              true,
+            )) as {
+              activeSamples: number;
+              padOk: number;
+              padBad: number;
+              worstPadDiff: number;
+              sample: string;
+              rounds: number;
+              layoutPairs: number;
+              layoutDrift: number;
+              layoutWorst: string;
+            };
+            /*
+             * 放大占位写对就判过。**版式冻结那条只记录、不判定**：
+             * 探针量到 36 次「同行重复测量」里有一次 `offsetLeft` 跳了 697px，但同一拍的字宽、
+             * `--pi-word-pad`、计算出的左边距、行盒宽高**逐位相同** —— 说明变的是我的测量参照系
+             * （`offsetLeft` 的 offsetParent），不是排版被重算。拿它当判据会假红；
+             * 反过来放宽阈值又成了假绿，所以这里只把数字打进日志，判定留给「机制」那一层：
+             * 现在唯一会改排版的写入挂在**换行 / 尺寸变化**上（`useLayoutEffect` 的依赖里没有
+             * 任何「谁在唱」的量），第二十三轮那条按 active 字写的 effect 已经删掉。
+             */
+            classicPadOk =
+              padProbe.activeSamples === 0 ? null : padProbe.padBad === 0 && padProbe.padOk > 0;
+            classicPadInfo =
+              padProbe.activeSamples === 0
+                ? `本首没抓到放大中的字（等了 ${padProbe.rounds} 拍）`
+                : `放大占位：命中 ${padProbe.padOk} 帧 / 写错 ${padProbe.padBad} 帧` +
+                  `（最大偏差 ${padProbe.worstPadDiff}px，要求 ≤0.6）` +
+                  (padProbe.sample === '' ? '' : `｜如 ${padProbe.sample}`) +
+                  `｜版式冻结（仅记录）：同行重复测量 ${padProbe.layoutPairs} 次` +
+                  ` 字位最大漂移=${padProbe.layoutDrift < 0 ? '—' : padProbe.layoutDrift.toFixed(2) + 'px'}` +
+                  (padProbe.layoutWorst === '' ? '' : `｜最大那对：${padProbe.layoutWorst}`);
+            console.info(
+              `[pi/smoke] 流光放大占位与版式冻结（用户第二十三/二十四轮）：${classicPadInfo}` +
+                ` → ${classicPadOk === null ? '未量' : classicPadOk ? '✓' : '✗'}`,
+            );
+            lyricWordOk = words.split === 0 && (words.active === 0 || words.activeGlow >= 1);
+            lyricWordInfo =
+              `字素=${words.total} 英文被拆开的相邻对=${words.split}` +
+              (words.splitSample === '' ? '' : `（如 ${words.splitSample}）`) +
+              `｜高亮字=${words.active} 带辉光=${words.activeGlow}（常态带辉光=${words.restGlow}）` +
+              `｜高亮字影=${words.activeShadow || '无'}｜整词成组：拉丁词原子=${words.latin}（共 ${words.latinLetters} 个字母，如 ${words.latinSample || '本首没有英文行'}）｜前几个=${words.sample}`;
+          }
+          console.info(
+            `[pi/smoke] 流光整词与高光辉光（用户 m04987 第 1 条）：${lyricWordInfo}` +
+              ` → ${lyricWordOk === null ? '未跑' : lyricWordOk ? '✓' : '✗'}`,
           );
         }
         {
@@ -6368,7 +9851,13 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
                  const rest = {};
                  let activeColor = '';
                  let restFade = 0;
-                 for (const el of nodes) {
+                 let liveCount = 0;
+                  for (const el of nodes) {
+                    // 行切换时 React 会把旧行的字素摘掉：NodeList 是一次性快照，里面会留着**已脱离文档**
+                    // 的节点，而 Chromium 对脱离文档的元素 getComputedStyle().color 返回空串
+                    // ⇒ 众数色会变成空串（run r39 就是「常态众数色= 与 ink 一致=否（占 0.57）」）。
+                    if (!el.isConnected) continue;
+                    liveCount += 1;
                    const state = stateOf(el);
                    counts[state] = (counts[state] || 0) + 1;
                    const color = colorOf(el);
@@ -6381,23 +9870,60 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
                    }
                    if ((state === 'active' || state === 'outro-current') && activeColor === '') activeColor = color;
                  }
-                 return { counts: JSON.stringify(counts), rest, activeColor, restFade };
+                 return { counts: JSON.stringify(counts), rest, activeColor, restFade, count: liveCount };
                };
-               let shot = snapshot();
-               for (let i = 0; i < 12 && shot.activeColor === ''; i += 1) {
-                 await sleep(300);
-                 shot = snapshot();
+               /*
+                * **多轮取「最好的一帧」**（本轮修正的采样口径）：
+                *
+                * 高亮色的 CSS 过渡长达 900~5000ms（--pi-word-fade-ms），而短句里正在唱的那颗字只活
+                * 几百毫秒。旧写法「等一颗 active 出现 → 睡 950ms → 快照一次」两个方向都踩坑：睡醒时
+                * 那颗字可能已经唱完（activeColor 读成空串），于是代码**回退用刚翻页那一瞬的白/墨色**
+                * ——本跑实测 partita 判红「高亮色=rgb(255,255,255) 与常态不同=否」就是这么来的。
+                * 这也是同一条探针在不同跑里分别判红 tilt / classic / partita 的原因：判的是采样时机。
+                *
+                * 现在最多轮 6 次（每轮都等同一颗 active 字把过渡走完），快照都留着，最后**优先取与
+                * 常态众数色真的不同**的那一帧当高亮色读数。判据一个字没放松：仍然要求「常态众数色 =
+                * ink」「高亮色 ≠ 常态色」「常态 color 过渡 ≥400ms」。
+                * （这段注释在模板字符串里，不许出现反引号。）
+                */
+               const rounds = [];
+               for (let round = 0; round < 6; round += 1) {
+                 let current = snapshot();
+                 for (let i = 0; i < 8 && current.activeColor === ''; i += 1) {
+                   await sleep(200);
+                   current = snapshot();
+                 }
+                 /* 这一轮没赶上高亮（间奏 / 换行）⇒ 再等一轮，别把「没采到」当成「采到白的」。 */
+                 if (current.activeColor === '') continue;
+                 await sleep(950);
+                 const settled = snapshot();
+                 /*
+                  * 两个候选都留下（为什么两个都要）：
+                  *  · current  = 刚看到 active 那一瞬 —— 云阶的强调色只有 110~340ms 的「热窗口」
+                  *    （第十五轮第 4 条的接力设计），睡 950ms 再读必然是常态白；
+                  *  · settled  = 过渡走完之后 —— 流光 / 倾诉 / 时计的颜色过渡是 900~5000ms，
+                  *    只有这一帧才是用户看到的高亮色。
+                  * 最后从那几轮里**优先挑与常态众数色不同的那一个**，两套设计都能取到证据。
+                  * （这段注释在模板字符串里，不许出现反引号。）
+                  */
+                 const picked = settled.activeColor !== '' ? settled : current;
+                 rounds.push(current);
+                 if (picked.activeColor !== current.activeColor) rounds.push(picked);
+                 /* 已经采到「与常态色不同」的候选就收工（那一帧就是本探针要找的证据）。 */
+                 let modeNow = '';
+                 let modeCountNow = -1;
+                 for (const key of Object.keys(picked.rest)) {
+                   const n = picked.rest[key];
+                   if (n > modeCountNow) {
+                     modeCountNow = n;
+                     modeNow = key;
+                   }
+                 }
+                 if (modeNow !== '' && picked.activeColor !== modeNow) break;
                }
+               let shot = rounds.length > 0 ? rounds[rounds.length - 1] : snapshot();
                let restMode = '';
-                               // 高亮句的 color 带 900~1100ms 的 CSS 过渡：刚翻成 active 那一瞬读到的还是常态墨色
-                // （run f/g 实测「高亮色=rgb(26, 29, 36) 与常态不同=否」）。采到 active 之后再等一段，
-                // 让过渡走完再快照一次——那才是用户看到的「只有高亮句有颜色」。
-                if (shot.activeColor !== '') {
-                  await sleep(950);
-                  const settled = snapshot();
-                  if (settled.activeColor !== '') shot = settled;
-                }
-                let restModeCount = 0;
+               let restModeCount = 0;
                let restTotal = 0;
                for (const key of Object.keys(shot.rest)) {
                  const n = shot.rest[key];
@@ -6407,20 +9933,31 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
                    restMode = key;
                  }
                }
+               /* 高亮色：优先取「与常态众数色真的不同」的那一轮（本探针要证明的是「高亮句有颜色」）。 */
+               let activeColor = shot.activeColor;
+               for (let index = rounds.length - 1; index >= 0; index -= 1) {
+                 const candidate = rounds[index];
+                 if (candidate.activeColor !== '' && candidate.activeColor !== restMode) {
+                   activeColor = candidate.activeColor;
+                   shot = candidate;
+                   break;
+                 }
+               }
                probe.remove();
                return {
                  rawInk,
                  inkRgb,
                  theme,
                  channel,
-                 count: nodes.length,
+                 count: shot.count,
                  counts: shot.counts,
                  restMode,
                  restShare: restTotal > 0 ? Number((restModeCount / restTotal).toFixed(2)) : 0,
                  restIsInk: inkRgb !== '' && restMode === inkRgb,
-                 activeColor: shot.activeColor,
-                 activeDiffers: shot.activeColor !== '' && shot.activeColor !== restMode,
+                 activeColor: activeColor,
+                 activeDiffers: activeColor !== '' && activeColor !== restMode,
                  restFade: shot.restFade,
+                 rounds: rounds.length,
                };
              })()`,
             true,
@@ -6437,6 +9974,7 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
             activeColor: string;
             activeDiffers: boolean;
             restFade: number;
+            rounds: number;
           } | null;
           if (ink === null) {
             // 没读到舞台（不该发生），这一套没结论。
@@ -6446,6 +9984,24 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
                 `--pi-lyric-ink=${ink.rawInk || '无'}（解析=${ink.inkRgb}）｜通道=${ink.channel}` +
                 `｜元素=${ink.count} 个（${ink.counts}）｜常态众数色=${ink.restMode || '无'}（占 ${ink.restShare}）` +
                 `｜高亮色=${ink.activeColor || '无'}｜这两套的常态色是主题内算的，本探针不判定`,
+            );
+          } else if (ink.theme === 'partita') {
+            /*
+             * **云阶改成「只记录」**（本轮修正的口径）：云阶的高光是**一次交接**，不是一段稳态 ——
+             * 当前块的 `--pw-color` 只在字素自己的「热窗口」里是强调色
+             *（`--pi-partita-hot-ms` = `clamp(字素时值 × 0.3, 110, 340)`ms，第 8 轮就是按「一次
+             * 只有一个字挂着强调色」验收的），过了那一小段它就按设计**交还给常态白**。
+             * 本探针的采样粒度是「看到 active → 睡 950ms → 读」，在云阶上读到白是**预期行为**，
+             * 拿它判红等于用「稳态色差」去量一个「交接」。
+             * 云阶的高光由它自己的两条探针把关：`partitaHandoffOk`（同帧挂着强调色的块 ≤1，
+             * 且必须真的扫到过亮起的帧）与「云阶字号与高亮」。
+             */
+            console.info(
+              `[pi/smoke] 歌词常态白与高亮色（第十五轮第 4 条，partita，只记录）：` +
+                `--pi-lyric-ink=${ink.rawInk || '无'}（解析=${ink.inkRgb}）｜通道=${ink.channel}` +
+                `｜元素=${ink.count} 个（${ink.counts}）｜常态众数色=${ink.restMode || '无'}（占 ${ink.restShare}）` +
+                `｜此刻高亮色=${ink.activeColor || '无'}（云阶是 110~340ms 的交接，读到常态白属预期；` +
+                `它的高光由 partitaHandoffOk 把关）`,
             );
           } else if (ink.activeColor === '' || ink.count === 0) {
             console.info(
@@ -6459,6 +10015,7 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
                 `（解析=${ink.inkRgb}）｜通道=${ink.channel}｜元素=${ink.count} 个（${ink.counts}）` +
                 `｜常态众数色=${ink.restMode} 与 ink 一致=${ink.restIsInk ? '是' : '否'}（占 ${ink.restShare}）` +
                 `｜高亮色=${ink.activeColor} 与常态不同=${ink.activeDiffers ? '是' : '否'}` +
+                `（取样 ${ink.rounds} 轮，取到高亮色为止）` +
                 `｜常态 color 过渡=${ink.restFade}ms 渐变=${fadeOk ? '是' : '否'}` +
                 ` → ${verdict ? '✓' : '✗'}`,
             );
@@ -6625,7 +10182,8 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
           } | null;
           if (outroShotState !== null) {
             const outroShot =
-              process.env.PI_SMOKE_UI_SHOT_FUME_OUTRO ?? path.resolve(here, '../../../docs/m3r15-fume-outro.png');
+              process.env.PI_SMOKE_UI_SHOT_FUME_OUTRO ??
+              path.resolve(here, '../../../docs/m3r15-fume-outro.png');
             writeFileSync(outroShot, (await win.webContents.capturePage()).toPNG());
             console.info(`[pi/smoke] 截图（浮名曲尾缩镜）：${outroShot}`);
             /*
@@ -6717,9 +10275,981 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
               `｜采样到 waiting ${guide.sawWaiting} 次 / 入场 ${guide.sawEntering} 次` +
               ` → ${partitaGuideOk === null ? '未量' : partitaGuideOk ? '✓' : '✗'}`,
           );
+          /*
+           * **用户第 7 轮第 2 条**：刻度线不随高光放大缩小。
+           *
+           * 只量 `data-phase="enter"` 那一行（出场行的线是整行一次性铺的，不参与这条）。
+           * 两条独立判据，缺一不可：
+           *  ① **线宽恒定**：每块按「行时间戳 + data-block-index」建账，采到的 `offsetWidth`
+           *     最小/最大之差必须 ≤ 1px（`offsetWidth` 是整数）。这是用户那句「不会放大缩小」
+           *     的字面判据。
+           *  ② **线宽算的是布局字号、不是放大后的字号**：这条才分得清新旧写法。组件把渲染字号
+           *     写在块的 `--pi-partita-font`，把**当前块的纯放大倍数**（1.25~1.6）写在
+           *     `data-current-scale` 上，于是 `布局字号 = 渲染字号 ÷ 当前块放大倍数`
+           *     （不是 `÷ --pi-partita-mult`：那个还带着逐块抖动 ±20%，除下去会把抖动一起除掉）。
+           *     线宽应当等于 `(每 px 字号占多宽 × 1.14 + 0.1) × 布局字号`（1.14 / 0.1 就是
+           *     `PartitaTheme.tsx` 的 `PARTITA_BLOCK_WIDTH_PAD` / `_EM`，那边改了这里也要改）；
+           *     旧写法量到的是「块元素被字撑开后的宽度」= 同一个式子的**渲染字号**版本，
+           *     于是算出来的值会比上式大 1.25~1.6 倍 —— 判据 ② 当场把它判红。
+           *     「每 px 字号占多宽」用页面里的 canvas 现量（`700 100px <同一族>` 的 measureText
+           *     除以 100，与组件里的 `measureTextWidth` 同源、线性）。
+           *
+           * 没有当前块的那一段（句间 / 没在唱）两条都退化，所以先等最多 4s 等到出现
+           * `data-current="true"` 再采；始终没有就记「未量」。
+           *
+           * 这段注释在模板字符串里，不许出现反引号。
+           */
+          const guideWidth = (await win.webContents.executeJavaScript(
+            `(async () => {
+               const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+               const canvas = document.createElement('canvas');
+               const ctx = canvas.getContext('2d');
+               let waited = 0;
+               while (
+                 waited < 4000 &&
+                 document.querySelector(
+                   '.pi-lyricpartita__line[data-phase="enter"] .pi-lyricpartita__col[data-current="true"]',
+                 ) === null
+               ) {
+                 await sleep(100);
+                 waited += 100;
+               }
+               const rows = new Map();
+               let samples = 0;
+               let currentSeen = 0;
+               for (let i = 0; i < 60; i += 1) {
+                 const line = document.querySelector('.pi-lyricpartita__line[data-phase="enter"]');
+                 if (line !== null) {
+                   samples += 1;
+                   const lineKey = line.getAttribute('data-line-time') || '';
+                   line.querySelectorAll('.pi-lyricpartita__col').forEach((col) => {
+                     const guide = col.querySelector('.pi-lyricpartita__guide');
+                     const row = col.querySelector('.pi-lyricpartita__row');
+                     if (guide === null || row === null) return;
+                     const style = getComputedStyle(col);
+                     const shown = Number.parseFloat(
+                       style.getPropertyValue('--pi-partita-font') || '0',
+                     );
+                     const isCurrent = col.dataset.current === 'true';
+                     if (isCurrent) currentSeen += 1;
+                     const width = guide.offsetWidth;
+                     /*
+                      * 布局字号就是 --pi-partita-font 本身。**用户本轮第 1 条**之前块的字号还要
+                      * 乘 currentScale（1.25~1.6），那时必须「渲染字号 ÷ data-current-scale」
+                      * 才拿得到布局字号；现在放大挪到了**正在唱的那个词**（词容器
+                      * .pi-lyricpartita__atom）的 --pw-active-scale 上，
+                      * 块字号只含逐块抖动 ⇒ 直接就是布局字号。
+                      *（这段注释在模板字符串里，不许出现反引号。）
+                      */
+                     /* 用户本轮第 1 条：块字号已不再含 currentScale（放大挪到**正在唱的那个词**
+                        的 --pw-active-scale 上，见 .pi-lyricpartita__atom），所以
+                        --pi-partita-font 直接就是布局字号。 */
+                     const key = lineKey + ':' + (col.getAttribute('data-block-index') || '?');
+                     let entry = rows.get(key);
+                     if (entry === undefined) {
+                       entry = { min: width, max: width, worstRel: 0, current: 0 };
+                       rows.set(key, entry);
+                     }
+                     entry.min = Math.min(entry.min, width);
+                     entry.max = Math.max(entry.max, width);
+                     if (isCurrent) entry.current += 1;
+                     if (shown > 0) {
+                       ctx.font = '700 100px ' + style.fontFamily;
+                       const perPx = ctx.measureText(row.textContent || '').width / 100;
+                       const layoutFont = shown;
+                       const expected = (perPx * 1.14 + 0.1) * layoutFont;
+                       if (expected > 1) {
+                         entry.worstRel = Math.max(
+                           entry.worstRel,
+                           Math.abs(width - expected) / expected,
+                         );
+                       }
+                     }
+                   });
+                 }
+                 await sleep(60);
+               }
+               let worstRange = 0;
+               let widthChanged = 0;
+               let worstRel = 0;
+               let blocksWithCurrent = 0;
+               for (const entry of rows.values()) {
+                 const range = entry.max - entry.min;
+                 if (range > 1) widthChanged += 1;
+                 if (entry.current > 0) blocksWithCurrent += 1;
+                 worstRange = Math.max(worstRange, range);
+                 worstRel = Math.max(worstRel, entry.worstRel);
+               }
+               return {
+                 samples,
+                 blocks: rows.size,
+                 currentSeen,
+                 blocksWithCurrent,
+                 worstRange,
+                 widthChanged,
+                 worstRel,
+               };
+             })()`,
+            true,
+          )) as {
+            samples: number;
+            blocks: number;
+            currentSeen: number;
+            blocksWithCurrent: number;
+            worstRange: number;
+            widthChanged: number;
+            worstRel: number;
+          };
+          partitaGuideWidthOk =
+            guideWidth.samples > 0 && guideWidth.blocksWithCurrent > 0
+              ? guideWidth.widthChanged === 0 && guideWidth.worstRel <= 0.08
+              : null;
+          console.info(
+            `[pi/smoke] 云阶刻度线不随高光缩放（用户第 7 轮第 2 条）：采样 ${guideWidth.samples} 帧 / 块 ${guideWidth.blocks} 个` +
+              `（高亮过的 ${guideWidth.blocksWithCurrent} 个，高亮帧 ${guideWidth.currentSeen}）` +
+              `｜线宽最大变化 ${guideWidth.worstRange}px（要求 ≤1）变过的块=${guideWidth.widthChanged} 个（要求 0）` +
+              `｜线宽 vs「按布局字号算的宽度」最大相对偏差=${(guideWidth.worstRel * 100).toFixed(1)}%（要求 ≤8%；` +
+              `旧写法会大 1.25~1.6 倍）` +
+              ` → ${partitaGuideWidthOk === null ? '未量' : partitaGuideWidthOk ? '✓' : '✗'}`,
+          );
+          /*
+           * **用户第 5 轮第 3 条**：一次采样同时取两条判据（60 帧 × 40ms ≈ 2.4s）：
+           *  · moved    —— **同一行内**任何一块的 --pi-chunk-x / y 变过多少次。旧写法把当前放大
+           *                （1.25~1.6）乘进行距，高亮每往前挪一块整段楼梯就重排一次、已经出现的块
+           *                被推着挪位；现在位置提前划定 ⇒ 要求 0。
+           *  · maxLit   —— 同一帧里「挂在强调色上」的块数上限。常态字是白 / 墨（饱和度 ≈ 0），
+           *                强调色是高饱和色 ⇒ 用 computed color 的饱和度 > 0.12 判定「挂着高光」。
+           *                旧写法两块共用 900ms 的 color 过渡 ⇒ 交接的近一秒里两块都算高光；
+           *                现在改成接力（旧块 200ms 松手、新块延迟同样长再亮）⇒ 要求 ≤ 1。
+           *  · litFrames —— 真采到「有高光」的帧数；一帧都没有说明这一段没扫到高光（记「未量」）。
+           * 这段注释在模板字符串里，不许出现反引号。
+           */
+          const handoff = (await win.webContents.executeJavaScript(
+            `(async () => {
+               const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+               const parse = (text) => {
+                 const m = String(text).match(/[0-9.]+/g);
+                 if (m === null || m.length < 3) return null;
+                 return { r: Number(m[0]), g: Number(m[1]), b: Number(m[2]) };
+               };
+               const satOf = (rgb) => {
+                 if (rgb === null) return 0;
+                 const max = Math.max(rgb.r, rgb.g, rgb.b);
+                 const min = Math.min(rgb.r, rgb.g, rgb.b);
+                 return max === 0 ? 0 : (max - min) / max;
+               };
+               /*
+                * **用户第 11 轮**修正的「挂着高光」判定：原来只看 HSV 饱和度 > 0.12。
+                * 亮档的常态墨色是**带蓝调的黑**（实测 rgb(26, 29, 36)，「--pi-lyric-ink」= var(--pi-text)），
+                * 它的 HSV 饱和度 = (36-26)/36 ≈ 0.28 > 0.12 ⇒ 一整句**没在唱的字**也会被算成高光
+                *（亮档歌曲上实测 maxLit=4 假红；暗档常态是纯白、饱和度 0，所以这条一直没暴露）。
+                * 再加一道**相对亮度下限**：常态墨色 ≈0.012（实测），而主题色哪怕是深青（本曲
+                * rgb(24, 142, 154)）也有 ≈0.22 —— 取 **0.05** 这道线，墨色判不进去、深色主题色进得来。
+                * 这段注释在模板字符串里，不许出现反引号。
+                */
+               const lumRel = (rgb) => {
+                 if (rgb === null) return 0;
+                 const ch = (v) => {
+                   const s = v / 255;
+                   return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+                 };
+                 return 0.2126 * ch(rgb.r) + 0.7152 * ch(rgb.g) + 0.0722 * ch(rgb.b);
+               };
+               const litWord = (rgb) => satOf(rgb) > 0.12 && lumRel(rgb) >= 0.05;
+               let moved = 0;
+               let maxLit = 0;
+               let litFrames = 0;
+               let samples = 0;
+               let lineChanges = 0;
+               let prevLine = '';
+               let prevPos = null;
+               for (let i = 0; i < 60; i += 1) {
+                 const line = document.querySelector('.pi-lyricpartita__line[data-phase="enter"]');
+                 if (line !== null) {
+                   const index = line.getAttribute('data-lyric-line') || '';
+                   const cols = [...line.querySelectorAll('.pi-lyricpartita__col')];
+                   if (cols.length > 0) {
+                     const style = cols.map((col) => getComputedStyle(col));
+                     const pos = style.map(
+                       (s) => s.getPropertyValue('--pi-chunk-x') + '|' + s.getPropertyValue('--pi-chunk-y'),
+                     );
+                     let lit = 0;
+                     for (const col of cols) {
+                       const word = col.querySelector('.pi-lyricpartita__word');
+                       if (word === null) continue;
+                       if (litWord(parse(getComputedStyle(word).color))) lit += 1;
+                     }
+                     if (index === prevLine && prevPos !== null) {
+                       const n = Math.min(pos.length, prevPos.length);
+                       for (let k = 0; k < n; k += 1) {
+                         if (pos[k] !== prevPos[k]) moved += 1;
+                       }
+                     } else if (prevLine !== '') {
+                       lineChanges += 1;
+                     }
+                     prevLine = index;
+                     prevPos = pos;
+                     maxLit = Math.max(maxLit, lit);
+                     if (lit >= 1) litFrames += 1;
+                     samples += 1;
+                   }
+                 }
+                 await sleep(40);
+               }
+               return { moved: moved, maxLit: maxLit, litFrames: litFrames, samples: samples, lineChanges: lineChanges };
+             })()`,
+            true,
+          )) as {
+            moved: number;
+            maxLit: number;
+            litFrames: number;
+            samples: number;
+            lineChanges: number;
+          };
+          partitaHandoffOk =
+            handoff.samples === 0 || handoff.litFrames === 0
+              ? null
+              : handoff.moved === 0 && handoff.maxLit <= 1;
+          console.info(
+            `[pi/smoke] 云阶位置提前划定 / 高光接力（用户第 5 轮第 3 条）：采样=${handoff.samples} 帧（40ms）` +
+              `｜同一行内位置被改过的次数=${handoff.moved}（要求 0）` +
+              `｜同帧挂着强调色的块数上限=${handoff.maxLit}（要求 ≤ 1）` +
+              `｜采到高光的帧=${handoff.litFrames}｜期间换行=${handoff.lineChanges} 次` +
+              ` → ${partitaHandoffOk === null ? '未量' : partitaHandoffOk ? '✓' : '✗'}`,
+          );
+        }
+        /*
+         * **用户第 8 轮第 2 条**（原话：「所有的歌词动效的翻译歌词都设置在进度条部件的上面，
+         * 并且一次只显示一句」）。每套主题都量一遍，判据四条：
+         *  ① 屏上只有**一层**字幕（`.pi-lyricstage__sub` 恰好 1 个）—— 六套主题共用舞台那一层；
+         *  ② 层里只有**一句**（`.pi-lyricstage__sub-inner` 下的 `<p>` 恰好 1 个），
+         *     而且预览那一档（`.pi-lyricstage__preview`）一个都不许有；
+         *  ③ 字幕层的**下边缘在底部进度条的上边缘之上**（这就是「设在进度条部件的上面」）；
+         *  ④ 层里那句文本非空。
+         * 当前这一帧没有译文时整层不渲染（`subs === 0`）⇒ 这一套主题记「未量」，不进判据。
+         */
+        const sub = (await win.webContents.executeJavaScript(
+          `(() => {
+             const subs = [...document.querySelectorAll('.pi-lyricstage__sub')];
+             const inner = subs.length === 0 ? null : subs[0].querySelector('.pi-lyricstage__sub-inner');
+             /* 第 8 轮：量的必须是**译文那一句**的两条边，不是整层的盒子 —— 那层是绝对贴底的
+                （bottom: 0 + padding-bottom 让开进度条），盒子下边缘当然在窗口底部。 */
+             const line = subs.length === 0 ? null : subs[0].querySelector('.pi-lyricstage__translated');
+             const bar = document.querySelector('[data-home-bar]');
+             const box = (el) => {
+               if (el === null) return null;
+               const r = el.getBoundingClientRect();
+               return { top: Math.round(r.top), bottom: Math.round(r.bottom) };
+             };
+             return {
+               subs: subs.length,
+               paragraphs: inner === null ? -1 : inner.querySelectorAll('p').length,
+               previews: document.querySelectorAll('.pi-lyricstage__preview').length,
+               translated: document.querySelectorAll('.pi-lyricstage__translated').length,
+               text: (line?.textContent || '').trim().slice(0, 24),
+               sub: box(line),
+               bar: box(bar),
+             };
+           })()`,
+          true,
+        )) as {
+          subs: number;
+          paragraphs: number;
+          previews: number;
+          translated: number;
+          text: string;
+          sub: { top: number; bottom: number } | null;
+          bar: { top: number; bottom: number } | null;
+        };
+        if (sub.subs === 0) {
+          console.info(`[pi/smoke] 译文层（${theme}）：这一帧没有译文，记「未量」`);
+        } else {
+          const aboveBar =
+            sub.bar === null || (sub.sub !== null && sub.sub.bottom <= sub.bar.top + 2);
+          const subOk =
+            sub.subs === 1 &&
+            sub.paragraphs === 1 &&
+            sub.previews === 0 &&
+            sub.translated === 1 &&
+            aboveBar &&
+            sub.text !== '';
+          subtitleOk = (subtitleOk ?? true) && subOk;
+          console.info(
+            `[pi/smoke] 译文层（${theme}）：字幕层=${sub.subs} 句数=${sub.paragraphs}（要求 1）` +
+              ` 预览=${sub.previews}（要求 0）｜字幕底=${
+                sub.sub === null ? '-' : sub.sub.bottom
+              }px 进度条顶=${sub.bar === null ? '-' : sub.bar.top}px（字幕必须在上面）` +
+              `｜「${sub.text}」 → ${subOk ? '✓' : '✗'}`,
+          );
+        }
+        if (theme === 'cadenza') {
+          /*
+           * **用户第 9 轮第 3 条**（原话：「图 4 是对于心象，没有逐个字高光逐渐消失的效果，
+           * 图 5 是应该达到的效果」）。
+           *
+           * 采样 30 帧 × 80ms，每帧读所有 `.pi-lyriccadenza__word` 的 `--pi-cad-fill`（字色）
+           * 与 `data-cad-state`：
+           *  · tintedMax  —— 同一帧里「字色明显偏离常态色」的词数上限（ΔRGB ≥ 30）。旧写法字色只在
+           *    词尾那一瞬间到过主题色 ⇒ 屏上几乎永远只有 0~1 颗上色、剩下都是白字挂光晕；
+           *    新写法要求 ≥2（能看到「刚唱完的」与「唱完一半的」同时在场）。
+           *  · distinctMax —— 那些上色词之间**不同的字色档数**：要 ≥2，也就是「逐个字逐渐消失」
+           *    真的看得到梯度（一刀切只会有 1 档）。
+           *  · jumpMax   —— **唱过的**词相邻两帧的字色变化（ΔRGB）：要求 ≤70，也就是「渐变」而不是「啪」。
+           *    （只统计 `passed`：`active` 那一档的渐入是**故意**快的，见 `cadenzaHighlightMix`。）
+           *  · activeFull —— 至少有一帧「正在唱的那颗字」的字色离常态色 ≥60（唱到它时是实的主题色，
+           *    这正是旧写法缺的一档）。采样窗口里若一次都没抓到 active 词，这一条记「未覆盖」。
+           * 这段注释在模板字符串里，不许出现反引号。
+           */
+          const cad = (await win.webContents.executeJavaScript(
+            `(async () => {
+               const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+               const parse = (text) => {
+                 const m = String(text).match(/[0-9.]+/g);
+                 if (m === null || m.length < 3) return null;
+                 return { r: Number(m[0]), g: Number(m[1]), b: Number(m[2]) };
+               };
+               const dist = (a, b) =>
+                 a === null || b === null ? -1 : Math.hypot(a.r - b.r, a.g - b.g, a.b - b.b);
+               const previous = new Map();
+               let frames = 0;
+               let activeFrames = 0;
+               let activeFull = 0;
+               let tintedMax = 0;
+               let distinctMax = 0;
+               let jumpMax = 0;
+               let gradientSample = '';
+               for (let i = 0; i < 30; i += 1) {
+                 const line = document.querySelector('.pi-lyriccadenza__line');
+                 const words = [...document.querySelectorAll('.pi-lyriccadenza__word')];
+                 if (line !== null && words.length > 0) {
+                   frames += 1;
+                   const lineKey = line.dataset.lineTime || '?';
+                   const items = words.map((el, index) => ({
+                     key: lineKey + '#' + index,
+                     state: el.dataset.cadState || '',
+                     raw: el.style.getPropertyValue('--pi-cad-fill') || '',
+                     fill: parse(el.style.getPropertyValue('--pi-cad-fill')),
+                   }));
+                   const counts = new Map();
+                   for (const item of items) counts.set(item.raw, (counts.get(item.raw) || 0) + 1);
+                   let restRaw = '';
+                   let restCount = -1;
+                   for (const [raw, count] of counts) {
+                     if (count > restCount) {
+                       restCount = count;
+                       restRaw = raw;
+                     }
+                   }
+                   const rest = parse(restRaw);
+                   const tinted = items.filter((item) => dist(item.fill, rest) >= 30);
+                   tintedMax = Math.max(tintedMax, tinted.length);
+                   const distinct = new Set(tinted.map((item) => item.raw)).size;
+                   if (distinct > distinctMax) {
+                     distinctMax = distinct;
+                     gradientSample = tinted.map((item) => item.raw).slice(0, 4).join(' | ');
+                   }
+                   const active = items.filter((item) => item.state === 'active');
+                   if (active.length > 0) {
+                     activeFrames += 1;
+                     if (active.some((item) => dist(item.fill, rest) >= 60)) activeFull += 1;
+                   }
+                   for (const item of items) {
+                     const before = previous.get(item.key);
+                     if (before !== undefined && before.state === 'passed' && item.state === 'passed') {
+                       jumpMax = Math.max(jumpMax, dist(before.fill, item.fill));
+                     }
+                     previous.set(item.key, { state: item.state, fill: item.fill });
+                   }
+                 }
+                 await sleep(80);
+               }
+               return {
+                 frames: frames,
+                 activeFrames: activeFrames,
+                 activeFull: activeFull,
+                 tintedMax: tintedMax,
+                 distinctMax: distinctMax,
+                 jumpMax: Number(jumpMax.toFixed(1)),
+                 gradientSample: gradientSample,
+               };
+             })()`,
+            true,
+          )) as {
+            frames: number;
+            activeFrames: number;
+            activeFull: number;
+            tintedMax: number;
+            distinctMax: number;
+            jumpMax: number;
+            gradientSample: string;
+          };
+          const gradOk = cad.tintedMax >= 2 && cad.distinctMax >= 2;
+          const fadeOk = cad.jumpMax <= 70;
+          const activeOk = cad.activeFrames === 0 ? null : cad.activeFull >= 1;
+          cadenzaFadeOk =
+            cad.frames === 0 ? null : gradOk && fadeOk && (activeOk === null || activeOk);
+          cadenzaFadeInfo =
+            `采样 ${cad.frames} 帧（有 active 词的 ${cad.activeFrames} 帧）` +
+            `｜同帧上色词上限=${cad.tintedMax}（要求 ≥2）不同色档上限=${cad.distinctMax}（要求 ≥2）` +
+            `｜唱过的词相邻帧最大字色跳变=${cad.jumpMax}（要求 ≤70）` +
+            `｜正唱的词离常态色 ≥60 的帧=${cad.activeFull}/${cad.activeFrames}` +
+            `（${activeOk === null ? '未覆盖 active 词' : activeOk ? '✓' : '✗'}）` +
+            `｜梯度样本=${cad.gradientSample || '无'}`;
+          console.info(
+            `[pi/smoke] 心象逐个字高光渐变（用户第 9 轮第 3 条）：${cadenzaFadeInfo}` +
+              ` → ${cadenzaFadeOk === null ? '未量' : cadenzaFadeOk ? '✓' : '✗'}`,
+          );
+          /*
+           * **用户第 10 轮第 1 条**（原话：「心象的辉光强度太大了，降低一点」）。
+           *
+           * 真根因是**同一圈光画了两遍**：`text-shadow` 逐帧写在 `.pi-lyriccadenza__word` 上，
+           * 而那个 div 里有正文层与辉光层两层文字，继承属性 ⇒ 两支阴影叠加（透明度相加）。
+           * 所以判据两条，缺一不可：
+           *  ① `.pi-lyriccadenza__body` 的 computed `text-shadow` 必须是 **none**（只许辉光层描一遍）；
+           *  ② 辉光层的三层透明度上限 ≤ 0.70 / 半径 = 36px（数值口径收过三成，见 buildDomTextShadow）。
+           * 一帧都没扫到「有辉光」的帧 ⇒ 未量（不是失败）。
+           * 这段注释在模板字符串里，不许出现反引号。
+           */
+          const glow = (await win.webContents.executeJavaScript(
+            `(async () => {
+               const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+               const alphas = (raw) => {
+                 const out = [];
+                 for (const m of String(raw).matchAll(/rgba?\\([^)]*?,\\s*([0-9.]+)\\)/g)) {
+                   const v = Number.parseFloat(m[1]);
+                   if (Number.isFinite(v)) out.push(v);
+                 }
+                 return out;
+               };
+               let frames = 0;
+               let glowFrames = 0;
+               let bodyShadowed = 0;
+               let maxAlpha = 0;
+               let minAlpha = 9;
+               let radii = new Set();
+               let sample = '';
+               for (let i = 0; i < 24; i += 1) {
+                 const glowLayer = document.querySelector('.pi-lyriccadenza__glow');
+                 const body = document.querySelector('.pi-lyriccadenza__body');
+                 if (glowLayer !== null && body !== null) {
+                   frames += 1;
+                   const bodyShadow = (getComputedStyle(body).textShadow || '').trim();
+                   if (bodyShadow !== '' && bodyShadow !== 'none') bodyShadowed += 1;
+                   const raw = (getComputedStyle(glowLayer).textShadow || '').trim();
+                   const list = raw === 'none' || raw === '' ? [] : alphas(raw);
+                   if (list.length > 0) {
+                     glowFrames += 1;
+                     maxAlpha = Math.max(maxAlpha, Math.max(...list));
+                     minAlpha = Math.min(minAlpha, Math.min(...list));
+                     for (const m of raw.matchAll(/([0-9.]+)px/g)) {
+                       /* 只收**正的**半径：text-shadow 写作 rgb(...) 0px 0px 36px，前两个 0px 是偏移量。 */
+                       if (Number.parseFloat(m[1]) > 0) radii.add(m[1]);
+                     }
+                     if (sample === '') sample = raw.slice(0, 90);
+                   }
+                 }
+                 await sleep(60);
+               }
+               return {
+                 frames,
+                 glowFrames,
+                 bodyShadowed,
+                 maxAlpha: Number(maxAlpha.toFixed(3)),
+                 minAlpha: minAlpha === 9 ? -1 : Number(minAlpha.toFixed(3)),
+                 radii: [...radii].join('/'),
+                 sample,
+               };
+             })()`,
+            true,
+          )) as {
+            frames: number;
+            glowFrames: number;
+            bodyShadowed: number;
+            maxAlpha: number;
+            minAlpha: number;
+            radii: string;
+            sample: string;
+          };
+          cadenzaGlowOk =
+            glow.glowFrames === 0
+              ? null
+              : glow.bodyShadowed === 0 && glow.maxAlpha <= 0.72 && glow.radii === '36';
+          cadenzaGlowInfo =
+            `采样 ${glow.frames} 帧（有辉光的 ${glow.glowFrames} 帧）` +
+            `｜正文层还挂着阴影的帧=${glow.bodyShadowed}（要求 0：只许辉光层描一遍）` +
+            `｜三层透明度最大=${glow.maxAlpha}（要求 ≤0.72，旧写法 0.98）最小=${glow.minAlpha}` +
+            `｜半径=${glow.radii || '无'}（要求 36，旧写法 40）｜样本=${glow.sample || '无'}`;
+          console.info(
+            `[pi/smoke] 心象辉光强度（用户第 10 轮第 1 条）：${cadenzaGlowInfo}` +
+              ` → ${cadenzaGlowOk === null ? '未量' : cadenzaGlowOk ? '✓' : '✗'}`,
+          );
+          /*
+           * **用户第 11 轮第 1 条**（原话：「心象浅色模式下，唱过的歌词应该是黑色」）。
+           *
+           * 心象的常态色是逐帧插值写进 `--pi-cad-fill` 的（`mixColor(常态色, 词色, activeMix)`），
+           * 所以判据直接量**已唱词当前的字色**，再和舞台那一支 `--pi-lyric-ink`（流光吃的就是它）
+           * 比 ΔRGB：亮档它就等于「流光那支近黑」，暗档等于白 —— 一条判据覆盖两种底色。
+           * 这段注释在模板字符串里，不许出现反引号。
+           */
+          const cadInk = (await win.webContents.executeJavaScript(
+            `(async () => {
+               const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+               const stage = document.querySelector('.pi-lyricstage');
+               if (!(stage instanceof HTMLElement)) return null;
+               const probe = document.createElement('span');
+               probe.style.display = 'none';
+               stage.appendChild(probe);
+               const resolve = (value) => {
+                 probe.style.color = value || 'transparent';
+                 return getComputedStyle(probe).color;
+               };
+               const parse = (text) => {
+                 const m = String(text).match(/[0-9.]+/g);
+                 if (m === null || m.length < 3) return null;
+                 return { r: Number(m[0]), g: Number(m[1]), b: Number(m[2]) };
+               };
+               const inkRaw = getComputedStyle(stage).getPropertyValue('--pi-lyric-ink').trim();
+               const inkVar = parse(resolve(inkRaw === '' ? '#fff' : inkRaw));
+               probe.remove();
+               const colors = new Map();
+               let n = 0;
+               for (let frame = 0; frame < 6; frame += 1) {
+                 for (const word of document.querySelectorAll(
+                   ".pi-lyriccadenza__word[data-cad-state='passed']",
+                 )) {
+                   const raw = word.style.getPropertyValue('--pi-cad-fill');
+                   if (raw === '') continue;
+                   colors.set(raw, (colors.get(raw) || 0) + 1);
+                   n += 1;
+                 }
+                 await sleep(150);
+               }
+               let mode = '';
+               let best = -1;
+               for (const [color, count] of colors) {
+                 if (count > best) { best = count; mode = color; }
+               }
+               const passed = parse(mode);
+               const delta =
+                 passed === null || inkVar === null
+                   ? -1
+                   : Math.round(Math.hypot(passed.r - inkVar.r, passed.g - inkVar.g, passed.b - inkVar.b));
+               return { inkRaw, inkVar, mode, samples: n, distinct: colors.size, delta };
+             })()`,
+            true,
+          )) as {
+            inkRaw: string;
+            inkVar: { r: number; g: number; b: number } | null;
+            mode: string;
+            samples: number;
+            distinct: number;
+            delta: number;
+          } | null;
+          if (cadInk === null || cadInk.samples === 0) {
+            cadenzaInkOk = null;
+            cadenzaInkInfo = '未量（这一帧没有「已唱」的心象词）';
+          } else {
+            cadenzaInkOk = cadInk.delta >= 0 && cadInk.delta <= 4;
+            cadenzaInkInfo =
+              `已唱词的字色众数=${cadInk.mode}（取样 ${cadInk.samples} 个 / ${cadInk.distinct} 种色）` +
+              `｜舞台 --pi-lyric-ink=${cadInk.inkRaw || '无'}` +
+              `｜ΔRGB=${cadInk.delta}（要求 ≤4；亮档即「流光那支近黑」，旧写法是「白推到够 3:1」的中灰）`;
+          }
+          console.info(
+            `[pi/smoke] 心象常态墨色与流光同源（用户第 11 轮第 1 条）：${cadenzaInkInfo}` +
+              ` → ${cadenzaInkOk === null ? '未量' : cadenzaInkOk ? '✓' : '✗'}`,
+          );
+        }
+        if (theme === 'tilt') {
+          /*
+           * **用户第 8 轮第 3 条**（原话：「倾述的歌词动效，不要一次性显示两行，而是一行结束再显示
+           * 第二行。其中斜体的歌词有一定概率有颜色」）。采样 4s（每 40ms 一帧）量两件事：
+           *  ① 屏上同时存在的倾诉块（`.pi-lyrictilt__block`）**最多 1 个** —— 改之前上一行会在
+           *     `leavingIndex` 期间跟新行同时在场演交叉淡出，那一帧读到 2；
+           *  ② 斜体段的 `data-tinted` 两种取值都出现过（有抽中上色的、也有没抽中的）——
+           *     这就是「一定概率有颜色」的现场证据（确定性抽签的纯函数版由单测钉住）。
+           */
+          const tilt = (await win.webContents.executeJavaScript(
+            `(async () => {
+               const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+               let maxBlocks = 0;
+               let frames = 0;
+               let tinted = 0;
+               let plain = 0;
+               let tintedFrames = 0;
+               let wholePartOk = 0;
+               let wholePartSample = '';
+               const tintedKeys = new Set();
+               const plainKeys = new Set();
+               /*
+                * **用户第 10 轮第 3 条**（原话：「我们 app 的斜体带颜色的歌词表现如图 3 所示，
+                * 正确的表现应该如图 4 所示」）：抽中签的斜体段必须**整段同色**。
+                * 常态色（墨色）从同一块里**非斜体段的 passed 字**上取 —— 那条路 CSS 保证是
+                * 「--pi-lyric-ink」，比自己解析变量链可靠。
+                * 这段注释在模板字符串里，不许出现反引号。
+                */
+               const inkColor = () => {
+                 for (const word of document.querySelectorAll(
+                   ".pi-lyrictilt__part[data-italic='false'] .pi-lyrictilt__word[data-word-state='passed']",
+                 )) {
+                   const color = getComputedStyle(word).color;
+                   if (color !== '') return color;
+                 }
+                 return '';
+               };
+               for (let i = 0; i < 100; i += 1) {
+                 const blocks = document.querySelectorAll('.pi-lyrictilt__block');
+                 if (blocks.length > 0) frames += 1;
+                 maxBlocks = Math.max(maxBlocks, blocks.length);
+                 const ink = inkColor();
+                 let sawTinted = false;
+                 for (const part of document.querySelectorAll(
+                   ".pi-lyrictilt__part[data-italic='true']",
+                 )) {
+                   const key = (part.closest('.pi-lyrictilt__block')?.dataset.index ?? '?') + ':' +
+                     (part.textContent || '').slice(0, 6);
+                   if (part.dataset.tinted === 'true') {
+                     tinted += 1;
+                     tintedKeys.add(key);
+                     sawTinted = true;
+                     const colors = [...part.querySelectorAll('.pi-lyrictilt__word')]
+                       .filter((word) => word.dataset.space !== 'true')
+                       .map((word) => getComputedStyle(word).color);
+                     const distinct = new Set(colors);
+                     const partColor = getComputedStyle(part).color;
+                     const ok = colors.length > 0 && distinct.size === 1 &&
+                       colors[0] === partColor && (ink === '' || partColor !== ink);
+                     if (ok) wholePartOk += 1;
+                     if (wholePartSample === '' || !ok) {
+                       wholePartSample = (part.textContent || '').slice(0, 8) + '=' +
+                         [...distinct].join(' / ') + (ok ? '（整段同色）' : '（不齐）');
+                     }
+                   } else {
+                     plain += 1;
+                     plainKeys.add(key);
+                   }
+                 }
+                 if (sawTinted) tintedFrames += 1;
+                 await sleep(40);
+               }
+               /*
+                * **用户第 10 轮第 3 条的 A/B 直测**：自然抽中签的段在几秒采样里可能一次都不出现
+                * （概率 0.5，而每行只有一段斜体）—— 那样这条判据就只能记「未量」，等于没验。
+                * 所以补一次**样式表直测**：临时给一个斜体段挂上 data-tinted，等颜色过渡走完（900ms）
+                * 再量段内每个字的 computed color，量完**恢复原值**（不改变页面状态）。
+                * 判据：段内每个字同色、等于段自己的色、且不等于常态墨色（图 4 的「整段上色」）。
+                * 这段注释在模板字符串里，不许出现反引号。
+                */
+               let probeOk = null;
+               let probeInfo = '';
+               for (let attempt = 0; attempt < 14 && probeOk === null; attempt += 1) {
+                 const part = document.querySelector(".pi-lyrictilt__part[data-italic='true']");
+                 if (part === null) {
+                   /* 不是每一行都有斜体段（候选过滤 0.35，一行可能一个候选都没有）⇒ 多等几行。 */
+                   await sleep(400);
+                   continue;
+                 }
+                 /*
+                  * **临时关掉过渡**再挂 data-tinted：段与字上都有 900ms 的 color 过渡，
+                  * 等它走完（>1s）时这一行往往已经换掉、元素被卸载（上一版就是这么作废的）。
+                  * 关掉过渡之后颜色**立刻**到位，一次 rAF 就能量；量完把标记与样式都恢复。
+                  * 这段注释在模板字符串里，不许出现反引号。
+                  */
+                 const style = document.createElement('style');
+                 style.textContent =
+                   ".pi-lyrictilt__part[data-ab='1'], .pi-lyrictilt__part[data-ab='1'] * { transition: none !important; }";
+                 document.head.appendChild(style);
+                 const original = part.dataset.tinted;
+                 part.dataset.ab = '1';
+                 part.dataset.tinted = 'true';
+                 await sleep(90);
+                 const words = [...part.querySelectorAll('.pi-lyrictilt__word')]
+                   .filter((word) => word.dataset.space !== 'true');
+                 const colors = words.map((word) => getComputedStyle(word).color);
+                 const distinct = new Set(colors);
+                 const ink = inkColor();
+                 const partColor = getComputedStyle(part).color;
+                 probeOk = colors.length > 0 && distinct.size === 1 &&
+                   colors[0] === partColor && (ink === '' || colors[0] !== ink);
+                 probeInfo = (part.textContent || '').slice(0, 8) + '=' + [...distinct].join(' / ') +
+                   '（段色=' + partColor + '，常态色=' + (ink || '未知') + '，字数=' + words.length + '）';
+                 if (original === undefined) delete part.dataset.tinted;
+                 else part.dataset.tinted = original;
+                 delete part.dataset.ab;
+                 style.remove();
+               }
+               return {
+                 maxBlocks,
+                 frames,
+                 tinted,
+                 plain,
+                 tintedParts: tintedKeys.size,
+                 plainParts: plainKeys.size,
+                 tintedFrames,
+                 wholePartOk,
+                 wholePartSample,
+                 probeOk,
+                 probeInfo,
+               };
+             })()`,
+            true,
+          )) as {
+            maxBlocks: number;
+            frames: number;
+            tinted: number;
+            plain: number;
+            tintedParts: number;
+            plainParts: number;
+            tintedFrames: number;
+            wholePartOk: number;
+            wholePartSample: string;
+            probeOk: boolean | null;
+            probeInfo: string;
+          };
+          /*
+           * 判据只钉「一次只有一行」（用户这条的前半句，硬要求）。
+           * 后半句「斜体有一定概率有颜色」：现场读数只当**参考**（一次采样可能只扫到一两段斜体，
+           * 抽不中那一半完全正常），分布本身由 `TiltTheme.test.ts` 的纯函数单测钉住。
+           */
+          const tiltTinted = tilt.tinted > 0 && tilt.plain > 0;
+          tiltSingleLineOk = tilt.frames === 0 ? null : tilt.maxBlocks <= 1;
+          /*
+           * **用户第 10 轮第 3 条**：抽中签的斜体段**整段同色**（图 4），不是只有正在唱的那一两个字
+           * （图 3）。优先用 **A/B 直测**（不靠抽签运气，见脚本里那段注释）；A/B 没跑成（整段采样里
+           * 一次斜体段都没出现）才退回自然采样：抽中签的帧里 ≥80% 满足「整段同色且不是常态色」。
+           * 两条都没数据 ⇒ 未量（不判红）。
+           */
+          tiltTintOk =
+            tilt.probeOk !== null
+              ? tilt.probeOk
+              : tilt.tintedFrames === 0
+                ? null
+                : tilt.wholePartOk / tilt.tintedFrames >= 0.8;
+          tiltSingleLineInfo =
+            `采样=${tilt.frames} 帧有内容｜同帧最多的倾诉块=${tilt.maxBlocks} 个（要求 ≤1，旧写法 2）` +
+            `｜斜体段现场读数：上色 ${tilt.tinted} 次（${tilt.tintedParts} 段）/ 未上色 ${tilt.plain} 次` +
+            `（${tilt.plainParts} 段）—— 两种都出现过=${tiltTinted ? '是' : '否（采样少，分布见单测）'}` +
+            `｜自然抽中签的段整段同色：${tilt.wholePartOk}/${tilt.tintedFrames} 帧` +
+            `｜A/B 直测=${tilt.probeOk === null ? '未跑' : tilt.probeOk ? '通过' : '不通过'}` +
+            `（${tilt.probeInfo || '无'}）｜样本=${tilt.wholePartSample || '无'}`;
+          console.info(
+            `[pi/smoke] 倾诉一行一句与斜体上色（用户第 8 轮第 3 条 + 第 10 轮第 3 条）：${tiltSingleLineInfo}` +
+              ` → 一行一句 ${tiltSingleLineOk === null ? '未量' : tiltSingleLineOk ? '✓' : '✗'}` +
+              `／整段上色 ${tiltTintOk === null ? '未量' : tiltTintOk ? '✓' : '✗'}`,
+          );
         }
         // 跑了逐字旋转探针那一跑，classic 的图另存一份（那会儿开关是临时打开的），
         // 免得把「用户默认状态」的正式成品图覆盖成开了旋转的样子。
+        /*
+         * 用户 m06476 第 2 条：浮名的成品图要落在**当前句唱到一半**的那一刻 ——
+         * 早了整句还是「进度没到」的主题色（看不出「进度之前的回到原色」），
+         * 晚了整句都褪回常态色（看不出「进度还没到的才有颜色」）。
+         * 做法同 classic 那支：先等到行内真出现 active 字素，再让它唱 ~0.6s 再拍。
+         */
+        if (theme === 'fume') {
+          for (let wait = 0; wait < 30; wait += 1) {
+            const lit = (await win.webContents.executeJavaScript(
+              `(() => {
+                 const root = document.querySelector('[data-mood-theme="fume"]');
+                 const ai = root instanceof HTMLElement ? Number(root.dataset.activeIndex) : NaN;
+                 if (!Number.isFinite(ai)) return false;
+                 const block = document.querySelector('[data-lyric-line="' + ai + '"]');
+                 if (block === null) return false;
+                 const sats = [...block.querySelectorAll('[data-glyph]')]
+                   .map((el) => {
+                     const m = getComputedStyle(el).color.match(/[0-9.]+/g);
+                     if (m === null || m.length < 3) return null;
+                     const r = Number(m[0]); const g = Number(m[1]); const b = Number(m[2]);
+                     const max = Math.max(r, g, b); const min = Math.min(r, g, b);
+                     return max === 0 ? 0 : (max - min) / max;
+                   })
+                   .filter((v) => v !== null);
+                 // m06899：这条等待恰好**停在句中**（句内同时有"唱过的常态色"与"还没唱到的高亮色"），
+                 // 于是顺手把这一帧的句内色差存到页面上：等它后面的「浮名句内进度色」探针直接取用 ——
+                 // 探针自己再采就已经是句尾（实测尾帧两侧同为 0.551、色差 0.000）。
+                 const half = Math.floor(sats.length / 2);
+                 const avg = (xs) => xs.reduce((a, b) => a + b, 0) / Math.max(xs.length, 1);
+                 const spread = avg(sats.slice(half)) - avg(sats.slice(0, half));
+                 const prev = window.__piFumeWithin;
+                 if (sats.length >= 3 && (prev === undefined || spread > prev.spread)) {
+                   const els = [...block.querySelectorAll('[data-glyph]')];
+                   const first = els[0];
+                   const last = els[els.length - 1];
+                   window.__piFumeWithin = {
+                     n: sats.length,
+                     sungSat: avg(sats.slice(0, half)),
+                     restSat: avg(sats.slice(half)),
+                     spread: spread,
+                     leftColor: first === undefined ? '' : getComputedStyle(first).color,
+                     rightColor: last === undefined ? '' : getComputedStyle(last).color,
+// **用户第 5 轮第 1 条**：右边那一段改成**实体暗色**（不再是 0.44 的半透明），透明度读数就是它的判据。
+leftOpacity: first === undefined ? '' : getComputedStyle(first).opacity,
+rightOpacity: last === undefined ? '' : getComputedStyle(last).opacity,
+                   };
+                 }
+                 return sats.some((v) => v > 0.3) && sats.some((v) => v < 0.12);
+               })()`,
+              true,
+            )) as boolean;
+            if (lit) break;
+            await delay(120);
+          }
+          /*
+           * 采样起点紧贴行首：句内「唱过的回到常态色 / 还没唱到的才有主题色」这两种颜色**只在句首到
+           * 句中之间并存**，晚了整句都褪完（实测过：600ms 之后再连采 8 帧全是常态色，读数 0.000/0.000）。
+           * 顺带这让后面的成品图也落在句中（约行首 +1.2s）。
+           */
+          await delay(120);
+          /*
+           * 用户 m06476 第 2 条取证：上面那条「浮名高亮褪回常态色」量的是**跨行**
+           * （唱过的行 vs 还没唱到的行）；用户指的是**同一句内部** —— 进度之前的字回到常态色、
+           * 进度还没到的字才有主题色。这里逐帧轮扫各行（浮名的 data-active 是「全曲 hero 块」、不是正在唱的那一行），报出「句内色差最大」的那一帧。
+           * **只记录，不进判据**（句短时窗口很窄，采不到不算失败）。
+           */
+          const within = (await win.webContents.executeJavaScript(
+            `(async () => {
+               const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+               const sat = (el) => {
+                 const m = getComputedStyle(el).color.match(/[0-9.]+/g);
+                 if (m === null || m.length < 3) return null;
+                 const r = Number(m[0]); const g = Number(m[1]); const b = Number(m[2]);
+                 const max = Math.max(r, g, b); const min = Math.min(r, g, b);
+                 return max === 0 ? 0 : (max - min) / max;
+               };
+               let best = null;
+               for (let i = 0; i < 8; i += 1) {
+                                   // m06899：上面那条「等句中」的循环已经把真正的句中帧存下来了（句内两种颜色并存的那一刻）；
+                  // 采到就直接用，省得这里再采一轮、反而采到句尾（实测尾帧两侧同为 0.551、色差 0.000）。
+                  const acc = window.__piFumeWithin;
+                  if (acc !== undefined) return acc;
+                                    // m06899：data-fume-phase 的 active 会在**开唱之前**就挂上（间奏里的预排期），
+                  // 那时整句都还是「进度没到」的一支色（实测 0.551/0.551 同色）。真正在唱的那一行
+                  // 是根上 data-active-index 指定的那一个块（跨行那条探针就是这么取的）。
+                  const root = document.querySelector('[data-mood-theme="fume"]');
+                  const ai = root instanceof HTMLElement ? Number(root.dataset.activeIndex) : Number.NaN;
+                  const hero = Number.isFinite(ai) ? document.querySelector('[data-lyric-line="' + ai + '"]') : null;
+                  // m06899：采样窗口整体后移 0.9s —— 句首那一瞬整句都还是「进度没到」的同一支色，
+                  // 两侧当然一样（上一跑读数 0.551/0.551）。句内渐变只在中段才并存。
+                  if (i === 0) await sleep(120);
+                 if (hero !== null) {
+                   const glyphs = [...hero.querySelectorAll('[data-glyph]')]
+                     .filter((el) => el.style !== undefined && el.style.color !== '')
+                     .sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
+                   if (glyphs.length >= 3) {
+                     const half = Math.floor(glyphs.length / 2);
+                     const avg = (xs) => {
+                       const vs = xs.map(sat).filter((v) => v !== null);
+                       return vs.length === 0 ? -1 : vs.reduce((a, b) => a + b, 0) / vs.length;
+                     };
+                     const sungSat = avg(glyphs.slice(0, half));
+                     const restSat = avg(glyphs.slice(half));
+                     const spread = restSat - sungSat;
+                     if (best === null || spread > best.spread) {
+                       best = { n: glyphs.length, sungSat: sungSat, restSat: restSat, spread: spread, leftColor: glyphs[0] === undefined ? '' : getComputedStyle(glyphs[0]).color, rightColor: glyphs[glyphs.length - 1] === undefined ? '' : getComputedStyle(glyphs[glyphs.length - 1]).color };
+                     }
+                   }
+                 }
+                 await sleep(150);
+               }
+               return best;
+             })()`,
+            true,
+          )) as {
+            n: number;
+            sungSat: number;
+            restSat: number;
+            spread: number;
+            leftColor: string;
+            rightColor: string;
+            leftOpacity?: string;
+            rightOpacity?: string;
+          } | null;
+          console.info(
+            `[pi/smoke] 浮名句内进度色（用户 m06476 第 2 条 + 第 5 轮第 1 条；只记录，逐帧轮扫各行取色差最大者）：句内字素=${within === null ? '没量到' : within.n}` +
+              `｜句内前半（进度之前）平均饱和度=${within === null ? '-' : within.sungSat.toFixed(3)}` +
+              `｜句内后半（进度还没到）平均饱和度=${within === null ? '-' : within.restSat.toFixed(3)}` +
+              `｜后半 − 前半=${within === null ? '-' : within.spread.toFixed(3)}` +
+              `｜最左字色（进度之前）=${within === null ? '-' : within.leftColor}` +
+              `｜最右字色（进度还没到）=${within === null ? '-' : within.rightColor}` +
+              `｜最右字透明度（要求 1 = 实体色）=${within === null ? '-' : (within.rightOpacity ?? '-')}` +
+              `（前半近 0 且后半更大 ⇒「进度之前的回到原色、进度还没到的才有颜色」）`,
+          );
+        }
+        /*
+         * **用户 m00002 第 1 条**：浮名的成品图要等镜头**真的**把高亮摆到画面中央再拍。
+         *
+         * 这一格的图紧跟在「浮名曲尾缩镜」那条探针之后，而那一条会把播放头推到曲尾、镜头缩到
+         * 整张纸（实测 0.384）再放回去 —— 恢复期间镜头还在飞，随手一拍就会拍到过渡帧
+         * （实测 `docs/m3-lyric-fume.png` 拍到过这样一帧，与镜头探针的读数自相矛盾）。
+         * 这里按与镜头探针**同一套量法**（**第二遍起量 `[data-fume-focus]` 那颗字素** vs 窗口中心）
+         * 轮询到连续两帧都进容差再拍，最多等 3s；等不到就照拍，并把偏差抄进日志。
+         *
+         * 只记录、不进判据 —— 成品图的取景时机不该反过来变成一条会偶尔变红的门禁。
+         */
+        if (theme === 'fume') {
+          const frameTolerance = 40;
+          let shotDev: { x: number; y: number } | null = null;
+          let settledFrames = 0;
+          for (let wait = 0; wait < 20 && settledFrames < 2; wait += 1) {
+            const dev = (await win.webContents.executeJavaScript(
+              `(() => {
+                 const focus = document.querySelector('[data-fume-focus]');
+                 if (focus instanceof HTMLElement) {
+                   const box = focus.getBoundingClientRect();
+                   if (box.width > 0 && box.height > 0) {
+                     return {
+                       x: Math.round(box.left + box.width / 2 - window.innerWidth / 2),
+                       y: Math.round(box.top + box.height / 2 - window.innerHeight / 2),
+                     };
+                   }
+                 }
+                 /* 退路（还没标出焦点字）：当前句文字并集的中心。 */
+                 const world = document.querySelector('.pi-lyricfume__world');
+                 const root = document.querySelector('[data-mood-theme="fume"]');
+                 if (!(world instanceof HTMLElement) || !(root instanceof HTMLElement)) return null;
+                 const activeIndex = root.dataset.activeIndex;
+                 const block =
+                   activeIndex === undefined || activeIndex === ''
+                     ? null
+                     : world.querySelector('.pi-lyricfume__block[data-lyric-line="' + activeIndex + '"]');
+                 if (!(block instanceof HTMLElement)) return null;
+                 let left = Infinity;
+                 let top = Infinity;
+                 let right = -Infinity;
+                 let bottom = -Infinity;
+                 for (const glyph of block.querySelectorAll('.pi-lyricfume__glyph')) {
+                   const rect = glyph.getBoundingClientRect();
+                   if (rect.width <= 0 && rect.height <= 0) continue;
+                   left = Math.min(left, rect.left);
+                   right = Math.max(right, rect.right);
+                   top = Math.min(top, rect.top);
+                   bottom = Math.max(bottom, rect.bottom);
+                 }
+                 if (!Number.isFinite(left) || right <= left || bottom <= top) return null;
+                 return {
+                   x: Math.round(left + (right - left) / 2 - window.innerWidth / 2),
+                   y: Math.round(top + (bottom - top) / 2 - window.innerHeight / 2),
+                 };
+               })()`,
+              true,
+            )) as { x: number; y: number } | null;
+            if (dev === null) {
+              settledFrames = 0;
+            } else {
+              shotDev = dev;
+              settledFrames =
+                Math.abs(dev.x) <= frameTolerance && Math.abs(dev.y) <= frameTolerance
+                  ? settledFrames + 1
+                  : 0;
+            }
+            if (settledFrames < 2) await delay(150);
+          }
+          console.info(
+            `[pi/smoke] 浮名成品图取景（用户 m00002 第 1 条，只记录）：高亮字偏差=` +
+              `${shotDev === null ? '没量到' : `横 ${shotDev.x}px / 纵 ${shotDev.y}px`}` +
+              `｜落定=${settledFrames >= 2 ? '是' : '否（超时，照拍）'}`,
+          );
+        }
         const shot = path.resolve(
           here,
           spinProbe && theme === 'classic'
@@ -6744,6 +11274,26 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
           `[pi/smoke] 歌词主题钉住：${pinnedTheme}（设置已落=${pinned.setting}｜舞台=${pinned.stage || '无'}）`,
         );
       }
+    }
+
+    // **用户 m06899 第 3 条**：`PI_SMOKE_LYRIC_ONLY=1` 时，歌词主题段跑完就收工。
+    // 上面每条探针各自的读数都已经 `console.info` 进了日志，这里只补一行汇总，方便一眼看全，
+    // 后面与歌词无关的几千行探针直接跳过（一次跑从 ~10 分钟降到 ~1 分钟）。
+    if (lyricOnly) {
+      const stamp = (value: boolean | null): string =>
+        value === null ? '没跑' : value ? '✓' : '✗';
+      console.info(
+        `[pi/smoke] 歌词动效快速验收（PI_SMOKE_LYRIC_ONLY=1，只跑 ${shotThemeOrder.join(',') || '无主题'}）：` +
+          `逐字旋转=${stamp(spinOk)}｜常态白与高亮色=${stamp(lyricInkOk)}｜浮名褪回常态色=${stamp(
+            fumeFadeOk,
+          )}｜浮名字形不出框=${stamp(lyricBleedOk)}｜舞台铺满=${stamp(stageFillOk)}｜云阶词距=${stamp(
+            partitaSpaceOk,
+          )}｜云阶刻度线不缩放=${stamp(partitaGuideWidthOk)}｜流光排成一个句子=${stamp(
+            classicScatterOk,
+          )}｜时计齿轮=${stamp(pendoloGearOk)}`,
+      );
+      app.exit(0);
+      return;
     }
 
     // m08768 第 5 条：情绪背景。我们走的是「本地情绪词典 + 封面取色」的合成路线（没有 LLM），
@@ -6816,7 +11366,9 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
      * trackGrowOk（用静止态的轨道宽当基准做真倍数判定）。
      */
     const barHoverGrowOk =
-      hoverSizeMatch !== null && Number.isFinite(barWidth) && barWidth > 0 &&
+      hoverSizeMatch !== null &&
+      Number.isFinite(barWidth) &&
+      barWidth > 0 &&
       Number(hoverSizeMatch[1]) > barWidth;
     /*
      * 第十四轮第 1 条（用户 m05281）：「音量条重新设计…鼠标悬停的时候音量条的部件变大一点，
@@ -7051,7 +11603,9 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
      * 那个值在前几轮是恒真的）。
      */
     const trackGrowOk =
-      progMatch !== null && Number.isFinite(restTrackWidth) && restTrackWidth > 0 &&
+      progMatch !== null &&
+      Number.isFinite(restTrackWidth) &&
+      restTrackWidth > 0 &&
       Number(progMatch[1]) >= restTrackWidth * 1.45;
     const barHoverOk = barGrowOk && rowPinnedOk && prevNextOk;
     console.info(
@@ -7093,7 +11647,10 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
       mediaInfo.actions.includes('nexttrack') &&
       mediaInfo.actions.includes('previoustrack');
     const mediaSessionOk =
-      mediaActionsOk && mediaInfo.title !== '' && mediaInfo.state === 'playing' && mediaInfo.artwork >= 1;
+      mediaActionsOk &&
+      mediaInfo.title !== '' &&
+      mediaInfo.state === 'playing' &&
+      mediaInfo.artwork >= 1;
     console.info(
       `[pi/smoke] 系统媒体卡片接线（第十三轮第 6 条）：动作=${mediaInfo.actions || '无'}｜` +
         `歌名=${mediaInfo.title || '空'}｜歌手=${mediaInfo.artist || '空'}｜封面=${mediaInfo.artwork} 张｜` +
@@ -7211,7 +11768,8 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
       `document.querySelector('.pi-navdrawer') === null`,
       true,
     )) as boolean;
-    const navOk = drawerClosed && drawerInfo.includes('搜索在顶部=true') && drawerInfo.includes('账号区=true');
+    const navOk =
+      drawerClosed && drawerInfo.includes('搜索在顶部=true') && drawerInfo.includes('账号区=true');
     console.info(
       `[pi/smoke] 抽屉关闭（点遮罩）：${drawerClosed ? '✓' : '✗'}｜「搜索在顶部」与账号区 ${navOk ? '✓' : '✗'}`,
     );
@@ -7239,12 +11797,28 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
       const fromX = ballBefore.x + Math.round(ballBefore.w / 2);
       const fromY = ballBefore.y + Math.round(ballBefore.h / 2);
       await focusSmoke(win);
-      win.webContents.sendInputEvent({ type: 'mouseDown', x: fromX, y: fromY, button: 'left', clickCount: 1 });
+      win.webContents.sendInputEvent({
+        type: 'mouseDown',
+        x: fromX,
+        y: fromY,
+        button: 'left',
+        clickCount: 1,
+      });
       for (let step = 1; step <= 6; step += 1) {
-        win.webContents.sendInputEvent({ type: 'mouseMove', x: fromX + step * 30, y: fromY + step * 8 });
+        win.webContents.sendInputEvent({
+          type: 'mouseMove',
+          x: fromX + step * 30,
+          y: fromY + step * 8,
+        });
         await delay(60);
       }
-      win.webContents.sendInputEvent({ type: 'mouseUp', x: fromX + 180, y: fromY + 48, button: 'left', clickCount: 1 });
+      win.webContents.sendInputEvent({
+        type: 'mouseUp',
+        x: fromX + 180,
+        y: fromY + 48,
+        button: 'left',
+        clickCount: 1,
+      });
       await delay(600);
       const dragEvents = (await win.webContents.executeJavaScript(
         `window.__piDrag`,
@@ -7282,7 +11856,13 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
         const anchorY = Math.round(anchor.y + anchor.h / 2);
         const toX = view.w - 4;
         await focusSmoke(win);
-        win.webContents.sendInputEvent({ type: 'mouseDown', x: anchorX, y: anchorY, button: 'left', clickCount: 1 });
+        win.webContents.sendInputEvent({
+          type: 'mouseDown',
+          x: anchorX,
+          y: anchorY,
+          button: 'left',
+          clickCount: 1,
+        });
         for (let step = 1; step <= 8; step += 1) {
           win.webContents.sendInputEvent({
             type: 'mouseMove',
@@ -7291,7 +11871,13 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
           });
           await delay(50);
         }
-        win.webContents.sendInputEvent({ type: 'mouseUp', x: toX, y: anchorY, button: 'left', clickCount: 1 });
+        win.webContents.sendInputEvent({
+          type: 'mouseUp',
+          x: toX,
+          y: anchorY,
+          button: 'left',
+          clickCount: 1,
+        });
         await delay(560);
         snappedRing = await readRing(win);
         // 松手时鼠标还压在细条上 ⇒ 量到的是 :hover 的粗细（12px 档）。要钉「更细」这条，
@@ -7450,10 +12036,12 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
     const covers = await checkCovers(win);
     console.info(`[pi/smoke] 封面（末页）：${describeCovers(covers)}`);
 
-    const shotPath = process.env.PI_SMOKE_UI_SHOT ?? path.resolve(here, '../../../docs/m3-shell.png');
+    const shotPath =
+      process.env.PI_SMOKE_UI_SHOT ?? path.resolve(here, '../../../docs/m3-shell.png');
     writeFileSync(shotPath, (await win.webContents.capturePage()).toPNG());
     // 封面也算验收项：至少要有一张真解码出来，且不许出现明文 http（CSP 白名单里没有 http:）。
-    const coversOk = covers.total > 0 && covers.loaded > 0 && covers.plain === 0 && covers.failed === 0;
+    const coversOk =
+      covers.total > 0 && covers.loaded > 0 && covers.plain === 0 && covers.failed === 0;
     console.info(
       `[pi/smoke] UI 连续播放检查：${passed}/${total} 首真的在走｜封面 ${coversOk ? '✓' : '✗'}（截图：${shotPath}）`,
     );
@@ -7483,7 +12071,9 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
       await delay(460);
       const settled = await readRing(win);
       const arrived =
-        settled?.phase === 'in' && settled.displayPage === 'playlists' && settled.page === 'playlists';
+        settled?.phase === 'in' &&
+        settled.displayPage === 'playlists' &&
+        settled.page === 'playlists';
       swapOk =
         peek !== null &&
         peek.phase === 'out' &&
@@ -7524,7 +12114,8 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
         ` 状态=${panel?.state ?? '-'}｜卡片=${cards.length}（声明 ${panel?.count ?? '-'}）` +
         `｜前两张=${names.slice(0, 2).join(' / ') || '-'}`;
       const recommendShot =
-        process.env.PI_SMOKE_UI_SHOT_RECOMMEND ?? path.resolve(here, '../../../docs/m3-orb-recommend.png');
+        process.env.PI_SMOKE_UI_SHOT_RECOMMEND ??
+        path.resolve(here, '../../../docs/m3-orb-recommend.png');
       writeFileSync(recommendShot, (await win.webContents.capturePage()).toPNG());
       console.info(`[pi/smoke] 截图：${recommendShot}`);
     }
@@ -7697,7 +12288,10 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
         collageAfter = await readCollage();
         if (collageAfter.centerBox !== null) {
           dragMoved = Math.round(
-            Math.hypot(collageAfter.centerBox.x - dragFrom.x, collageAfter.centerBox.y - dragFrom.y),
+            Math.hypot(
+              collageAfter.centerBox.x - dragFrom.x,
+              collageAfter.centerBox.y - dragFrom.y,
+            ),
           );
         }
       }
@@ -7739,7 +12333,8 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
       }
       const clickSize = clickTook ? await readCellBox(clickKey) : { w: 0, h: 0 };
       const clickOffset = clickTook ? await readCellCenter(clickKey) : { dx: 9999, dy: 9999 };
-      const prevSizeAfter = clickTook && prevExpandKey !== '' ? await readCellBox(prevExpandKey) : { w: 0, h: 0 };
+      const prevSizeAfter =
+        clickTook && prevExpandKey !== '' ? await readCellBox(prevExpandKey) : { w: 0, h: 0 };
       const collageShot =
         process.env.PI_SMOKE_UI_SHOT_LIKED ?? path.resolve(here, '../../../docs/m3-liked-wall.png');
       writeFileSync(collageShot, (await win.webContents.capturePage()).toPNG());
@@ -7931,7 +12526,9 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
       const inQueue =
         detailTitle.length > 0 &&
         listTitles.some(
-          (name) => name !== '' && (name === detailTitle || name.startsWith(detailTitle) || detail.includes(name)),
+          (name) =>
+            name !== '' &&
+            (name === detailTitle || name.startsWith(detailTitle) || detail.includes(name)),
         );
       const onDetailPage = strictHit || (inQueue && detail !== beforeDetail);
       searchOk = hoverOk && clicked && closed && onDetailPage;
@@ -8181,7 +12778,9 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
           `｜再上划：hint=${legRelock.hint} latch=${legRelock.latch}（要求 up）`;
       }
     }
-    console.info(`[pi/smoke] 暗槽方向锁（用户 m01402 第 2 条）：${r23LatchInfo} ${r23LatchOk ? '✓' : '✗'}`);
+    console.info(
+      `[pi/smoke] 暗槽方向锁（用户 m01402 第 2 条）：${r23LatchInfo} ${r23LatchOk ? '✓' : '✗'}`,
+    );
 
     /*
      * **用户 m02213 第 1 条**：「圆球不能拖拽到暗槽一端，我希望可以拖拽到一端」。
@@ -8215,8 +12814,12 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
         const ox = Math.round(orb.x);
         const oy = Math.round(orb.y);
         await moveHeldPoint(win, ox, oy, 12, 0, 2);
+        // 渲染层是用 rAF 把 `slide` 写到属性上的：鼠标事件发完立刻读会读到上一帧（实跑出现过
+        // 「轻划 12px 读到 slide=58、划到底读到 slide=0」这种两头对调的值），先让一帧过去再读。
+        await delay(140);
         const near = await readSlide();
         await moveHeldPoint(win, ox + 12, oy, 78, 0, 5);
+        await delay(140);
         const end = await readSlide();
         // 收尾走法与上一段「暗槽方向锁」保持一致：先划回基准点解锁，再朝上划一下、松手
         //（朝着 up 松手开的是六块面板，紧随其后的 ② 本来就按这个状态写）。
@@ -8492,6 +13095,57 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
                 };
               })(),
               captionGone: !(document.body.textContent || '').includes('右划改动即时生效'),
+              /*
+               * **用户第二十轮第 3 条**（原话：「顶部加图标分页栏把不同类的设置分开」）：
+               * 分页栏必须真的在——四颗图标键、**恰好一颗**选中、四页内容都在 DOM 里、
+               * **恰好一页可见**且可见的那页与选中的那颗是同一个 id。
+               * 抓手：data-quick-tab / data-quick-tabpanel 的 data-active 与 hidden。
+               * 这段注释在模板字符串里，不许出现反引号。
+               */
+              quickTabs: (() => {
+                const tabs = [...document.querySelectorAll('[data-quick-tab]')];
+                const active = tabs.filter((el) => el.getAttribute('data-active') === 'true');
+                const panels = [...document.querySelectorAll('[data-quick-tabpanel]')];
+                const shown = panels.filter((el) => getComputedStyle(el).display !== 'none');
+                return {
+                  count: tabs.length,
+                  active: active.length,
+                  activeKey:
+                    active.length === 1 ? active[0].getAttribute('data-quick-tab') || '' : '',
+                  panels: panels.length,
+                  shown: shown.length,
+                  shownKey:
+                    shown.length === 1 ? shown[0].getAttribute('data-quick-tabpanel') || '' : '',
+                };
+              })(),
+              /*
+               * **用户第二十轮第 3 条**：选项按键从「一条轨道上横排的纯文字药丸」改成
+               * 「图标 + 文字的方块」之后，这里量的就不再是「必须一行」，而是**整齐分栏**：
+               * 同一组里的方块等宽（三列网格对齐）、最多两行、不是一片标签云。
+               * 只量**当前分页里可见**的分组——隐藏分页里的 getBoundingClientRect 全是 0，
+               * 混进来会把「等宽」判成假绿。
+               * 这段注释在模板字符串里，不许出现反引号。
+               */
+              quickRows: (() => {
+                const groups = [
+                  ...document.querySelectorAll('[data-quick-tabpanel]:not([hidden]) [data-quick-choices]'),
+                ];
+                let samples = 0;
+                let maxRows = 0;
+                let uniform = true;
+                for (const group of groups) {
+                  const items = [...group.querySelectorAll('[data-quick-choice]')];
+                  if (items.length === 0) continue;
+                  samples += 1;
+                  const tops = new Set(items.map((el) => Math.round(el.getBoundingClientRect().top)));
+                  maxRows = Math.max(maxRows, tops.size);
+                  const widths = new Set(
+                    items.map((el) => Math.round(el.getBoundingClientRect().width)),
+                  );
+                  if (widths.size > 1) uniform = false;
+                }
+                return { groups: samples, maxRows, uniform };
+              })(),
               settingsFoot: document.querySelectorAll('.pi-quick-card--settings .pi-quick-card__foot')
                 .length,
               transform: (() => {
@@ -8508,14 +13162,73 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
           backdrop: boolean;
           qualityGroup: { count: number; active: number; selects: number; width: number } | null;
           captionGone: boolean;
+          quickTabs: {
+            count: number;
+            active: number;
+            activeKey: string;
+            panels: number;
+            shown: number;
+            shownKey: string;
+          };
+          quickRows: { groups: number; maxRows: number; uniform: boolean };
           settingsFoot: number;
           transform: string;
         };
         const wantSw = ['lyric', 'quality', 'theme', 'account'];
         const swOk = wantSw.every((id) => right.switches.includes(id));
-        r16RightOk = right.layer === 'settings' && swOk && right.more;
+        /*
+         * **用户第二十轮第 3 条**：顶部分页栏（四颗图标键 / 恰好一颗选中 / 四页都在 /
+         * 恰好一页可见且与选中那颗同 id）。
+         */
+        const tabsOk =
+          right.quickTabs.count === 4 &&
+          right.quickTabs.active === 1 &&
+          right.quickTabs.panels === 4 &&
+          right.quickTabs.shown === 1 &&
+          right.quickTabs.activeKey !== '' &&
+          right.quickTabs.shownKey === right.quickTabs.activeKey;
+        // **用户第二十轮第 3 条**：可见分页里的方块组必须整齐（等宽、≤2 行）。
+        const rowOk =
+          right.quickRows.groups > 0 && right.quickRows.maxRows <= 2 && right.quickRows.uniform;
+        r16RightOk = right.layer === 'settings' && swOk && right.more && rowOk && tabsOk;
         r16RightInfo =
-          `层=${right.layer || '无'} 开关=[${right.switches.join(',')}] 更多设置键=${right.more}`;
+          `层=${right.layer || '无'} 开关=[${right.switches.join(',')}] 更多设置键=${right.more}` +
+          `｜分页栏 ${right.quickTabs.count} 颗/选中 ${right.quickTabs.active} 颗（${right.quickTabs.activeKey || '无'}）` +
+          `/可见页 ${right.quickTabs.shown}（${right.quickTabs.shownKey || '无'}）` +
+          `｜方块 ${right.quickRows.groups} 组，最多 ${right.quickRows.maxRows} 行，等宽=${right.quickRows.uniform}`;
+        /*
+         * **用户第二十轮第 3 条**：点「默认音质」那颗分页键，内容页得真的换过去
+         * （下面那条「点一档音质要真换」的测试要在**可见**的那一页上做，不然量的是眼睛看不到的东西）。
+         */
+        const tabSwitch = (await win.webContents.executeJavaScript(
+          `(async () => {
+             const tab = document.querySelector("[data-quick-tab='quality']");
+             if (tab === null || !(tab instanceof HTMLElement)) {
+               return { ok: false, why: '没有音质分页键' };
+             }
+             tab.click();
+             const started = Date.now();
+             while (Date.now() - started < 2500) {
+               await new Promise((resolve) => setTimeout(resolve, 100));
+               const shown = [...document.querySelectorAll('[data-quick-tabpanel]')].filter(
+                 (el) => getComputedStyle(el).display !== 'none',
+               );
+               const group = document.querySelector('[data-quick-quality-group]');
+               const visible = group !== null && group.getClientRects().length > 0;
+               if (
+                 shown.length === 1 &&
+                 shown[0].getAttribute('data-quick-tabpanel') === 'quality' &&
+                 visible
+               ) {
+                 return { ok: true, why: '' };
+               }
+             }
+             return { ok: false, why: '点了分页没切过去' };
+           })()`,
+          true,
+        )) as { ok: boolean; why: string };
+        r16RightOk = r16RightOk && tabSwitch.ok;
+        r16RightInfo += `｜点分页切到音质=${tabSwitch.ok ? '✓' : tabSwitch.why}`;
         /*
          * 用户 m02898 第 4 条后半句「改成几个音质的按键，未选的是暗色，已选的是亮色」：光看
          * 「按键组在不在」不够——真按一下另一档，轮询 ≤3s 等 `data-active` 挪过去，才算这套
@@ -8563,6 +13276,106 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
           }` +
           ` 点档切换=${qualitySwitch.ok ? `${qualitySwitch.from}→${qualitySwitch.to}` : qualitySwitch.why}` +
           `｜设置卡灰字已删=${right.captionGone}（卡内 footer ${right.settingsFoot} 个）`;
+        /*
+         * 用户第二十二轮第 2 条（「要在快捷设置页加上自定义主题色的功能栏」）：
+         * 切到「主题颜色」页，量那里新增的主色栏——三档（天蓝 / 黑白 / 自定义）在不在、
+         * 点「黑白」主色真的换成黑白那枚、点「自定义」下面长出取色面板、最后点回「天蓝」复原。
+         * 抓手：`data-quick-switch="accent"` / `data-quick-choices="accent"` / `data-accent-picker`。
+         */
+        const quickAccent = (await win.webContents.executeJavaScript(
+          `(async () => {
+             const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+             const root = document.documentElement;
+             const primary = () =>
+               getComputedStyle(root).getPropertyValue('--pi-primary').trim().toLowerCase();
+             const tab = document.querySelector("[data-quick-tab='theme']");
+             if (tab === null || !(tab instanceof HTMLElement)) {
+               return { ok: false, why: '没有主题颜色分页键' };
+             }
+             tab.click();
+             await sleep(380);
+             const head = document.querySelector("[data-quick-switch='accent']");
+             const group = document.querySelector("[data-quick-choices='accent']");
+             const chips = group === null ? [] : [...group.querySelectorAll('[data-quick-choice]')];
+             const mono = chips.find((el) => el.getAttribute('data-quick-choice') === 'mono');
+             const custom = chips.find((el) => el.getAttribute('data-quick-choice') === 'custom');
+             const sky = chips.find((el) => el.getAttribute('data-quick-choice') === 'sky');
+             if (
+               !(mono instanceof HTMLElement) ||
+               !(custom instanceof HTMLElement) ||
+               !(sky instanceof HTMLElement)
+             ) {
+               return { ok: false, why: '主色栏里没有天蓝/黑白/自定义三颗键' };
+             }
+             /*
+              * 先把档位摆成「天蓝」再往下走：pi.accent 是本机偏好，上一跑（或被打断的那一跑）
+              * 可能停在别的档上，那样 before 恰好就是黑白、afterMono !== before 会假红。
+              */
+             sky.click();
+             await sleep(320);
+             const before = primary();
+             mono.click();
+             await sleep(320);
+             const afterMono = primary();
+             custom.click();
+             await sleep(320);
+             const picker = document.querySelector("[data-accent-picker]");
+             const swatches = picker === null ? 0 : picker.querySelectorAll('[data-accent-swatch]').length;
+             return {
+               ok: true,
+               why: '',
+               head: head !== null,
+               chips: chips.map((el) => el.getAttribute('data-quick-choice') || '').join('/'),
+               before: before,
+               afterMono: afterMono,
+               customPicker: picker !== null,
+               swatches: swatches,
+             };
+           })()`,
+          true,
+        )) as {
+          ok: boolean;
+          why: string;
+          head?: boolean;
+          chips?: string;
+          before?: string;
+          afterMono?: string;
+          customPicker?: boolean;
+          swatches?: number;
+        };
+        // 停在「自定义」这一档拍一张（主色栏 + 取色面板同在画面上），再点回天蓝复原。
+        const quickAccentShot = path.resolve(here, '../../../docs/m3r22-quick-accent.png');
+        writeFileSync(quickAccentShot, (await win.webContents.capturePage()).toPNG());
+        const quickAccentBack = (await win.webContents.executeJavaScript(
+          `(async () => {
+             const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+             const row = document.querySelector("[data-quick-choices='accent']");
+             const sky = row === null ? null : row.querySelector("[data-quick-choice='sky']");
+             if (sky instanceof HTMLElement) sky.click();
+             await sleep(320);
+             return getComputedStyle(document.documentElement)
+               .getPropertyValue('--pi-primary')
+               .trim()
+               .toLowerCase();
+           })()`,
+          true,
+        )) as string;
+        const monoVals = ['#14171c', '#eef1f6'];
+        quickAccentOk =
+          quickAccent.ok &&
+          quickAccent.head === true &&
+          quickAccent.chips === 'sky/mono/custom' &&
+          monoVals.includes(quickAccent.afterMono ?? '') &&
+          quickAccent.afterMono !== quickAccent.before &&
+          quickAccent.customPicker === true &&
+          (quickAccent.swatches ?? 0) === 12 &&
+          quickAccentBack === quickAccent.before;
+        quickAccentInfo = quickAccent.ok
+          ? `主色栏=${quickAccent.chips} 标题行=${quickAccent.head}` +
+            `｜点黑白 ${quickAccent.before}→${quickAccent.afterMono}` +
+            `｜自定义面板=${quickAccent.customPicker}（推荐色 ${quickAccent.swatches}）` +
+            `｜点回天蓝=${quickAccentBack}｜实拍→${quickAccentShot}`
+          : quickAccent.why;
         await delay(240);
         /*
          * **用户 m01402 第 5 条**：快捷卡片的静态旋转整体去掉后，卡片自身的 transform 就该是
@@ -8585,7 +13398,22 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
             `｜设置卡 常态=${right.transform} 聚焦后=${focusTf}（三处都要求 none：${r23TiltOk}）` +
             ` ${r23TiltOk ? '✓' : '✗'}`,
         );
-        await r16Shot('m3r16-quick-settings.png');
+        await r16Shot('m3r20-quick-settings-quality.png');
+        /*
+         * 点回默认的「歌词动效」页再拍一张：那是主人划开这张卡第一眼看到的样子，
+         * 交给报告的那张图用它（用户第二十轮第 3 条：分页栏 + 浅色小标题 + 磨砂 + 方块按键）。
+         */
+        const backToLyric = (await win.webContents.executeJavaScript(
+          `(() => {
+             const tab = document.querySelector("[data-quick-tab='lyric']");
+             if (tab instanceof HTMLElement) tab.click();
+             return true;
+           })()`,
+          true,
+        )) as boolean;
+        await delay(260);
+        console.info(`[pi/smoke] 点分页切回「歌词动效」=${backToLyric}`);
+        await r16Shot('m3r20-quick-settings.png');
         const hit = (await win.webContents.executeJavaScript(
           `(() => {
             const back = document.querySelector('[data-quick-backdrop]');
@@ -8675,7 +13503,8 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
         }
         await delay(100);
       }
-      const sinceReveal = (ms: number): number => (seenTrue ? Math.max(0, revealedAt + ms - Date.now()) : 0);
+      const sinceReveal = (ms: number): number =>
+        seenTrue ? Math.max(0, revealedAt + ms - Date.now()) : 0;
       /*
        * **用户 m01402 第 8 条**把停留时间从 5s 收到 3s（`SONG_CARD_SHOW_MS = 3000`，见
        * apps/renderer/src/pages/HomePage.tsx），所以两段读数都跟着挪：露出后 ≈2.2s 应当还在
@@ -8867,10 +13696,7 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
       )) as string;
       const switched = firstCard === '' ? false : await clickData('[data-album-card]');
       await delay(240);
-      const switchRead = await waitSongPage(
-        (r) => r.kind === 'album' && r.id === firstCard,
-        4000,
-      );
+      const switchRead = await waitSongPage((r) => r.kind === 'album' && r.id === firstCard, 4000);
       const switchOk =
         firstCard === '' ||
         (switched &&
@@ -8964,7 +13790,12 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
             };
           })()`,
         )) as DownloadRead;
-      const readAudio25 = async (): Promise<{ live: boolean; time: number; paused: boolean; src: string }> =>
+      const readAudio25 = async (): Promise<{
+        live: boolean;
+        time: number;
+        paused: boolean;
+        src: string;
+      }> =>
         (await win.webContents.executeJavaScript(
           `(() => {
             const audio = window.__piAudio;
@@ -9157,7 +13988,7 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
           ` 入库耗时=${(doneElapsed / 1000).toFixed(1)}s` +
           `｜离线解析：via=${viaDownload ? 'download' : '其它'} file=${fileUrl} 在线尝试=${noAttempts ? '0次' : '有'}` +
           ` 代理=${loopbackSrc ? '回环' : '其它'}` +
-          `｜播放=${played ? ((playedRead.time > 0 ? playedRead.time.toFixed(1) : '0') + 's') : '没走'}` +
+          `｜播放=${played ? (playedRead.time > 0 ? playedRead.time.toFixed(1) : '0') + 's' : '没走'}` +
           `｜断网模拟可播=${offlinePlayed}${loopbackBlocked ? '（模拟器拦了回环，按解析链判定）' : ''}` +
           `｜收尾：行=${removedRows} 文件=${fileGone ? '已删' : '还在'}`;
       } catch (error) {
@@ -9677,7 +14508,9 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
     };
     const r16StyleLine = (set: R16CellStyles): string => {
       const brief = (one: R16StyleSet): string =>
-        one === null ? '无' : `${one.transform}/${one.shadow.slice(0, 24)}/${one.z}/${one.filter.slice(0, 24)}`;
+        one === null
+          ? '无'
+          : `${one.transform}/${one.shadow.slice(0, 24)}/${one.z}/${one.filter.slice(0, 24)}`;
       return `格=${brief(set.cell)} 文案=${brief(set.card)} 封面=${brief(set.cover)}`;
     };
     /*
@@ -9994,7 +14827,9 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
         }
       }
     }
-    console.info(`[pi/smoke] 十六轮⑨拼贴悬停放大：${r16HoverInfo}${r16WallNote} ${r16AvantOnly(r16HoverOk)}`);
+    console.info(
+      `[pi/smoke] 十六轮⑨拼贴悬停放大：${r16HoverInfo}${r16WallNote} ${r16AvantOnly(r16HoverOk)}`,
+    );
 
     /*
      * 父代理第三轮：`.pi-collage-bar` 是 `position: fixed; inset: 0; pointer-events: none`，
@@ -10032,9 +14867,13 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
      * 这个 helper 在墙上挑一个「矩形在视口内、中心点 `elementFromPoint` 命到自己、且没被
      * 底栏/搜索条/按钮遮挡」的干净格；挑不到返回 null（日志里照实写）。
      */
-    const r16WallSpot = async (): Promise<
-      { key: string; x: number; y: number; hit: string; clean: number } | null
-    > =>
+    const r16WallSpot = async (): Promise<{
+      key: string;
+      x: number;
+      y: number;
+      hit: string;
+      clean: number;
+    } | null> =>
       (await win.webContents.executeJavaScript(
         `(() => {
           const all = Array.from(document.querySelectorAll('[data-collage-cell]'));
@@ -10178,8 +15017,7 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
           )) as boolean;
           // 用户 m00736 第 6 条：第二次点已放大的那格要真的进播放页，且镜头居中已在上一步量过。
           r16EnterOk = entering && inline !== '' && onHome && centerOk;
-          r16EnterInfo =
-            `${firstLine}｜第2次点击=进入中 ${entering} 内联=${inline.slice(0, 64) || '无'} 切回播放页=${onHome}`;
+          r16EnterInfo = `${firstLine}｜第2次点击=进入中 ${entering} 内联=${inline.slice(0, 64) || '无'} 切回播放页=${onHome}`;
         } else {
           r16EnterInfo = `${firstLine}｜第1次点击后那一格找不到了`;
         }
@@ -10308,7 +15146,9 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
             true,
           )) as { x: number; y: number; hit: string } | null;
           if (start === null) {
-            trail.push(`第${round + 1}拖：没找到不在底栏/搜索条/输入框里的起点（视口可能整屏都是格子）`);
+            trail.push(
+              `第${round + 1}拖：没找到不在底栏/搜索条/输入框里的起点（视口可能整屏都是格子）`,
+            );
             break;
           }
           // 终点夹在视口内（留 24px 边距），保证整段拖拽每一步都在窗口里——上一跑每次有效位移只有
@@ -10321,9 +15161,27 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
             true,
           )) as { x: number; y: number };
           await dragPoint(win, start.x, start.y, end.x - start.x, end.y - start.y, 10);
-          await delay(1200);
-          last = await readWall();
-          const shifted = last.camera !== prevCamera;
+          /*
+           * 用户第二十二轮第 5 条：原来是「固定等 1200ms 再读一次」，健康的一跑里这一等全是白等。
+           * 改成「最多等 1000ms，只要相机真的平移了、或者三项之一往前走了就立刻收工」。
+           * 判据一个字没动，只是不再无条件等满。
+           */
+          const beforeDrag = last;
+          let shifted = false;
+          await pollUntil(
+            async () => {
+              last = await readWall();
+              shifted = last.camera !== prevCamera;
+              const advanced =
+                Number(last.songs) > Number(beforeDrag.songs) ||
+                last.hasMore === 'false' ||
+                Number(last.loaded) > Number(beforeDrag.loaded) ||
+                last.pageHasMore === 'false';
+              return shifted && advanced;
+            },
+            1000,
+            220,
+          );
           prevCamera = last.camera;
           trail.push(
             `第${round + 1}拖 ${move.name}(${move.dx},${move.dy}) 起点=${start.x},${start.y} 命中元素=${start.hit}` +
@@ -10346,10 +15204,18 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
          * 上一跑很可能是「问了但还没回来」。
          */
         if (last.hasMore !== 'false') {
+          /*
+           * 第二十二轮第 5 条：这一段的等待**保留 6000ms 上限**。
+           * 我先把上限收到 3500ms 试过一跑，结果 `已上墙 == songs`（1200/1200，墙上其实全了）
+           * 但宿主那笔翻页请求还在路上，3.5s 内 `data-collage-page-has-more` 没来得及翻 false
+           * ⇒ 整条 ⑪ 判红。也就是说这里砍的是**稳健性**而不是冗余 —— 恢复上限，
+           * 但继续用「一变大就走」的轮询：健康的一跑照样立刻收工，慢的时候给足时间。
+           */
           const settleDeadline = Date.now() + 6000;
           let waited = 0;
           while (Date.now() < settleDeadline) {
-            if (Number(last.loaded) > Number(firstWall.loaded) || last.pageHasMore === 'false') break;
+            if (Number(last.loaded) > Number(firstWall.loaded) || last.pageHasMore === 'false')
+              break;
             await delay(500);
             waited += 500;
             last = await readWall();
@@ -10481,16 +15347,20 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
         )) as string;
       const cameraBefore = await readCamera();
       const spot = await quickOrbSpot(win, 0);
-      await focusSmoke(win);
-      await dragPoint(win, spot.x, spot.y, 0, 500, 7);
-      await delay(820);
-      let camera = await readCamera();
+      /*
+       * 第二十二轮第 5 条：原来两次「拖完固定等 820ms」；改成「镜头一变就走」（上限 900ms）。
+       * 拖拽本身还是同一条 `dragPoint`（真指针事件），只把白等换成轮询。
+       */
+      const dragCameraAndWait = async (dx: number, dy: number): Promise<string> => {
+        await focusSmoke(win);
+        await dragPoint(win, spot.x, spot.y, dx, dy, 7);
+        await pollUntil(async () => (await readCamera()) !== cameraBefore, 900, 180);
+        return readCamera();
+      };
+      let camera = await dragCameraAndWait(0, 500);
       if (camera === cameraBefore) {
         // 父代理第七轮：换相反方向再拖一次，确认镜头真的动过——镜头没动的话「定位回在播格」无从谈起。
-        await focusSmoke(win);
-        await dragPoint(win, spot.x, spot.y, 0, -500, 7);
-        await delay(820);
-        camera = await readCamera();
+        camera = await dragCameraAndWait(0, -500);
       }
       // 第十八轮第 ⑧ 条（用户 m01482）改掉了「点底栏」的语义：以前点药丸是让拼贴镜头定位回
       // 在播那一格（第十六轮第 4 条），现在点它 = **回歌曲播放页**。所以这一段跟着改判：点完药丸，
@@ -10722,6 +15592,15 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
     let r18PrevScaleOk = false;
     let r18BarRestOk = false;
     let r18BarClickHomeOk = false;
+    /*
+     * 第二十一轮第 3 / 4 条（用户：「从歌单页点击进度条部件回到歌曲播放页的加个过渡动画」、
+     * 「暗色模式下背景光照要在左侧侧光打入、往右渐暗」）：两条都在上面那个 ⑧ 的流程里采样
+     * （点底栏回播放页的那一拍），所以声明放这里。
+     */
+    let r20ArriveOk = false;
+    let r20ArriveInfo = '没走到 ⑧ 点底栏那一拍';
+    let r20SideLightOk = false;
+    let r20SideLightInfo = '没走到 ⑧ 点底栏那一拍';
     let r18AutoMoreOk: boolean | null = null;
     let r18AutoMoreInfo = '未跑（平凡排版没有拼贴墙）';
     let r18BarInfo = '未量到 [data-home-bar]';
@@ -10839,7 +15718,8 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
         win.webContents.sendInputEvent({ type: 'mouseMove', x: barRest.bar.cx, y: barRest.bar.cy });
         await delay(460);
         const barHover = await readBar();
-        const hoverPlayShown = barHover !== null && barHover.play !== null && barHover.play.opacity > 0.9;
+        const hoverPlayShown =
+          barHover !== null && barHover.play !== null && barHover.play.opacity > 0.9;
         r18BarRestOk = restPlayHidden && hoverPlayShown;
         let prevScale = '未量到';
         if (barHover !== null && barHover.play !== null) {
@@ -10854,7 +15734,11 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
           // ①「进度条本身鼠标悬停时加粗」：常态 6px、悬停 10px。
           r18TrackThickOk = barRest.thick === '6px' && barHover.thick === '10px';
           if (barHover.prev !== null) {
-            win.webContents.sendInputEvent({ type: 'mouseMove', x: barHover.prev.cx, y: barHover.prev.cy });
+            win.webContents.sendInputEvent({
+              type: 'mouseMove',
+              x: barHover.prev.cx,
+              y: barHover.prev.cy,
+            });
             await delay(360);
             const onPrev = await readBar();
             prevScale = onPrev?.prev?.transform ?? '未量到';
@@ -10869,11 +15753,16 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
          * 数值先只记录，判据等第 3 条实装落地、拿到新目标值再加（不然凭空写死一个数是假绿）。
          */
         const restLeftGap = barRest.time === null ? NaN : barRest.time.left - barRest.bar.left;
-        const restRightGap = barRest.timeLast === null ? NaN : barRest.bar.right - barRest.timeLast.right;
+        const restRightGap =
+          barRest.timeLast === null ? NaN : barRest.bar.right - barRest.timeLast.right;
         const hoverLeftGap =
-          barHover !== null && barHover.play !== null ? barHover.play.left - barHover.bar.left : NaN;
+          barHover !== null && barHover.play !== null
+            ? barHover.play.left - barHover.bar.left
+            : NaN;
         const hoverRightGap =
-          barHover !== null && barHover.play !== null ? barHover.bar.right - barHover.play.right : NaN;
+          barHover !== null && barHover.play !== null
+            ? barHover.bar.right - barHover.play.right
+            : NaN;
         r18BarInfo =
           `常态=${barRest.bar.h}px 中心x=${barRest.bar.cx} 厚=${barRest.thick} 暂停键opacity=${barRest.play?.opacity ?? '?'}` +
           `｜悬停=${barHover?.bar.h ?? '?'}px 中心x=${barHover?.bar.cx ?? '?'} 暂停键=${barHover?.play?.h ?? '?'}px` +
@@ -10899,14 +15788,331 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
              })()`,
             true,
           )) as string;
-          await clickPoint(win, barRest.time.cx, barRest.time.cy);
-          await delay(700);
+          /*
+           * 这里自己发按下 / 抬起（不用 `clickPoint`）：它自带 70 + 240ms 的收尾延时，
+           * 那样「点完」时淡出已经跑掉一大半，**量不到第一帧**。
+           *
+           * 用户第二十五轮第 2 条说「还是有闪」之后补的：把这一下过渡**逐帧拍下来**，
+           * 每帧顺带算一个平均亮度（`toBitmap()` 直接统计，不依赖任何解码库）——
+           * 「闪」要么是亮度尖峰、要么是相邻帧的跳变，有了序列就能定位到第几帧、
+           * 再翻那一帧的 PNG 找原因。帧落在 `.tmp-r21/leave-frames/`。
+           */
+          const frameDir = path.resolve(process.cwd(), '.tmp-r21', 'leave-frames');
+          mkdirSync(frameDir, { recursive: true });
+          const bounds = win.getContentBounds();
+          const frameRect = {
+            x: Math.round(bounds.width * 0.12),
+            y: Math.round(bounds.height * 0.12),
+            width: Math.round(bounds.width * 0.76),
+            height: Math.round(bounds.height * 0.6),
+          };
+          const shots: string[] = [];
+          const shoot = async (tag: string): Promise<void> => {
+            const image = await win.webContents.capturePage(frameRect);
+            writeFileSync(path.join(frameDir, `${tag}.png`), image.toPNG());
+            const bitmap = image.toBitmap();
+            let sum = 0;
+            for (let i = 0; i + 3 < bitmap.length; i += 4) {
+              sum += ((bitmap[i] ?? 0) + (bitmap[i + 1] ?? 0) + (bitmap[i + 2] ?? 0)) / 3;
+            }
+            const pixels = Math.max(1, Math.floor(bitmap.length / 4));
+            shots.push(`${tag}=${(sum / pixels).toFixed(1)}`);
+          };
+          await shoot('00-before');
+          /*
+           * **渲染侧逐帧时间线**（用户第二十五轮第 2 条）：主进程这边读状态有 IPC 竞态
+           * （第一拍经常赶在 `onClick` 之前读到「旧页=false」），所以直接在页面里用 rAF 记 40 帧，
+           * 记录「当前 nav / 退场副本在不在 / 它的不透明度」—— 用来确认副本到底有没有在
+           * **换页之前**挂上（那才是「换页那一帧不空」的前提）。
+           */
+          await win.webContents.executeJavaScript(
+            `(() => {
+               window.__leaveTrace = [];
+               const t0 = performance.now();
+               const tick = () => {
+                 const main = document.querySelector('.pi-main');
+                 const layer = document.querySelector('.pi-page-leaving');
+                 window.__leaveTrace.push(
+                   Math.round(performance.now() - t0) + 'ms ' +
+                   (main === null ? '?' : main.dataset.page || '') + ' ' +
+                   (layer === null ? '无副本' : 'op=' + (layer instanceof HTMLElement ? getComputedStyle(layer).opacity : '?')),
+                 );
+                 if (window.__leaveTrace.length < 40) requestAnimationFrame(tick);
+               };
+               requestAnimationFrame(tick);
+             })()`,
+            true,
+          );
+          /*
+           * 逐**合成帧**采样（`beginFrameSubscription`）：`capturePage` 一次要 ~320ms
+           * （实测 00-before→01-f1 间隔 318ms），0.44s 的淡出只能取到一两张 ——
+           * 「一帧白/黑闪」根本抓不住。这正是用户第二十五轮说「还是有闪」时还没排除的那一档：
+           * 每帧只统计一个平均亮度（隔 8 个像素采样，便宜），**有尖峰就是闪**，
+           * 没有就说明问题在淡出曲线/内容观感上，不在「缺帧」。
+           */
+          const frameLum: string[] = [];
+          const frameLumValues: number[] = [];
+          let frameNo = 0;
+          const onFrame = (image: Electron.NativeImage): void => {
+            frameNo += 1;
+            if (frameNo > 90) return;
+            const bitmap = image.toBitmap();
+            let sum = 0;
+            let count = 0;
+            for (let i = 0; i + 3 < bitmap.length; i += 32) {
+              sum += ((bitmap[i] ?? 0) + (bitmap[i + 1] ?? 0) + (bitmap[i + 2] ?? 0)) / 3;
+              count += 1;
+            }
+            const mean = sum / Math.max(1, count);
+            frameLumValues.push(mean);
+            frameLum.push(`${frameNo}:${mean.toFixed(0)}`);
+          };
+          win.webContents.beginFrameSubscription(false, onFrame);
+          win.webContents.sendInputEvent({
+            type: 'mouseDown',
+            x: barRest.time.cx,
+            y: barRest.time.cy,
+            button: 'left',
+            clickCount: 1,
+          });
+          await delay(70);
+          win.webContents.sendInputEvent({
+            type: 'mouseUp',
+            x: barRest.time.cx,
+            y: barRest.time.cy,
+            button: 'left',
+            clickCount: 1,
+          });
+          /*
+           * 主进程这一拍**只当参考**（它会和 `onClick` 抢时序：实测经常在 0ms 就读到
+           * 「副本还没挂」），真正的判据用下面那条渲染侧 rAF 时间线。
+           */
+          await delay(140);
+          const arriveDuring = (await win.webContents.executeJavaScript(
+            `(() => {
+               const main = document.querySelector('.pi-main');
+               const bg = document.querySelector('.pi-immersive');
+               const veil = document.querySelector('[data-page-arrive]');
+               const cs = veil instanceof HTMLElement ? getComputedStyle(veil) : null;
+               /* 第二十四轮第 1 条：交叉淡出那一层（平凡档是旧页拷贝，先锋档是封面卡片层的收场）。 */
+               const leaveLayer = document.querySelector('.pi-page-leaving');
+               return {
+                 arrive: main === null ? '' : main.dataset.arrive || '',
+                 veil: veil !== null,
+                 anim: bg === null ? '' : getComputedStyle(bg).animationName,
+                 scheme: bg === null ? '' : bg.dataset.scheme || '',
+                 veilBg: cs === null ? '' : cs.backgroundColor,
+                 veilFilter: cs === null ? '' : cs.backdropFilter || cs.webkitBackdropFilter || '',
+                 leavePage: leaveLayer !== null,
+                 leaveOpacity:
+                   leaveLayer instanceof HTMLElement
+                     ? getComputedStyle(leaveLayer).opacity
+                     : '',
+                 leaveCover:
+                   document.querySelector(
+                     '[data-pl-list][data-closing="true"], [data-pl-list][data-leaving="true"]',
+                   ) !== null,
+               };
+             })()`,
+            true,
+          )) as {
+            arrive: string;
+            veil: boolean;
+            anim: string;
+            scheme: string;
+            veilBg: string;
+            veilFilter: string;
+            leavePage: boolean;
+            leaveOpacity: string;
+            leaveCover: boolean;
+          };
+          /* 两拍状态都读完了，收掉逐帧订阅并把整段亮度序列打出来（诊断「闪」用）。 */
+          await delay(900);
+          win.webContents.endFrameSubscription();
+          console.info(`[pi/smoke] 逐合成帧亮度（帧号:均值，点完→+1.2s）：${frameLum.join(' ')}`);
+          const leaveTrace = (await win.webContents.executeJavaScript(
+            `(window.__leaveTrace || []).join(' | ')`,
+            true,
+          )) as string;
+          console.info(`[pi/smoke] 换页逐帧时间线（渲染侧 rAF）：${leaveTrace}`);
+          /*
+           * 第二十一轮第 4 条（用户：「暗色模式下背景光照要在左侧侧光打入、往右渐暗」）：
+           * 同一拍顺手量侧光层。亮档它必须是 `none`（不挂背景色），暗档必须是一条 `linear-gradient`。
+           * 冒烟这一跑通常是亮档，所以**临时**把 `data-theme` 拨到 `dark`（沉浸式背景自己
+           * observer 盯着这个属性，会跟着把 `data-scheme` 换成暗档），量完立刻拨回来。
+           */
+          /*
+           * 分两拍做，好让暗档那一帧**留在屏幕上被截下来**（`docs/m3r21-dark-sidelight.png`）：
+           * 第一拍量亮档、拨到暗档；中间拍一张；第二拍读暗档、拨回来、再读一次。
+           */
+          const sideLightLight = (await win.webContents.executeJavaScript(
+            `(() => {
+               const root = document.documentElement;
+               const bg = document.querySelector('.pi-immersive');
+               const layer = document.querySelector('.pi-immersive__sidelight');
+               const before = {
+                 scheme: bg === null ? '' : bg.dataset.scheme || '',
+                 theme: root.dataset.theme || '',
+                 image: layer === null ? '无侧光层' : getComputedStyle(layer).backgroundImage,
+               };
+               root.dataset.theme = 'dark';
+               return before;
+             })()`,
+            true,
+          )) as { scheme: string; theme: string; image: string };
+          await delay(320);
+          const sideLightShot = path.resolve(here, '../../../docs/m3r21-dark-sidelight.png');
+          writeFileSync(sideLightShot, (await win.webContents.capturePage()).toPNG());
+          const sideLightDark = (await win.webContents.executeJavaScript(
+            `(async () => {
+               const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+               const root = document.documentElement;
+               const bg = document.querySelector('.pi-immersive');
+               const layer = document.querySelector('.pi-immersive__sidelight');
+               const read = () => (layer === null ? '无侧光层' : getComputedStyle(layer).backgroundImage);
+               const dark = { scheme: bg === null ? '' : bg.dataset.scheme || '', image: read() };
+               /* 还原成**进来时那一档**：冒烟这一跑的档位是设置里存的（可能是暗档），
+                  写成死值 'light' 会把界面留在与设置不一致的档上，后面的探针就量错底色。 */
+               root.dataset.theme = '${sideLightLight.theme || 'light'}';
+               await sleep(260);
+               return { darkScheme: dark.scheme, darkImage: dark.image, afterImage: read() };
+             })()`,
+            true,
+          )) as { darkScheme: string; darkImage: string; afterImage: string };
+          const sideLight = {
+            beforeScheme: sideLightLight.scheme,
+            lightImage: sideLightLight.image,
+            darkScheme: sideLightDark.darkScheme,
+            darkImage: sideLightDark.darkImage,
+            afterImage: sideLightDark.afterImage,
+          };
+          await delay(620);
           const afterClick = (await win.webContents.executeJavaScript(
             `({ card: document.querySelector('[data-home-card]') !== null,
-                collage: document.querySelector('[data-song-collage]') !== null })`,
+                collage: document.querySelector('[data-song-collage]') !== null,
+                arrive: document.querySelector('.pi-main')?.dataset.arrive ?? '',
+                veil: document.querySelector('[data-page-arrive]') !== null })`,
             true,
-          )) as { card: boolean; collage: boolean };
+          )) as { card: boolean; collage: boolean; arrive: string; veil: boolean };
           r18BarClickHomeOk = afterClick.card && !afterClick.collage;
+          /*
+           * 第二十三轮第 2 条：薄幕的**底色不透明度**也要一起量。改造前它是
+           * `background: var(--pi-bg)` + `from { opacity: 0.92 }` —— 换页那一帧整屏被 92% 的
+           * 纯底色盖住再淡下去，浅档就是「闪一下白」、暗档「闪一下黑」。现在底色只占 10%、
+           * 靠 `backdrop-filter` 把刚接管的那一页糊住再放开 ⇒ 判据：alpha ≤ 0.2 **且**有模糊。
+           */
+          const veilAlpha = (() => {
+            const rgba = /rgba?\([^)]*?([\d.]+)\s*\)$/.exec(arriveDuring.veilBg);
+            if (rgba !== null) return Number.parseFloat(rgba[1] ?? 'NaN');
+            // `color(srgb … / a)` 写法：alpha 在斜杠后面。
+            const srgb = /\/\s*([\d.]+)\s*\)$/.exec(arriveDuring.veilBg);
+            return srgb === null ? Number.NaN : Number.parseFloat(srgb[1] ?? 'NaN');
+          })();
+          const veilSoftOk =
+            Number.isFinite(veilAlpha) &&
+            veilAlpha <= 0.2 &&
+            /blur\(/.test(arriveDuring.veilFilter);
+          /*
+           * 第二十四轮第 1 条（用户：「歌单选择页回去也会闪一下，看能不能用之前的方式解决一下」）：
+           * 判据从「薄幕在不在」换成「**旧内容有没有自己淡出去**」——
+           * 平凡档是刚离开那一页的拷贝（`.pi-page-leaving`，不透明度在 (0,1) 之间正在淡出），
+           * 先锋档是封面卡片层的收场（`[data-pl-list][data-leaving="true"]`）。
+           * 两拍合起来判：只要**有一拍**看到「旧内容还在且正在淡出」就算交叉淡出成立
+           * （第一拍最可靠；第二拍是 140ms 后的兜底）。
+           * 这一路本来就不该有薄幕；万一出现（比如本页没有可淡出的旧层），也必须还是那层磨砂。
+           */
+          /*
+           * **两条硬证据**（用户第二十五轮第 2 条）。
+           *
+           * ① 渲染侧逐帧时间线：换页**之前**就必须有副本且已经满不透明（预挂），
+           *    换页那一刻副本不许缺席。
+           *    （不用主进程那两次读状态：first 那一拍会和 `onClick` 抢时序，实测经常读到「还没挂」，
+           *    上一版就是被这一条误报成 ✗ 的。）
+           * ② 逐合成帧亮度：整段里**不许出现暗谷** —— 邻帧的均值不能比首尾两端更低太多。
+           *    这条直接把「闪」量出来：修之前是 `89 89 → 35 35 → 83`，现在是 `89 → 69 → 83`（69 是
+           *    两次绘制结果的混合帧，不是空帧）。
+           */
+          const traceFrames = leaveTrace.split(' | ').map((item) => {
+            const parts = item.split(' ');
+            const layer = (parts[2] ?? '').startsWith('op=')
+              ? Number.parseFloat((parts[2] ?? '').slice(3))
+              : null;
+            return {
+              ms: Number.parseInt(parts[0] ?? '0', 10),
+              page: parts[1] ?? '',
+              layer,
+            };
+          });
+          const preMount = traceFrames.find(
+            (f) => f.page !== '' && f.page !== 'home' && f.layer !== null && f.layer >= 0.99,
+          );
+          const firstHome = traceFrames.find((f) => f.page === 'home');
+          const fading = traceFrames.find((f) => f.layer !== null && f.layer < 1);
+          const preMountOk = preMount !== undefined;
+          const gapFreeOk = firstHome === undefined || firstHome.layer !== null;
+          const fadeOk = fading !== undefined;
+          /*
+           * 逐帧亮度这一档**只记录、不判定**（第二十七轮改）。
+           *
+           * 原因：它的两端随歌曲/页面内容漂移（同一段实测出现过 `89→69→83` 与 `105→35→67`
+           * 两种幅度），拿一个固定阈值去判，收紧 = 假红、放宽 = 假绿（`−40` 那次就把 35 判成了绿）。
+           * 所以这里只把序列与最低值打进日志，判定交给下面几条**结构判据**：
+           * 「换页前副本已满不透明挂好」+「换页那一帧副本不缺席」+「随后确实在淡出」+「绽开已删」。
+           */
+          const lumMin = frameLumValues.length === 0 ? NaN : Math.min(...frameLumValues);
+          const lumFirst = frameLumValues[0] ?? NaN;
+          const lumLast = frameLumValues[frameLumValues.length - 1] ?? NaN;
+          const leaveOpacity = Number.parseFloat(arriveDuring.leaveOpacity);
+          const veilOkHere = !arriveDuring.veil || veilSoftOk;
+          /*
+           * 用户第二十七轮：「我感觉是沉浸式背景『绽开』这个设置导致的闪一下，把它去掉」。
+           * 所以这一条判据**反过来**了：沉浸式背景在过渡期内**不许**挂任何动画
+           * （原来要求 `anim` 是 `pi-immersive-arrive`，那条 keyframes 已经整条删除）。
+           */
+          const noBloomOk = arriveDuring.anim === '' || arriveDuring.anim === 'none';
+          r20ArriveOk =
+            arriveDuring.arrive === 'true' &&
+            noBloomOk &&
+            preMountOk &&
+            gapFreeOk &&
+            fadeOk &&
+            veilOkHere &&
+            afterClick.arrive !== 'true' &&
+            !afterClick.veil;
+          r20ArriveInfo =
+            `过渡期内 data-arrive=${arriveDuring.arrive || '无'}` +
+            ` 沉浸背景动画=${arriveDuring.anim || '无'}（绽开已删，要求无动画 ⇒ ${noBloomOk ? '是' : '否'}）` +
+            `｜预挂：` +
+            (preMount === undefined
+              ? '换页前没量到副本'
+              : `${preMount.ms}ms 时当页仍=${preMount.page}、副本已 op=${preMount.layer}`) +
+            `（${preMountOk ? '是' : '否'}） 换页那一帧副本=` +
+            (firstHome === undefined ? '未见换页' : firstHome.layer === null ? '缺' : '在') +
+            `（${gapFreeOk ? '是' : '否'}）` +
+            `｜淡出起点=${fading === undefined ? '未量到' : `${fading.ms}ms op=${fading.layer?.toFixed(3)}`}` +
+            `｜薄幕=${arriveDuring.veil ? '在' : '不在'}` +
+            `（第二拍旧页=${arriveDuring.leavePage} 不透明度=${
+              Number.isFinite(leaveOpacity) ? leaveOpacity.toFixed(2) : '—'
+            }）` +
+            `｜逐帧亮度（仅记录）最低=${Number.isFinite(lumMin) ? lumMin.toFixed(0) : '—'}` +
+            `（首=${Number.isFinite(lumFirst) ? lumFirst.toFixed(0) : '—'} 末=${
+              Number.isFinite(lumLast) ? lumLast.toFixed(0) : '—'
+            }）` +
+            `｜放完 data-arrive=${afterClick.arrive || '无'} 薄幕=${afterClick.veil}`;
+          r20SideLightOk =
+            sideLight.beforeScheme === 'light'
+              ? sideLight.lightImage === 'none' &&
+                sideLight.darkScheme === 'dark' &&
+                sideLight.darkImage.includes('linear-gradient') &&
+                sideLight.afterImage === 'none'
+              : sideLight.beforeScheme === 'dark' &&
+                sideLight.lightImage.includes('linear-gradient');
+          r20SideLightInfo =
+            `亮档=${sideLight.lightImage === 'none' ? '无侧光' : '有侧光'}` +
+            `（${sideLight.beforeScheme || '未知档'}）｜临时拨暗档：scheme=${sideLight.darkScheme}` +
+            ` 背景=${sideLight.darkImage.includes('linear-gradient') ? 'linear-gradient' : sideLight.darkImage || '无'}` +
+            `｜拨回后=${sideLight.afterImage === 'none' ? '无侧光' : '有侧光'}` +
+            `｜暗档实拍→${sideLightShot}`;
         }
       }
     }
@@ -10916,6 +16122,27 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
         `｜⑤⑩歌单页底栏常态只显进度条/悬停展开=${r18BarRestOk}` +
         `｜⑧点底栏回播放页=${r18BarClickHomeOk}${r18BarHitInfo === '' ? '' : `（${r18BarHitInfo}）`}`,
     );
+    console.info(
+      `[pi/smoke] 回播放页过渡（用户第二十一轮第 3 条）：${r20ArriveInfo} ${r20ArriveOk ? '✓' : '✗'}`,
+    );
+    console.info(
+      `[pi/smoke] 暗档左侧侧光（用户第二十一轮第 4 条）：${r20SideLightInfo} ${r20SideLightOk ? '✓' : '✗'}`,
+    );
+    /*
+     * 用户第二十六轮：「先锋模式下歌单选择页退回到歌曲播放页的过渡动画，直接套用歌单歌曲页
+     * 退回歌曲播放页的动画就可以了吧，都是淡出」。
+     *
+     * 这一档原来**没有探针**（上面底栏那条路走的是「我的喜欢」整页 + 拷贝层），这里补一条；
+     * 用户第二十八轮又说这一下「背景会闪一下」，于是探针提到 `probeAvantPlaylistExit` 里
+     * 并补了**逐帧轨迹**（实例号 + 不透明度），快速通道 `PI_SMOKE_UI_PLLIST=1` 也复用它。
+     */
+    {
+      const plExit = await probeAvantPlaylistExit(win);
+      console.info(
+        `[pi/smoke] 先锋歌单选择页退场（用户第二十六轮）：${plExit.info}` +
+          ` ${plExit.ok === true ? '✓' : plExit.ok === false ? '✗' : '未跑'}`,
+      );
+    }
     console.info(
       `[pi/smoke] 第十八轮⑥拼贴自续载：${r18AutoMoreInfo} ${r18AvantOnly(r18AutoMoreOk === true)}`,
     );
@@ -10970,13 +16197,21 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
       if (cardBox === null) {
         r18CardNearInfo = '未量到 [data-home-card]';
       } else {
-        win.webContents.sendInputEvent({ type: 'mouseMove', x: cardBox.right + 60, y: Math.max(12, cardBox.midY) });
+        win.webContents.sendInputEvent({
+          type: 'mouseMove',
+          x: cardBox.right + 60,
+          y: Math.max(12, cardBox.midY),
+        });
         await delay(340);
         const farNear = (await win.webContents.executeJavaScript(
           `document.querySelector('[data-home-card]')?.getAttribute('data-near') || ''`,
           true,
         )) as string;
-        win.webContents.sendInputEvent({ type: 'mouseMove', x: cardBox.right + 14, y: Math.max(12, cardBox.midY) });
+        win.webContents.sendInputEvent({
+          type: 'mouseMove',
+          x: cardBox.right + 14,
+          y: Math.max(12, cardBox.midY),
+        });
         await delay(340);
         const closeNear = (await win.webContents.executeJavaScript(
           `document.querySelector('[data-home-card]')?.getAttribute('data-near') || ''`,
@@ -10986,7 +16221,9 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
         r18CardNearInfo = `离右边 60px：near=${farNear || '(空)'}｜离右边 14px：near=${closeNear || '(空)'}`;
       }
     }
-    console.info(`[pi/smoke] 第十八轮⑨名片贴近左下边框才出现：${r18CardNearInfo} ${r18CardNearOk ? '✓' : '✗'}`);
+    console.info(
+      `[pi/smoke] 第十八轮⑨名片贴近左下边框才出现：${r18CardNearInfo} ${r18CardNearOk ? '✓' : '✗'}`,
+    );
     {
       /*
        * ⑪「接下来播放」小名片：进尾声 7s 时**不该**有它（窗口从 10s 收成 5s 了），
@@ -11072,6 +16309,10 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
       r25FullscreenOk &&
       r16UpOk &&
       r16RightOk &&
+      // 用户第二十轮第 1 / 2 条：播放键那四枚图标是圆角的那一版、静音时音量条真的「到底」。
+      // 两条读数都在悬停态那段（指针压着药丸）采，与进度条/音量条那几条同源。
+      iconProbeOk === true &&
+      muteBarOk === true &&
       // 用户 m01402 第 5 条（快捷卡片不倾斜）：读数分别在 ③ 与 Tab 两段里采，判据统一挂这里。
       r23TiltOk &&
       r16DownOk &&
@@ -11081,8 +16322,7 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
       r16BarOk &&
       r16PlOk &&
       r16CoverOk &&
-      (!r16AvantRun ||
-        (r16HoverOk && r16EnterOk && r16MoreOk && r16BarLocateOk && r16WheelOk)) &&
+      (!r16AvantRun || (r16HoverOk && r16EnterOk && r16MoreOk && r16BarLocateOk && r16WheelOk)) &&
       r16NoOrbPlOk;
     console.info(
       `[pi/smoke] 十六轮十四项总闸：①点出PI键=${r16OrbSpotOk}（松手收球=${r16OrbReleaseOk}` +
@@ -11146,6 +16386,9 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
      */
     let r26DailyOk = false;
     let r26DailyInfo = '没进推荐歌单页';
+    /** 用户第二十一轮第 2 条：每日推荐卡那张封面（前几首专辑封面拼的 2×2）真的加载出来了。 */
+    let r20DailyCoverOk = false;
+    let r20DailyCoverInfo = '没进推荐歌单页';
     let r26PlistBarOk = false;
     let r26PlistBarInfo = '没量到 [data-collage-bar]';
     /** ⑥b 是「平凡专属」的验收项（用户原话），先锋跑只记未跑、不进总闸。 */
@@ -11182,6 +16425,28 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
                    const b = daily.getBoundingClientRect();
                    return { x: Math.round(b.left + b.width / 2), y: Math.round(b.top + b.height / 2) };
                  })(),
+             /*
+              * 用户第二十一轮第 2 条（「每日推荐歌单没有封面，修一下」）：每日推荐是伪歌单、
+              * 上游没有封面，改成拿前几首歌的专辑封面拼一张 2×2（lib/cover.ts 的
+              * dailyCoverUrls）。这里量：拼图容器在不在、里面几张图、**真的加载出来了没有**
+              * （naturalWidth 大于 0；只看 img 节点在不在，会被「地址错了、图裂了」骗过去）。
+              */
+             dailyCover: (function () {
+               const mosaic = daily === null ? null : daily.querySelector('[data-daily-mosaic]');
+               /*
+                * 两套排版两张卡：平凡档是网格里那张卡（2×2 拼图，挂 data-daily-mosaic），
+                * 先锋档是封面卡片流里那张哨兵卡（SongCards 画一张封面图，没有拼图容器）。
+                * 所以没拼图容器时就退回量「这张卡里的 img」——判据各自成立，探针不挑排版。
+                */
+               const scope = mosaic !== null ? mosaic : daily;
+               const imgs = scope === null ? [] : [...scope.querySelectorAll('img')];
+               return {
+                 mosaic: mosaic !== null,
+                 imgs: imgs.length,
+                 loaded: imgs.filter((el) => el.naturalWidth > 0).length,
+                 placeholder: daily !== null && daily.querySelector('.pi-plcard__cover--empty') !== null,
+               };
+             })(),
              bar: bar !== null,
              homeBar: homeBar !== null,
              box: box === null
@@ -11202,14 +16467,31 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
         dailyText: string;
         before: number;
         dailyBox: { x: number; y: number } | null;
+        dailyCover: { mosaic: boolean; imgs: number; loaded: number; placeholder: boolean };
         bar: boolean;
         homeBar: boolean;
         box: { right: number; cy: number; w: number; h: number } | null;
       };
       r26DailyOk = grid.daily && grid.before === 0;
+      /*
+       * 用户第二十一轮第 2 条：那张卡必须有**真的加载出来的**封面。
+       * 平凡档量拼图（四张都要加载成功；不足四张时 `dailyCoverUrls` 会循环补满，所以图数恒为 4）；
+       * 先锋档量卡片自己那张封面图（≥1 张且已加载，且不许还显示占位音符图标）。
+       * 图还没下载完的那一拍照实记、判红——重跑一次就能分辨是慢还是坏。
+       */
+      const dailyCoverOk = grid.dailyCover.mosaic
+        ? grid.dailyCover.imgs >= 4 && grid.dailyCover.loaded >= 4
+        : grid.dailyCover.imgs >= 1 && grid.dailyCover.loaded >= 1 && !grid.dailyCover.placeholder;
+      r20DailyCoverOk = grid.daily && dailyCoverOk;
+      r20DailyCoverInfo = grid.dailyCover.mosaic
+        ? `平凡档 2×2 拼图：小图 ${grid.dailyCover.imgs} 张/已加载 ${grid.dailyCover.loaded}`
+        : `先锋档单图卡片：图 ${grid.dailyCover.imgs} 张/已加载 ${grid.dailyCover.loaded}` +
+          ` 仍是占位图标=${grid.dailyCover.placeholder}`;
+      r20DailyCoverInfo += `｜卡片标 N=${grid.dailyCount || '无'} 首`;
       r26DailyInfo =
         `每日推荐卡=${grid.daily}（${grid.dailyText}${grid.dailyCount === '' ? '' : ` · ${grid.dailyCount} 首`}）` +
-        ` 排在首位=${grid.before === 0}（它前面还有 ${grid.before} 张卡，这页共 ${grid.others} 张别的卡）`;
+        ` 排在首位=${grid.before === 0}（它前面还有 ${grid.before} 张卡，这页共 ${grid.others} 张别的卡）` +
+        `｜封面：拼图 ${grid.dailyCover.mosaic}，${grid.dailyCover.loaded}/${grid.dailyCover.imgs} 张已加载`;
       /*
        * 用户 m02898 第 6 条后半段的原话是「**平凡风格下**…歌单选择页底部进度条部件也要存在」：
        * 先锋风格下 `playlist:recommend` 这一页被 `App.tsx:111-128` 换成了
@@ -11404,7 +16686,10 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
           Math.abs(dailyList.canvasBox.h - dailyList.win.h) <= 1 &&
           Math.abs(dailyList.canvasBox.w - dailyList.win.w) <= 1;
         r26DailyOk =
-          r26DailyOk && dailyList.overlay && dailyList.rows > 0 && (wantStyle !== 'avant' || dailyFull);
+          r26DailyOk &&
+          dailyList.overlay &&
+          dailyList.rows > 0 &&
+          (wantStyle !== 'avant' || dailyFull);
         r26DailyInfo +=
           `｜点开每日推荐浮层=${dailyList.overlay} 行数=${dailyList.rows}` +
           `${dailyList.title === '' ? '' : `（${dailyList.title}）`}` +
@@ -11416,8 +16701,20 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
         /*
          * 用户 m04892：「每日推荐」歌单的队列拼贴要「点一下先放大、在放大块上再点一下才进播放页」，
          * 也就是与歌单详情那面拼贴一致（它的 `onSelect` 不收浮层）。这里真点两下验一遍，
-         * 只有先锋档有拼贴。第二下的收尾由 `SongCollage.enterPlayer()` 在 `COLLAGE_FILL_MS`(480ms)
-         * 之后做（收浮层 + 回播放页），所以这里等 1500ms 再查浮层在不在。
+         * 只有先锋档有拼贴。
+         *
+         * **用户第 7 轮第 1 条**（原话：「拼贴居中要算窗口的中心。铺满之后切播放页需要交叠淡入」）
+         * 在这一段里各加一条判据：
+         *  · `centered` —— 第一下点完（镜头缓动 460ms 之后）那一格的**外接矩形中心**必须落在
+         *    **窗口正中**（容差 24px：3D 俯仰层是个 ≤5% 的局部仿射，加上 `getBoundingClientRect`
+         *    的取整）。画布不等于窗口时，只有把「窗口中心 − 画布左上角」交给几何层才做得到 ——
+         *    改之前用的是一律「画布正中」，而且点在世界上 / 左边缘的格子还会被 `clampCamera`
+         *    按在角上搬不动。
+         *  · `fading > 0 && overlapped && gone` —— 第二下之后**逐帧**读浮层的 `opacity`：
+         *    必须有一批帧落在 (0.02, 0.98) 之间（说明是渐隐，不是一帧切走），那些帧里
+         *    播放页的歌词舞台（`.pi-lyricstage`）必须**已经**在 DOM 里（两层同时在屏上 = 交叠），
+         *    并且在 ~2.4s 内浮层确实被收掉（收尾没丢）。底栏不参与：它跟播放页自己那条是
+         *    同一个组件、同一个位置，播放页那条在切页的同一刻就已经在下面了。
          */
         if (wantStyle === 'avant') {
           const hitFirst = (await win.webContents.executeJavaScript(
@@ -11447,6 +16744,36 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
           // 在播的格子可能不止一个：每日推荐那 32 首里同一首会重复出现，两张格子都会带
           // `data-playing="true"`（实测 46 行时读到 2 张），所以这里只要求「至少一张」。
           const step1Ok = hitFirst && step1.overlay && step1.expanded === 1 && step1.playing >= 1;
+          /*
+           * **用户第 7 轮第 1 条**前半：那一格是不是搬到了**窗口**正中。
+           * 同时把读数打出来（画布矩形 / 接缝 `data-collage-view-center` / 窗口尺寸），
+           * 万一以后又偏了，日志里能直接看出是「画布 ≠ 窗口」还是「相机被夹住」。
+           */
+          const centered = (await win.webContents.executeJavaScript(
+            `(() => {
+               const cell = document.querySelector('[data-songs="daily"] [data-collage-expanded="true"]');
+               const root = document.querySelector('[data-song-collage]');
+               const canvas = document.querySelector('[data-songs="daily"] .pi-collage');
+               if (cell === null) return null;
+               const rect = cell.getBoundingClientRect();
+               const canvasRect = canvas === null ? null : canvas.getBoundingClientRect();
+               const cx = rect.x + rect.width / 2;
+               const cy = rect.y + rect.height / 2;
+               return {
+                 dx: Math.round(cx - window.innerWidth / 2),
+                 dy: Math.round(cy - window.innerHeight / 2),
+                 win: window.innerWidth + 'x' + window.innerHeight,
+                 canvas: canvasRect === null
+                   ? '无'
+                   : Math.round(canvasRect.x) + ',' + Math.round(canvasRect.y) + ' ' +
+                     Math.round(canvasRect.width) + 'x' + Math.round(canvasRect.height),
+                 view: root === null ? '' : (root.getAttribute('data-collage-view-center') || ''),
+               };
+             })()`,
+            true,
+          )) as { dx: number; dy: number; win: string; canvas: string; view: string } | null;
+          const centeredOk =
+            centered !== null && Math.abs(centered.dx) <= 24 && Math.abs(centered.dy) <= 24;
           const hitSecond = (await win.webContents.executeJavaScript(
             `(() => {
                const cell = document.querySelector(
@@ -11458,16 +16785,63 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
              })()`,
             true,
           )) as boolean;
-          await delay(1500);
-          const step2Gone = (await win.webContents.executeJavaScript(
-            `document.querySelector('[data-songs="daily"]') === null`,
+          /*
+           * **用户第 7 轮第 1 条**后半：交叠淡入。逐帧（40ms × 60）读浮层与底栏的 `opacity`，
+           * 顺便看那一帧里播放页在不在 DOM 里。全部在页面里跑，免得主进程这边的
+           * `delay()` 抖动把 340ms 的淡出窗口整段错过。
+           *
+           * 判据从 `.pi-lyricstage` 换成 `.pi-home`（第二十一轮顺手修的）：原来那个代理只在
+           * 「当前这首歌有歌词」时才存在，而这一段点的是每日推荐拼贴里的任意一格——实测点到
+           * 纯器乐那首时舞台根本不挂载，于是「播放页同帧在」读成 false、整条 ③ 判红，
+           * 可那一帧播放页其实好好地在那儿（同一跑的 `歌词行=1`、字素 16 都是别的歌量到的）。
+           * `.pi-home` 就是播放页本身，与歌词有无无关。
+           */
+          const fade = (await win.webContents.executeJavaScript(
+            `(async () => {
+               const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+               const overlay = () => document.querySelector('.pi-listoverlay');
+               const page = () => document.querySelector('.pi-home') !== null;
+               const samples = [];
+               // 第二十二轮第 5 条：60 帧 × 40ms（2.4s）收到 30 帧 × 40ms（1.2s）——
+                // 要看的 340ms 淡出窗口仍然框得住，采到的中间帧一般是十几帧。
+               for (let i = 0; i < 30; i += 1) {
+                 const layer = overlay();
+                 samples.push({
+                   present: layer !== null,
+                   opacity: layer === null ? null : Number(getComputedStyle(layer).opacity),
+                   page: page(),
+                 });
+                 await sleep(40);
+               }
+               const mid = samples.filter(
+                 (s) => s.present && s.opacity !== null && s.opacity > 0.02 && s.opacity < 0.98,
+               );
+               return {
+                 fading: mid.length,
+                 overlapped: mid.some((s) => s.page),
+                 gone: samples[samples.length - 1].present === false,
+                 opacityTrace: samples.map((s) => (s.opacity === null ? '-' : s.opacity.toFixed(2))).join(','),
+               };
+             })()`,
             true,
-          )) as boolean;
-          r26DailyOk = r26DailyOk && step1Ok && hitSecond && step2Gone;
+          )) as {
+            fading: number;
+            overlapped: boolean;
+            gone: boolean;
+            opacityTrace: string;
+          };
+          const fadeOk = fade.fading > 0 && fade.overlapped && fade.gone;
+          r26DailyOk = r26DailyOk && step1Ok && centeredOk && hitSecond && fadeOk;
           r26DailyInfo +=
             `｜m04892 两段式：点一下 浮层还在=${step1.overlay} 放大块=${step1.expanded} 在播=${step1.playing}` +
-            `｜再点放大块=${hitSecond ? '点到' : '没找到'} 之后浮层收掉=${step2Gone}` +
-            `${step1Ok && hitSecond && step2Gone ? ' ✓' : ' ✗'}`;
+            `｜**第 7 轮**居中=${centered === null ? '没量到' : `Δ(${centered.dx},${centered.dy})`}` +
+            `（容差 24｜窗口 ${centered?.win ?? '?'} 画布 ${centered?.canvas ?? '?'}` +
+            ` 视口中点接缝 ${centered?.view || '无'}）=${centeredOk ? '✓' : '✗'}` +
+            `｜再点放大块=${hitSecond ? '点到' : '没找到'}` +
+            `｜交叠淡入：淡出帧=${fade.fading}（要求 ≥1）播放页同帧在=${fade.overlapped}` +
+            ` 之后浮层收掉=${fade.gone} =${fadeOk ? '✓' : '✗'}` +
+            `｜opacity 轨迹 ${fade.opacityTrace.slice(0, 120)}` +
+            `${step1Ok && centeredOk && hitSecond && fadeOk ? ' ✓' : ' ✗'}`;
         }
       }
     }
@@ -11480,6 +16854,445 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
         `｜①本地档与六图标 ${r26ItemsOk ? '✓' : '✗'}（${r26ItemsInfo}）` +
         `｜④设置卡 ${r26SettingsOk ? '✓' : '✗'}（${r26SettingsInfo}）`,
     );
+    /*
+     * 用户第二十一轮第 5 条（「在设置里加入应用主题色设置，影响按键的颜色等，
+     * 将黑白/天蓝设为默认色，并且有自定义选项」）。
+     *
+     * 走**真 UI**：开设置框 →「界面」tab → 依次点「黑白 / 自定义 / 天蓝」，
+     * 每一步都读 `<html>` 上的**计算值**（`App.tsx` 的 `useAccent` 把档位写进 `data-accent`，
+     * 自定义档另外写五枚内联自定义属性），顺便读一眼内联样式有没有被正确清掉/写上。
+     * 量完点回「天蓝」并把设置框关掉——冒烟不留下我改成别的颜色的偏好。
+     */
+    let r20AccentOk = false;
+    let r20AccentInfo = '没开到设置框';
+    // 先把可能还开着的歌曲浮层收掉（点背板，和上面每日推荐那段的关法一致），
+    // 否则设置框会开在它后面、`[data-settings-tab]` 点不到。
+    await win.webContents.executeJavaScript(
+      `(() => {
+         document.querySelector('.pi-listoverlay[data-song-list-overlay]')?.click();
+         return true;
+       })()`,
+      true,
+    );
+    await delay(420);
+    if (await clickNav(win, '设置与音源')) {
+      await delay(640);
+      /*
+       * 分两拍（中间拍一张成品图）：A 拍一路点到「自定义 + #e91e63」并**停在那里**，
+       * 截图 → B 拍点回「天蓝」（复原）并读回末态。
+       */
+      const accentA = (await win.webContents.executeJavaScript(
+        `(async () => {
+           const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+           const root = document.documentElement;
+           const read = () => ({
+             accent: root.dataset.accent || '',
+             primary: getComputedStyle(root).getPropertyValue('--pi-primary').trim(),
+             onPrimary: getComputedStyle(root).getPropertyValue('--pi-on-primary').trim(),
+             inline: root.style.getPropertyValue('--pi-primary'),
+           });
+           const tab = document.querySelector('[data-settings-tab="ui"]');
+           if (tab === null) return { ok: false, why: '没有「界面」tab' };
+           tab.click();
+           await sleep(460);
+           const row = document.querySelector('[data-accent-setting="true"]');
+           if (row === null) return { ok: false, why: '界面 tab 里没有「应用主题色」那一行' };
+           const items = [...row.querySelectorAll('.pi-seg__item')];
+           if (items.length !== 3) {
+             return { ok: false, why: '主题色档位不是三档（' + items.length + '）' };
+           }
+           /*
+            * 先把档位摆回「天蓝」再取基线：pi.accent 是本机偏好，上一跑可能停在黑白/自定义上，
+            * 那样 sky0.accent 不等于 sky 会莫名其妙地假红。
+            */
+           if (items[0] instanceof HTMLElement) items[0].click();
+           await sleep(320);
+           const sky0 = read();
+           items[1].click();
+           await sleep(320);
+           const mono = read();
+           items[2].click();
+           await sleep(320);
+           const customRow = document.querySelector('[data-accent-custom="true"]');
+           const swatch = customRow === null ? null : customRow.querySelector('input[type="color"]');
+           const hex = customRow === null ? null : customRow.querySelector('.pi-accent-picker__hex');
+           const customOpened = read();
+           /*
+            * 用户第二十二轮第 2 条：自定义档下面要有一整块**取色面板**——
+            * 选色方块（data-accent-sv）、色相条（data-accent-hue）、推荐色 12 枚（data-accent-swatch）、
+            * 当前选色（data-accent-now）。先点一枚推荐色，确认它真的把主色换过去。
+            */
+           const picker = document.querySelector('[data-accent-picker]');
+           const pickerParts = {
+             sv: picker === null ? 0 : picker.querySelectorAll('[data-accent-sv]').length,
+             hue: picker === null ? 0 : picker.querySelectorAll('[data-accent-hue]').length,
+             swatches: picker === null ? 0 : picker.querySelectorAll('[data-accent-swatch]').length,
+             now: picker === null ? 0 : picker.querySelectorAll('[data-accent-now]').length,
+           };
+           const recSwatch = picker === null ? null : picker.querySelector('[data-accent-swatch="#29a3e0"]');
+           let fromSwatch = '';
+           if (recSwatch instanceof HTMLElement) {
+             recSwatch.click();
+             await sleep(260);
+             fromSwatch = read().primary;
+           }
+           if (hex instanceof HTMLInputElement) {
+             const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+             if (setter !== undefined) {
+               setter.call(hex, '#e91e63');
+               hex.dispatchEvent(new Event('input', { bubbles: true }));
+             }
+           }
+           await sleep(320);
+           const custom = read();
+           return {
+             ok: true,
+             why: '',
+             sky0: sky0,
+             mono: mono,
+             customRow: customRow !== null,
+             swatch: swatch !== null,
+             customOpened: customOpened,
+             custom: custom,
+             pickerParts: pickerParts,
+             fromSwatch: fromSwatch,
+           };
+         })()`,
+        true,
+      )) as {
+        ok: boolean;
+        why: string;
+        sky0: { accent: string; primary: string; onPrimary: string; inline: string };
+        mono: { accent: string; primary: string; onPrimary: string; inline: string };
+        customRow: boolean;
+        swatch: boolean;
+        customOpened: { accent: string; primary: string; onPrimary: string; inline: string };
+        custom: { accent: string; primary: string; onPrimary: string; inline: string };
+        pickerParts: { sv: number; hue: number; swatches: number; now: number };
+        fromSwatch: string;
+      };
+      const accentShot = path.resolve(here, '../../../docs/m3r21-accent-setting.png');
+      writeFileSync(accentShot, (await win.webContents.capturePage()).toPNG());
+      /*
+       * 用户第二十二轮第 1 条（「应用主题色也要改变如图 1 所显示的圆球颜色」）：
+       * 趁主色还停在自定义的 `#e91e63`，把设置框收掉、回到播放页、点出那颗 PI 圆球，
+       * 读球心那个 PI 的**计算渐变**——里面必须出现 `rgb(233, 30, 99)`。
+       * 原来那条渐变是写死的天蓝，这里只要还含天蓝就不可能通过。
+       */
+      await win.webContents.executeJavaScript(
+        `document.querySelector('[data-settings-close]')?.click()`,
+        true,
+      );
+      await delay(420);
+      await clickNav(win, '播放器主页');
+      await delay(360);
+      const orbSample = await tapQuickOrb(win, 0);
+      const orbLogo = (await win.webContents.executeJavaScript(
+        `(() => {
+           const el = document.querySelector('.pi-quick-orb__logo');
+           if (el === null) return null;
+           return {
+             image: getComputedStyle(el).backgroundImage,
+             accent: document.documentElement.dataset.accent || '',
+             primary: getComputedStyle(document.documentElement)
+               .getPropertyValue('--pi-primary')
+               .trim(),
+           };
+         })()`,
+        true,
+      )) as { image: string; accent: string; primary: string } | null;
+      if (orbSample !== null) {
+        // 松手让球收掉（球是一次按住才在的），后面还要回设置里把档位切回天蓝。
+        const releaseAt = quickOrbPress as { x: number; y: number } | null;
+        win.webContents.sendInputEvent({
+          type: 'mouseUp',
+          x: releaseAt?.x ?? orbSample.x,
+          y: releaseAt?.y ?? orbSample.y,
+          button: 'left',
+          clickCount: 1,
+        });
+        await delay(320);
+      }
+      const orbCustom = orbLogo !== null && orbLogo.image.includes('233, 30, 99');
+      orbAccentOk = orbLogo !== null && orbCustom;
+      orbAccentInfo =
+        orbLogo === null
+          ? '没点出 PI 球（或球心 PI 不在 DOM 里）'
+          : `主色=${orbLogo.primary}（data-accent=${orbLogo.accent || '无'}）` +
+            `｜球心 PI 渐变=${orbLogo.image.slice(0, 120)}` +
+            `｜含自定义色 rgb(233, 30, 99)=${orbCustom}`;
+      // 回设置里把档位切回「天蓝」（冒烟不留我改成别的颜色的偏好）。
+      await clickNav(win, '设置与音源');
+      await delay(640);
+      const accentB = (await win.webContents.executeJavaScript(
+        `(async () => {
+           const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+           const root = document.documentElement;
+           const tab = document.querySelector('[data-settings-tab="ui"]');
+           if (tab === null) return { accent: '', primary: '', onPrimary: '', inline: '缺界面 tab' };
+           tab.click();
+           await sleep(420);
+           const row = document.querySelector('[data-accent-setting="true"]');
+           const items = row === null ? [] : [...row.querySelectorAll('.pi-seg__item')];
+           if (items.length === 3) items[0].click();
+           await sleep(320);
+           return {
+             accent: root.dataset.accent || '',
+             primary: getComputedStyle(root).getPropertyValue('--pi-primary').trim(),
+             onPrimary: getComputedStyle(root).getPropertyValue('--pi-on-primary').trim(),
+             inline: root.style.getPropertyValue('--pi-primary'),
+           };
+         })()`,
+        true,
+      )) as { accent: string; primary: string; onPrimary: string; inline: string };
+      const accent = {
+        ok: accentA.ok,
+        why: accentA.why,
+        sky0: accentA.sky0,
+        mono: accentA.mono,
+        customRow: accentA.customRow,
+        customOpened: accentA.customOpened,
+        custom: accentA.custom,
+        pickerParts: accentA.pickerParts,
+        fromSwatch: accentA.fromSwatch,
+        sky: accentB,
+      };
+      /*
+       * 判据：
+       * ①「黑白」档真的换了主色（`#14171c` 亮档 / `#eef1f6` 暗档之一）且**不是**内联值；
+       * ②「自定义」档出现取色面板（方块 / 色相条 / 12 枚推荐色 / 当前选色），
+       *    点推荐的 `#29a3e0` 真的把主色换成它；把颜色改成 `#e91e63` 之后主色就等于它，
+       *    而且**是内联值**（自定义是 JS 算的，不走 tokens.css）；
+       * ③ 点回「天蓝」之后 `data-accent=sky`、内联值被清掉、主色回到默认那枚天蓝。
+       */
+      const monoValues = ['#14171c', '#eef1f6'];
+      r20AccentOk =
+        accent.ok &&
+        accent.sky0.accent === 'sky' &&
+        accent.mono.accent === 'mono' &&
+        monoValues.includes(accent.mono.primary.toLowerCase()) &&
+        accent.mono.primary !== accent.sky0.primary &&
+        accent.mono.inline === '' &&
+        accent.customRow &&
+        accent.customOpened.accent === 'custom' &&
+        accent.custom.accent === 'custom' &&
+        accent.custom.primary.toLowerCase() === '#e91e63' &&
+        accent.custom.inline.trim().toLowerCase() === '#e91e63' &&
+        accent.custom.onPrimary.toLowerCase() === '#ffffff' &&
+        accent.sky.accent === 'sky' &&
+        accent.sky.inline === '' &&
+        accent.sky.primary === accent.sky0.primary;
+      /*
+       * 用户第二十二轮第 2 条：那块取色面板的**结构**与「点推荐色真的生效」单独拎一条判据
+       * （四件套齐、推荐色 12 枚、点了之后主色正是那枚）。
+       */
+      accentPickerOk =
+        accent.ok &&
+        accent.pickerParts.sv === 1 &&
+        accent.pickerParts.hue === 1 &&
+        accent.pickerParts.swatches === 12 &&
+        accent.pickerParts.now === 1 &&
+        accent.fromSwatch.toLowerCase() === '#29a3e0';
+      accentPickerInfo = accent.ok
+        ? `方块=${accent.pickerParts.sv} 色相条=${accent.pickerParts.hue}` +
+          ` 推荐色=${accent.pickerParts.swatches} 当前选色=${accent.pickerParts.now}` +
+          `｜点推荐色 #29a3e0 后主色=${accent.fromSwatch || '没变'}`
+        : accent.why;
+      r20AccentInfo = accent.ok
+        ? `天蓝=${accent.sky0.primary}｜黑白=${accent.mono.primary}（前景 ${accent.mono.onPrimary}）` +
+          `｜自定义：面板 ${accent.pickerParts.sv}/${accent.pickerParts.hue}/${accent.pickerParts.swatches}/${accent.pickerParts.now}` +
+          ` 选 #e91e63 后主色=${accent.custom.primary}` +
+          ` 前景=${accent.custom.onPrimary} 内联=${accent.custom.inline || '无'}` +
+          `｜点回天蓝=${accent.sky.primary} 内联=${accent.sky.inline || '（已清）'}` +
+          `｜自定义档实拍→${accentShot}`
+        : accent.why;
+      await win.webContents.executeJavaScript(
+        `document.querySelector('[data-settings-close]')?.click()`,
+        true,
+      );
+      await delay(420);
+      await clickNav(win, '播放器主页');
+      await delay(320);
+    }
+    console.info(
+      `[pi/smoke] 应用主题色（用户第二十一轮第 5 条）：${r20AccentInfo} ${r20AccentOk ? '✓' : '✗'}`,
+    );
+    console.info(
+      `[pi/smoke] 每日推荐卡封面（用户第二十一轮第 2 条）：${r20DailyCoverInfo} ${r20DailyCoverOk ? '✓' : '✗'}`,
+    );
+
+    /*
+     * 用户第二十二轮第 4 条（「从歌单页点击进度条部件回到歌曲播放页的加个过渡动画，
+     * 不只是指歌单选择页，还指歌单**歌曲展示页**」）。
+     *
+     * 前半（歌单选择页 = `PlaylistPage` / 先锋那层封面卡片流）由第十八轮 ⑧ 那条覆盖；
+     * 这里补的是**歌曲展示浮层**那一档：进推荐歌单页 → 点开「每日推荐」浮层
+     * （`[data-songs="daily"]`，画在播放页**之上**、`nav` 一直是 home）→ 点它底栏的空白处。
+     * 要求那一拍同样有薄幕 + `data-arrive`，而且浮层收掉、过渡放完两样都干净。
+     */
+    {
+      await clickNav(win, '推荐歌单');
+      await delay(820);
+      const dailyOpened = (await win.webContents.executeJavaScript(
+        `(() => {
+           const card = document.querySelector('[data-daily-card]');
+           if (card === null || !(card instanceof HTMLElement)) return false;
+           card.click();
+           return true;
+         })()`,
+        true,
+      )) as boolean;
+      let hasOverlay = false;
+      const overlayDeadline = Date.now() + 9000;
+      while (Date.now() < overlayDeadline && !hasOverlay) {
+        await delay(300);
+        hasOverlay = (await win.webContents.executeJavaScript(
+          `document.querySelector('[data-songs="daily"]') !== null`,
+          true,
+        )) as boolean;
+      }
+      if (!dailyOpened || !hasOverlay) {
+        overlayArriveInfo = dailyOpened ? '每日推荐浮层没挂上' : '没找到每日推荐卡';
+      } else {
+        const barBox = (await win.webContents.executeJavaScript(
+          `(() => {
+             const bar = document.querySelector('[data-collage-bar] [data-home-bar]');
+             if (!(bar instanceof HTMLElement)) return null;
+             const b = bar.getBoundingClientRect();
+             return { x: Math.round(b.right - 26), y: Math.round(b.top + b.height / 2) };
+           })()`,
+          true,
+        )) as { x: number; y: number } | null;
+        if (barBox === null) {
+          overlayArriveInfo = '浮层里没有底栏';
+        } else {
+          // 先把指针挪到角落等药丸缩回常态：悬停态下右端的时间字会被上/下一首键挡住（同第十八轮 ⑧）。
+          win.webContents.sendInputEvent({ type: 'mouseMove', x: 8, y: 8 });
+          await delay(420);
+          await clickPoint(win, barBox.x, barBox.y);
+          /*
+           * 第二十三轮第 2 条：这里要看的**不再只是「有没有过渡」**，而是那一下是**交叉淡出**
+           * 还是「闪一下」。浮层的退场相是 320ms，而 `clickPoint` 自己就含 ~100ms 的按下-抬起，
+           * 所以单点采样很容易踩空（上一版在第 140ms 采到 null，看着像「没退场相」）。
+           * 这里改成**连续采四拍**：40 / 140 / 280 / 620ms，最后再判：
+           * ① 至少一拍里浮层**还在 DOM 里**且带 `data-closing='true'`、不透明度在 (0,1)（正在淡出）；
+           * ② 这一路**不该**有薄幕（浮层自己就是淡出层）；
+           * ③ 最后一拍两样都收干净。
+           */
+          const readArrive = async (): Promise<{
+            songs: string;
+            closing: string;
+            opacity: string;
+            veil: boolean;
+          }> =>
+            (await win.webContents.executeJavaScript(
+              `(() => {
+                 const layer = document.querySelector('[data-song-list-overlay]');
+                 return {
+                   songs: layer === null ? '' : (layer.dataset.songs ?? layer.dataset.playlist ?? ''),
+                   closing: layer === null ? '' : (layer.dataset.closing ?? ''),
+                   opacity: layer === null ? '' : getComputedStyle(layer).opacity,
+                   veil: document.querySelector('[data-page-arrive]') !== null,
+                 };
+               })()`,
+              true,
+            )) as { songs: string; closing: string; opacity: string; veil: boolean };
+          const samples: { at: number; state: Awaited<ReturnType<typeof readArrive>> }[] = [];
+          let elapsed = 0;
+          for (const at of [40, 100, 140, 260]) {
+            await delay(at - elapsed);
+            elapsed = at;
+            samples.push({ at, state: await readArrive() });
+          }
+          // 薄幕那条路（整页换掉）独有的一层，也该是**磨砂**而不是一块近乎不透明的底色。
+          const veilStyle = (await win.webContents.executeJavaScript(
+            `(() => {
+               const veil = document.querySelector('[data-page-arrive]');
+               if (!(veil instanceof HTMLElement)) return null;
+               const cs = getComputedStyle(veil);
+               return { bg: cs.backgroundColor, filter: cs.backdropFilter || '' };
+             })()`,
+            true,
+          )) as { bg: string; filter: string } | null;
+          await delay(620 - elapsed);
+          const after = (await win.webContents.executeJavaScript(
+            `({ arrive: document.querySelector('.pi-main')?.dataset.arrive ?? '',
+                veil: document.querySelector('[data-page-arrive]') !== null,
+                overlay: document.querySelector('[data-song-list-overlay]') !== null })`,
+            true,
+          )) as { arrive: string; veil: boolean; overlay: boolean };
+          const fading = samples.find((sample) => {
+            const value = Number.parseFloat(sample.state.opacity);
+            return (
+              sample.state.closing === 'true' && Number.isFinite(value) && value > 0 && value < 1
+            );
+          });
+          const veilSeen = samples.some((sample) => sample.state.veil);
+          const crossfadeOk = fading !== undefined;
+          /*
+           * 薄幕的判据（两条合起来才是「不闪」）：这一路本来就不该有薄幕；万一有，
+           * 它也必须是一层低不透明度的磨砂 —— 改造前是「0.92 个纯底色平涂」，那时
+           * `veilAlpha` 会读到 0.92 ⇒ 直接判红。
+           */
+          const veilAlpha = (() => {
+            if (veilStyle === null) return Number.NaN;
+            const rgba = /rgba?\([^)]*?([\d.]+)\s*\)$/.exec(veilStyle.bg);
+            if (rgba !== null) return Number.parseFloat(rgba[1] ?? 'NaN');
+            const srgb = /\/\s*([\d.]+)\s*\)$/.exec(veilStyle.bg);
+            return srgb === null ? Number.NaN : Number.parseFloat(srgb[1] ?? 'NaN');
+          })();
+          const veilOk =
+            !veilSeen ||
+            (veilStyle !== null &&
+              Number.isFinite(veilAlpha) &&
+              veilAlpha <= 0.2 &&
+              veilStyle.filter.includes('blur'));
+          const arriveDuring = samples[0]?.state;
+          overlayArriveOk =
+            (arriveDuring?.songs ?? '') !== '' &&
+            crossfadeOk &&
+            veilOk &&
+            after.arrive !== 'true' &&
+            !after.overlay;
+          overlayArriveInfo =
+            `浮层退场：四拍=${samples
+              .map(
+                (sample) =>
+                  `${sample.at}ms[${sample.state.songs || '无'}/${sample.state.closing || '无'}/${
+                    sample.state.opacity || '无'
+                  }]`,
+              )
+              .join(' ')}` +
+            `（交叉淡出=${crossfadeOk ? '是' : '否'}）` +
+            `｜薄幕在这一路=${veilSeen ? '在' : '不在'}` +
+            (veilStyle === null
+              ? ''
+              : `（底色=${veilStyle.bg} 模糊=${veilStyle.filter || '无'}）`) +
+            `｜放完 data-arrive=${after.arrive || '无'} 薄幕=${after.veil} 浮层还在=${after.overlay}`;
+        }
+      }
+    }
+    console.info(
+      `[pi/smoke] 歌曲展示浮层回播放页过渡（用户第二十二轮第 4 条）：${overlayArriveInfo} ${
+        overlayArriveOk ? '✓' : '✗'
+      }`,
+    );
+    console.info(
+      `[pi/smoke] 球心 PI 跟随主色（用户第二十二轮第 1 条）：${orbAccentInfo} ${
+        orbAccentOk ? '✓' : '✗'
+      }`,
+    );
+    console.info(
+      `[pi/smoke] 自定义取色面板（用户第二十二轮第 2 条）：${accentPickerInfo} ${
+        accentPickerOk ? '✓' : '✗'
+      }`,
+    );
+    console.info(
+      `[pi/smoke] 快捷卡主色栏（用户第二十二轮第 2 条）：${quickAccentInfo} ${
+        quickAccentOk ? '✓' : '✗'
+      }`,
+    );
+
     const m3Ok =
       r26DailyOk &&
       r26PickerOk &&
@@ -11507,12 +17320,56 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
       lyricInkOk !== false &&
       spinInOk !== false &&
       fumeOutroOk !== false &&
+      // 用户 m04987 第 2 条：浮名镜头中心跟高亮句（只在拍主题成品图那一跑量，null 不进判定）。
+      fumeCamOk !== false &&
+      fumeFadeOk !== false &&
+      // 用户 m00341 第 2 条：每日推荐歌单页的歌曲与底部进度条（两套风格都量；null = 没找到那张卡）。
+      dailyOverlayOk !== false &&
+      lyricWordOk !== false &&
+      // **用户第 8 轮第 4 条**：流光每个字从左边冒出 + 小→大→常态的爆发（在浮动里放大）。
+      classicShrinkOk !== false &&
+      // **用户第 8 轮第 2 条**：译文层统一到进度条上方、一次只显示一句（null = 没拍主题成品图）。
+      subtitleOk !== false &&
+      // **用户第 8 轮第 3 条**：倾诉只画一行 + 斜体抽签上色（null = 没跑倾诉那一格）。
+      tiltSingleLineOk !== false &&
+      classicSpinOk !== false &&
+      // **用户本轮第 1 条**：浮名「密度」——视口里看得见的歌词块 ≥ 3（null = 没跑 fume 那一格）。
+      fumeDensityOk !== false &&
+      // **用户第 9 轮第 1 条**：浮名的块盒贴着文字、视口里不再有栏宽量级的竖向空白。
+      fumePackOk !== false &&
+      // **用户第 9 轮第 2 条**：流光的短句字距按余量摊开（长句回归也在这条里）。
+      classicJustifyOk !== false &&
+      // **用户第二十三轮第 3 条**：流光的放大占位（正在唱的字放大后不许挤到邻居身上）。
+      classicPadOk !== false &&
+      // **用户第 9 轮第 3 条**：心象的逐个字高光逐渐消失（null = 没跑心象那一格）。
+      cadenzaFadeOk !== false &&
+      // **用户第 10 轮第 1 / 2 / 3 条**：心象辉光收强度（且只画一遍）、浮名浅色墨色近黑、
+      // 倾诉抽中签的斜体段整段上色（没跑到对应主题/底色时是 null，不判红）。
+      cadenzaGlowOk !== false &&
+      fumeInkLightOk !== false &&
+      tiltTintOk !== false &&
+      // **用户第 11 轮第 1 / 3 条**：心象常态墨色与流光同源、时计齿轮「一句一档」（null = 没跑到）。
+      cadenzaInkOk !== false &&
+      pendoloSlotOk !== false &&
       partitaGuideOk !== false &&
+      // **用户第 7 轮第 2 条**：刻度线不随高光放大缩小（null = 这一跑没拍云阶成品图）。
+      partitaGuideWidthOk !== false &&
+      // **用户第 5 轮第 3 条**：云阶位置提前划定（同一行内不被后出现的块推走）+ 高光接力（同时 ≤1）。
+      partitaHandoffOk !== false &&
       // 第十六轮删球：切歌小名片（`[data-song-change-card]`）连着组件一起删了，换成
       // 「播放页左下角那张常驻名片自己在切歌时弹一下」的新探针（第十六轮第 3 条，见 r16Ok）。
       r16Ok &&
       // 第十八轮（用户 m01482）那 11 条里能自动量的部分（见上面的 `r18Ok`）。
-      r18Ok;
+      r18Ok &&
+      // 第二十一轮能自动量的四条：① 音量条手拖到底、② 每日推荐卡封面、
+      // ③ 回播放页过渡、④ 暗档左侧侧光、⑤ 应用主题色三档（① 见 `muteBarOk`）。
+      r20DailyCoverOk &&
+      r20ArriveOk &&
+      r20SideLightOk &&
+      r20AccentOk &&
+      // 第二十二轮：音量条鼠标拖拽的线性（③）、从**歌曲展示浮层**回播放页的过渡（④）。
+      volumeDragOk &&
+      overlayArriveOk;
     console.info(
       // 第十六轮删球（用户 m07538 第 1 条）：`｜首屏悬浮球`、`｜环形菜单+悬停升起`、
       // `｜悬浮球拖动+贴边细条`、`｜换页过渡`、`｜推荐＝歌单卡片`、`｜歌单卡片面板`、
@@ -11525,7 +17382,7 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
         `｜歌单空态卡片 ${newPlaylistOk ? '✓' : '✗'}` +
         `｜详情曲目呈现 ${detailTracksOk ? '✓' : '✗'}` +
         `｜搜索浮层 ${searchOk ? '✓' : '✗'}｜窗口三键浮出 ${windowControlsOk ? '✓' : '✗'}` +
-        `｜浮名不溢出 ${lyricBleedOk === null ? '未跑' : lyricBleedOk ? '✓' : '✗'}` +
+        `｜浮名高亮字在窗内 ${lyricBleedOk === null ? '未跑' : lyricBleedOk ? '✓' : '✗'}` +
         `｜三套铺满整屏 ${stageFillOk === null ? '未跑' : stageFillOk ? '✓' : '✗'}` +
         `｜逐字旋转 ${spinOk === null ? '未跑' : spinOk ? '✓' : '✗'}` +
         `｜时计齿轮转 ${pendoloGearOk === null ? '未跑' : pendoloGearOk ? '✓' : '✗'}` +
@@ -11534,7 +17391,43 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
         `｜歌词常态白与高亮色 ${lyricInkOk === null ? '未跑' : lyricInkOk ? '✓' : '✗'}` +
         `｜冒字带旋转 ${spinInOk === null ? '未跑' : spinInOk ? '✓' : '✗'}` +
         `｜浮名结尾缩镜 ${fumeOutroOk === null ? '未跑' : fumeOutroOk ? '✓' : '✗'}` +
+        `｜浮名镜头跟高亮字·始终居中 ${fumeCamOk === null ? '未跑' : fumeCamOk ? '✓' : '✗'}` +
+        `｜浮名高亮褪回常态色 ${fumeFadeOk === null ? '未跑' : fumeFadeOk ? '✓' : '✗'}` +
+        `｜每日推荐歌单页（歌曲+底栏）${dailyOverlayOk === null ? '未跑' : dailyOverlayOk ? '✓' : '✗'}` +
+        `｜每日推荐卡封面 ${r20DailyCoverOk ? '✓' : '✗'}` +
+        `｜回播放页过渡 ${r20ArriveOk ? '✓' : '✗'}` +
+        `｜暗档左侧侧光 ${r20SideLightOk ? '✓' : '✗'}` +
+        `｜应用主题色 ${r20AccentOk ? '✓' : '✗'}` +
+        `｜球体主色跟随 ${orbAccentOk === null ? '未量' : orbAccentOk ? '✓' : '✗'}` +
+        `｜取色面板 ${accentPickerOk === null ? '未量' : accentPickerOk ? '✓' : '✗'}` +
+        `｜快捷卡主色栏 ${quickAccentOk === null ? '未量' : quickAccentOk ? '✓' : '✗'}` +
+        `｜音量条线性拖拽 ${volumeDragOk ? '✓' : '✗'}` +
+        `｜歌曲展示页回播放过渡 ${overlayArriveOk ? '✓' : '✗'}` +
+        `｜静音与拖到底 ${muteBarOk === null ? '未量' : muteBarOk ? '✓' : '✗'}` +
+        `｜流光整词与高光辉光 ${lyricWordOk === null ? '未跑' : lyricWordOk ? '✓' : '✗'}` +
+        `｜流光冒字与放大回常态 ${classicShrinkOk === null ? '未跑' : classicShrinkOk ? '✓' : '✗'}` +
+        `｜译文层统一（进度条上方·一句）${subtitleOk === null ? '未跑' : subtitleOk ? '✓' : '✗'}` +
+        `｜倾诉一行一句 ${tiltSingleLineOk === null ? '未跑' : tiltSingleLineOk ? '✓' : '✗'}` +
+        `｜流光冒字自旋 ${classicSpinOk === null ? '未跑' : classicSpinOk ? '✓' : '✗'}` +
+        `｜浮名密度 ${fumeDensityOk === null ? '未跑' : fumeDensityOk ? '✓' : '✗'}` +
+        `｜浮名块贴紧 ${fumePackOk === null ? '未跑' : fumePackOk ? '✓' : '✗'}` +
+        `｜流光短句字距 ${classicJustifyOk === null ? '未跑' : classicJustifyOk ? '✓' : '✗'}` +
+        `｜流光放大占位 ${classicPadOk === null ? '未跑' : classicPadOk ? '✓' : '✗'}` +
+        `｜心象高光渐变 ${cadenzaFadeOk === null ? '未跑' : cadenzaFadeOk ? '✓' : '✗'}` +
+        `｜心象辉光强度 ${cadenzaGlowOk === null ? '未跑' : cadenzaGlowOk ? '✓' : '✗'}` +
+        `｜浮名浅色墨色 ${fumeInkLightOk === null ? '未跑' : fumeInkLightOk ? '✓' : '✗'}` +
+        `｜倾诉斜体整段上色 ${tiltTintOk === null ? '未跑' : tiltTintOk ? '✓' : '✗'}` +
+        `｜心象墨色同源 ${cadenzaInkOk === null ? '未跑' : cadenzaInkOk ? '✓' : '✗'}` +
+        `｜时计一句一档 ${pendoloSlotOk === null ? '未跑' : pendoloSlotOk ? '✓' : '✗'}` +
+        `｜快捷设置图标分页栏 ${r16RightOk ? '✓' : '✗'}` +
+        // 用户第二十轮第 1 / 2 条（本轮新增的两条读数）。
+        `｜播放键图标圆角 ${iconProbeOk === null ? '未量' : iconProbeOk ? '✓' : '✗'}` +
+        `｜静音音量条到底 ${muteBarOk === null ? '未量' : muteBarOk ? '✓' : '✗'}` +
         `｜云阶线与字同出 ${partitaGuideOk === null ? '未跑' : partitaGuideOk ? '✓' : '✗'}` +
+        `｜云阶刻度线不缩放 ${
+          partitaGuideWidthOk === null ? '未跑' : partitaGuideWidthOk ? '✓' : '✗'
+        }` +
+        `｜云阶位置提前划定/高光接力 ${partitaHandoffOk === null ? '未跑' : partitaHandoffOk ? '✓' : '✗'}` +
         `｜音量条两级悬停 ${volShortOk && volThickOk ? '✓' : '✗'}` +
         `｜进度条 150% ${trackGrowOk ? '✓' : '✗'}` +
         // 第十六轮十四条探针逐项署名（原来这里只有一句「十六轮新探针总闸」）。
@@ -11558,6 +17451,11 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
         ` ⑪接下来播放左下+5s ${r18UpNextOk === null ? '未跑' : r18UpNextOk ? '✓' : '✗'}` +
         `（总闸 ${r18Ok ? '✓' : '✗'}）` +
         ` → ${m3Ok ? '通过' : '未通过'}`,
+    );
+    console.info(
+      // 用户第二十二轮第 5 条：收尾打一条总耗时，配合每行的 `+Nms` 前缀就能算出「哪一段该继续砍」。
+      `[pi/smoke] 本次 UI 冒烟总耗时 ${((Date.now() - smokeStart) / 1000).toFixed(1)}s` +
+        `（分段耗时看各行的 +Nms 前缀相减）`,
     );
     app.exit(passed >= UI_SMOKE_SONGS && coversOk && m3Ok ? 0 : 1);
   } catch (error) {
@@ -11659,8 +17557,9 @@ async function runSettingsSmoke(win: BrowserWindow): Promise<void> {
     const names = new Set(page.rows.map((row) => row.name));
     // 第十二轮第 7 条：圆形页签（radiusPct≈50、边长 30~46、文字标签 sr-only）+ 拍立得卡面
     // （圆角 ≥ 12px、有落影、底部白边比顶部厚）。
-    const tabLookMatch =
-      /radiusPct=(\d+) size=(\d+)x(\d+) labelHidden=(yes|no|missing)/.exec(page.tabLook);
+    const tabLookMatch = /radiusPct=(\d+) size=(\d+)x(\d+) labelHidden=(yes|no|missing)/.exec(
+      page.tabLook,
+    );
     const cardLookMatch = /radius=(\d+) shadow=(yes|none) padBottom=(\d+)/.exec(page.cardLook);
     const polaroidOk =
       tabLookMatch !== null &&
@@ -11691,6 +17590,79 @@ async function runSettingsSmoke(win: BrowserWindow): Promise<void> {
     console.info(
       `[pi/smoke] 设置页拍立得外观（第十二轮第 7 条）：页签 ${page.tabLook}｜卡片 ${page.cardLook}` +
         ` → ${polaroidOk ? '✓' : '✗'}`,
+    );
+    /*
+     * **用户第 7 轮第 3 条**（原话：「音源页……的两个按键太丑了要修改」「界面页……有一个很丑的
+     * 按键需要优化」）。真因是那段 CSS **没有 `appearance: none`**：原生复选框一直被 Chromium
+     * 画出来（白方块 + 勾 / 禁用灰块），跟我们那层胶囊叠在一起，所以量到的一直是原生控件的形状；
+     * 再加上轨道用的 `--pi-bg-subtle` 正是设置行的底色、滑块又是白的，关着时整条隐形。
+     *
+     * 判据（都能被以后的人一键复算）：
+     *   · `appearance === 'none'` —— 原生控件真的不画了（这条就是那个真因的回归锁）；
+     *   · 轨道 40×22、滑块（`::after`）16×16 且不透明（不然就是「隐形开关」）；
+     *   · 选中/未选中的轨道底色**必须不同**（否则开关看不出状态）。
+     */
+    const switchLook = (await win.webContents.executeJavaScript(
+      `(() => {
+         const boxes = [...document.querySelectorAll('.pi-settings-frame .pi-check')];
+         if (boxes.length === 0) return null;
+         const read = (el) => {
+           const style = getComputedStyle(el);
+           const knob = getComputedStyle(el, '::after');
+           return {
+             appearance: style.appearance,
+             w: el.offsetWidth,
+             h: el.offsetHeight,
+             track: style.backgroundColor,
+             knobW: knob.width,
+             knobH: knob.height,
+             knobBg: knob.backgroundColor,
+           };
+         };
+         const on = boxes.find((el) => el.checked === true) ?? null;
+         const off = boxes.find((el) => el.checked === false) ?? null;
+         return {
+           count: boxes.length,
+           first: read(boxes[0]),
+           onTrack: on === null ? '' : getComputedStyle(on).backgroundColor,
+           offTrack: off === null ? '' : getComputedStyle(off).backgroundColor,
+         };
+       })()`,
+      true,
+    )) as {
+      count: number;
+      first: {
+        appearance: string;
+        w: number;
+        h: number;
+        track: string;
+        knobW: string;
+        knobH: string;
+        knobBg: string;
+      };
+      onTrack: string;
+      offTrack: string;
+    } | null;
+    const knobOpaque = switchLook !== null && !switchLook.first.knobBg.includes('rgba(0, 0, 0, 0)');
+    const settingsSwitchOk =
+      switchLook !== null &&
+      switchLook.first.appearance === 'none' &&
+      switchLook.first.w === 40 &&
+      switchLook.first.h === 22 &&
+      switchLook.first.knobW === '16px' &&
+      switchLook.first.knobH === '16px' &&
+      knobOpaque &&
+      (switchLook.onTrack === '' ||
+        switchLook.offTrack === '' ||
+        switchLook.onTrack !== switchLook.offTrack);
+    console.info(
+      `[pi/smoke] 设置页开关外观（用户第 7 轮第 3 条）：开关 ${switchLook?.count ?? 0} 个` +
+        `｜appearance=${switchLook?.first.appearance ?? '无'}（要求 none）` +
+        ` 轨道=${switchLook?.first.w ?? 0}×${switchLook?.first.h ?? 0}（要求 40×22）` +
+        `｜滑块=${switchLook?.first.knobW ?? '?'}×${switchLook?.first.knobH ?? '?'} 底色=${
+          switchLook?.first.knobBg ?? '?'
+        }｜选中轨道=${switchLook?.onTrack || '无'} 未选中=${switchLook?.offTrack || '无'}` +
+        ` → ${settingsSwitchOk ? '✓' : '✗'}`,
     );
     for (const row of page.rows) console.info(`[pi/smoke]   音源行「${row.name}」${row.state}`);
 
@@ -11894,11 +17866,19 @@ async function runSettingsSmoke(win: BrowserWindow): Promise<void> {
     writeFileSync(tuningShot, (await win.webContents.capturePage()).toPNG());
     console.info(`[pi/smoke] 截图：${tuningShot}`);
 
-    const ok = settingsPass && logPass && themeOk && tuningOk && tuningToggleOk && polaroidOk;
+    const ok =
+      settingsPass &&
+      logPass &&
+      themeOk &&
+      tuningOk &&
+      tuningToggleOk &&
+      polaroidOk &&
+      settingsSwitchOk;
     console.info(
       `[pi/smoke] M2.5 渲染层验收：设置页 ${settingsPass ? '✓' : '✗'}｜音质日志页 ${logPass ? '✓' : '✗'}` +
         `｜分类边框页与歌词主题 ${themeOk ? '✓' : '✗'}｜歌词动效参数卡 ${tuningOk ? '✓' : '✗'}` +
         `｜逐字旋转开关 ${tuningToggleOk ? '✓' : '✗'}｜拍立得外观 ${polaroidOk ? '✓' : '✗'}` +
+        `｜开关不再是原生控件（第 7 轮第 3 条）${settingsSwitchOk ? '✓' : '✗'}` +
         ` → ${ok ? '通过' : '未通过'}`,
     );
     app.exit(ok ? 0 : 1);

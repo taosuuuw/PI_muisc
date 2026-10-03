@@ -59,6 +59,23 @@ export type CollageCamera = { x: number; y: number };
 export type CollageViewport = { width: number; height: number };
 export type CollageSlotRect = { x: number; y: number; width: number; height: number };
 
+/**
+ * **用户第 7 轮第 1 条**（原话：「拼贴居中要**算窗口的中心**」）：「视口中点」在**画布局部坐标**
+ * 里的位置。
+ *
+ * 默认就是画布自己的正中（`viewport / 2`），也就是第十六轮以来的行为。可 `<SongCollage>` 也能被
+ * 塞进歌单浮层的正文格里（`overlays.css` 的 `.pi-listoverlay--collage`），画布左上角未必贴着窗口
+ * 左上角 —— 相机的位移是**画布局部**的屏幕像素，所以「把那一格搬到窗口正中」在这里要写成
+ * `窗口中心 − 画布左上角`。组件负责量这个差值（它才有 DOM），几何层只收结果。
+ */
+export type CollageViewCenter = { x: number; y: number };
+
+/** 画布自己的正中——`CollageViewCenter` 的默认值（画布就是窗口时和原来一模一样）。 */
+export const viewCenterOf = (viewport: CollageViewport): CollageViewCenter => ({
+  x: viewport.width / 2,
+  y: viewport.height / 2,
+});
+
 /** 块内槽位：`x/y/cols/rows` 的单位都是 128px 的格子（folia 的 `BlockSlot` 同口径）。 */
 export type CollageSlot = { x: number; y: number; cols: number; rows: number };
 
@@ -141,7 +158,8 @@ export const clamp = (value: number, min: number, max: number): number =>
   value < min ? min : value > max ? max : value;
 
 /** folia `PosterWall.tsx`：`getScale = width < 640 ? 0.52 : width < 1100 ? 0.64 : 0.76`。 */
-export const cameraScaleFor = (width: number): number => (width < 640 ? 0.52 : width < 1100 ? 0.64 : 0.76);
+export const cameraScaleFor = (width: number): number =>
+  width < 640 ? 0.52 : width < 1100 ? 0.64 : 0.76;
 
 /**
  * 四套手工模板，每套 12 个槽位、正好铺满 12×8、无重叠无空洞（见本文件顶部的说明①）。
@@ -257,9 +275,14 @@ export const getBlockSlots = (blockCol: number, blockRow: number): readonly Coll
   ORIENTED_TEMPLATES[getBlockOrientation(blockCol, blockRow)] ?? ORIENTED_TEMPLATES[0] ?? [];
 
 export const sameSlot = (a: CollageSlotRef | null, b: CollageSlotRef | null): boolean =>
-  a !== null && b !== null && a.blockCol === b.blockCol && a.blockRow === b.blockRow && a.slotIndex === b.slotIndex;
+  a !== null &&
+  b !== null &&
+  a.blockCol === b.blockCol &&
+  a.blockRow === b.blockRow &&
+  a.slotIndex === b.slotIndex;
 
-export const slotKey = (ref: CollageSlotRef): string => `${ref.blockCol}:${ref.blockRow}:${ref.slotIndex}`;
+export const slotKey = (ref: CollageSlotRef): string =>
+  `${ref.blockCol}:${ref.blockRow}:${ref.slotIndex}`;
 
 export const slotWidthOf = (slot: CollageSlot): number => slot.cols * COLLAGE_PITCH - COLLAGE_GAP;
 export const slotHeightOf = (slot: CollageSlot): number => slot.rows * COLLAGE_PITCH - COLLAGE_GAP;
@@ -544,14 +567,15 @@ export const clampCamera = (
 export const centeredCamera = (
   viewport: CollageViewport,
   geometry: CollageGeometry,
-): CollageCamera => clampCamera(
-  {
-    x: (viewport.width - geometry.worldWidth * geometry.scale) / 2,
-    y: (viewport.height - geometry.worldHeight * geometry.scale) / 2,
-  },
-  viewport,
-  geometry,
-);
+): CollageCamera =>
+  clampCamera(
+    {
+      x: (viewport.width - geometry.worldWidth * geometry.scale) / 2,
+      y: (viewport.height - geometry.worldHeight * geometry.scale) / 2,
+    },
+    viewport,
+    geometry,
+  );
 
 /** 一个槽位（格单位，可能已经是重排后的）→ 世界矩形。 */
 const rectOfSlot = (
@@ -610,24 +634,34 @@ export const expandedCenterOf = (
 ): { x: number; y: number } => slotCenterOf(expandedRectOf(geometry, ref));
 
 /**
- * 让世界坐标 `point` 落在视口中点所需的相机位移。
+ * 让世界坐标 `point` 落在**视口中点**所需的相机位移。
  * 屏幕坐标 = 世界坐标 × scale + camera（folia 那种纯 `translate3d` 相机），
- * 所以令 `point.x × scale + camera.x = viewport.width / 2` 反解即可。
+ * 所以令 `point.x × scale + camera.x = center.x` 反解即可。
  * 结果仍要过一遍 `clampCamera`：世界比视口小的那个方向会退化成居中，
  * 于是贴着世界边缘的槽位可能对不齐正中——这是**有意**的，露出世界之外比「对得齐」更糟。
+ *
+ * `center`（**用户第 7 轮第 1 条**）默认是画布正中；画布不等于窗口时由组件传「窗口中心 −
+ * 画布左上角」进来，于是这一格搬过去之后落在**窗口**正中而不是画布正中。
+ * `padX / padY` 是允许相机越过世界上 / 左边缘的屏幕像素（组件传自己的回卷补片宽度）：
+ * 不传的话，世界左上角那几格无论怎么点都会被夹在角上「搬不到中间」。
  */
 export const cameraToCenterOn = (
   point: { x: number; y: number },
   viewport: CollageViewport,
   geometry: CollageGeometry,
+  center: CollageViewCenter = viewCenterOf(viewport),
+  padX: number = 0,
+  padY: number = 0,
 ): CollageCamera =>
   clampCamera(
     {
-      x: viewport.width / 2 - point.x * geometry.scale,
-      y: viewport.height / 2 - point.y * geometry.scale,
+      x: center.x - point.x * geometry.scale,
+      y: center.y - point.y * geometry.scale,
     },
     viewport,
     geometry,
+    padX,
+    padY,
   );
 
 /** 格子坐标 → 队列第几首（取模回卷：歌比槽位少时循环铺满，不留同一个洞）。 */
@@ -736,16 +770,21 @@ export const isNearContentEdge = (
  * 视口正中最近的槽位——它就是被放大聚焦的那一块。
  * 先按块定位，再在 3×3 块范围内找「到矩形距离」最小的槽位（点在矩形内距离为 0），
  * 于是放大块永远落在视口中心附近，且一定是已渲染的那一批里的一块。
+ *
+ * `center` 就是 `cameraToCenterOn` 的那个「视口中点」（**用户第 7 轮第 1 条**）：
+ * 挑「靠近中心的那一格」与「点开后把它搬回中心」必须是同一套坐标，
+ * 否则画布不等于窗口时，进页面自动放大的那一格和点它之后该在的位置会对不上。
  */
 export const centerSlotOf = (
   camera: CollageCamera,
   viewport: CollageViewport,
   geometry: CollageGeometry,
+  center: CollageViewCenter = viewCenterOf(viewport),
 ): CollageSlotRef | null => {
   if (geometry.worldWidth <= 0 || geometry.worldHeight <= 0) return null;
   const { scale } = geometry;
-  const worldX = (viewport.width / 2 - camera.x) / scale;
-  const worldY = (viewport.height / 2 - camera.y) / scale;
+  const worldX = (center.x - camera.x) / scale;
+  const worldY = (center.y - camera.y) / scale;
   const baseCol = Math.floor(worldX / geometry.blockWidth);
   const baseRow = Math.floor(worldY / geometry.blockHeight);
   let best: CollageSlotRef | null = null;
@@ -888,8 +927,7 @@ export const listVisibleSlots = (
         ) {
           continue;
         }
-        const steps =
-          Math.max(0, base.x - waveOrigin.x) + Math.max(0, base.y - waveOrigin.y);
+        const steps = Math.max(0, base.x - waveOrigin.x) + Math.max(0, base.y - waveOrigin.y);
         list.push({
           key: slotKey(ref),
           ref,

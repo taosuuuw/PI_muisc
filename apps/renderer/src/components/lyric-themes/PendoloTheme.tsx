@@ -139,11 +139,16 @@ const BALANCE_SPEED = 2.8;
  */
 const SMALL_GEAR_REF_TEETH = 22;
 /**
- * 歌词环转动 1 rad ⇒ 小齿轮推进多少 rad（观感标定）。换一句歌词时环约转 0.22 rad
- * （= 一档 12.5° 的弧度），乘这个 6 ⇒ 约 1.3 rad ≈ 75°，肉眼能明显看到「咬合着一顿」；
- * 不换句的时候是 0（一模一样的一帧）。
+ * 歌词环走 **1 档**（换一句，约 0.218 rad = 12.5°）⇒ 小齿轮推进几档。
+ *
+ * **用户第 11 轮第 3 条**（原话：「时计里的齿轮转动时是**一句歌词转过一个槽**而不是一下子转
+ * 非常多」）：取 **1** —— 一句歌词正好推进一档。
+ *
+ * 旧值 6 的来历（第十五轮第 7 条）：那时「行程」是**每帧角度变化的绝对值**累加，弹簧换句时
+ * 来回摆一次就被记成 2~4 档，再乘 6 ⇒ 一句能转半圈、几十句下来转好几圈（主人说的「非常多」）。
+ * 现在行程改吃**环的净转角**（= 走过的槽数 × 每档角度），倍率 1 ⇒ 一句一档，与环同步。
  */
-export const PENDOLO_GEAR_TRAVEL_RATIO = 6;
+export const PENDOLO_GEAR_TRAVEL_RATIO = 1;
 /** 环「这一帧动没动」的阈值（rad/帧）：≤ 它就算停住 —— 同时是 `data-gears` 的判据。 */
 export const PENDOLO_GEAR_MOVE_EPSILON_RAD = 1e-4;
 
@@ -156,17 +161,20 @@ export interface PendoloGearDrive {
 }
 
 /**
- * 给定上一帧的累计行程 `travelRad` 与「歌词环这一帧转了多少」`ringDeltaRad`，
+ * 给定上一帧的累计行程 `travelRad` 与「歌词环这一帧净转了多少」`ringDeltaRad`，
  * 返回新的行程与 `moving` 标记。纯函数、无副作用，`PendoloTheme` 每帧调一次。
- * 取绝对值是当「曲柄」用：环换句时来回摆一次，齿轮只朝一个方向推进，不会摆回去又转回来。
+ *
+ * **用户第 11 轮第 3 条**：这里收的是**净**转角（不是绝对值）—— 一句歌词推进一档，
+ * 环回摆时齿轮跟着微微退回一点（真表的「咬合回弹」），但**不会**把摆动量一份份累加成好几档。
+ * `moving` 用 `|Δ|` 判：回摆那几帧也算「在转」，环停住才 idle（第十五轮第 7 条的要求不变）。
  */
 export function pendoloGearDrive(
   travelRad: number,
   ringDeltaRad: number,
   epsilon = PENDOLO_GEAR_MOVE_EPSILON_RAD,
 ): PendoloGearDrive {
-  const step = Math.abs(ringDeltaRad);
-  return { travelRad: travelRad + step, moving: step > epsilon };
+  const step = ringDeltaRad;
+  return { travelRad: travelRad + step, moving: Math.abs(step) > epsilon };
 }
 
 interface DialGeometry {
@@ -331,7 +339,11 @@ function smallGear(
 }
 
 /** 表盘的静态部分（尺寸变了才重画一次）。 */
-function drawStaticFace(ctx: CanvasRenderingContext2D, geom: DialGeometry, colors: DialColors): void {
+function drawStaticFace(
+  ctx: CanvasRenderingContext2D,
+  geom: DialGeometry,
+  colors: DialColors,
+): void {
   const { radius } = geom;
   ctx.setTransform(geom.dpr, 0, 0, geom.dpr, 0, 0);
   ctx.clearRect(0, 0, geom.width, geom.height);
@@ -604,7 +616,6 @@ interface PendoloSlotProps {
   readonly active: boolean;
   readonly focus: boolean;
   readonly chorus: boolean;
-  readonly translatedText: string | undefined;
   readonly progress: number;
   readonly register: (index: number, element: HTMLElement | null) => void;
 }
@@ -615,7 +626,6 @@ function PendoloSlot({
   active,
   focus,
   chorus,
-  translatedText,
   progress,
   register,
 }: PendoloSlotProps): ReactNode {
@@ -644,9 +654,6 @@ function PendoloSlot({
           </span>
         ))}
       </span>
-      {translatedText === undefined || translatedText === '' ? null : (
-        <span className="pi-lyricpendolo__translated">{translatedText}</span>
-      )}
       {focus ? (
         <span
           className="pi-lyricpendolo__dot"
@@ -665,7 +672,7 @@ function PendoloSlot({
  * 每帧只写 DOM / Canvas，不 setState。
  */
 export function PendoloTheme(props: LyricThemeProps): ReactNode {
-  const { lines, translated, activeIndex, viewIndex, positionMs, theme, coverUrl } = props;
+  const { lines, activeIndex, viewIndex, positionMs, theme, coverUrl } = props;
   const rootRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const slotRefs = useRef<(HTMLElement | null)[]>([]);
@@ -689,8 +696,12 @@ export function PendoloTheme(props: LyricThemeProps): ReactNode {
     }
     return out;
   }, [lines, viewIndex]);
-  const chorusFlags = useMemo(() => lines.map((_line, index) => isChorusLine(lines, index)), [lines]);
-  const intensity = theme.animationIntensity === 'chaotic' ? 2 : theme.animationIntensity === 'moderate' ? 1.4 : 1;
+  const chorusFlags = useMemo(
+    () => lines.map((_line, index) => isChorusLine(lines, index)),
+    [lines],
+  );
+  const intensity =
+    theme.animationIntensity === 'chaotic' ? 2 : theme.animationIntensity === 'moderate' ? 1.4 : 1;
   // 设置的动效参数：字号走 CSS 变量（这套主题的字号全在 `lyric-themes.css` 里），
   // 幅度缩摆轮摆动的角度，帧率上限进下面的 rAF。
   // 第十四轮第 7 条新增的五个：轮盘半径 / 弧度张角 / 擒纵咬合力 / 聚焦句缩放 / 表盘封面开关。
@@ -777,8 +788,14 @@ export function PendoloTheme(props: LyricThemeProps): ReactNode {
     const blitBound = geom.radius * 1.7 + 8;
     const blitX = Math.max(0, Math.floor((geom.cx - blitBound) * dpr));
     const blitY = Math.max(0, Math.floor((geom.cy - blitBound) * dpr));
-    const blitW = Math.max(1, Math.min(canvas.width, Math.ceil((geom.cx + blitBound) * dpr)) - blitX);
-    const blitH = Math.max(1, Math.min(canvas.height, Math.ceil((geom.cy + blitBound) * dpr)) - blitY);
+    const blitW = Math.max(
+      1,
+      Math.min(canvas.width, Math.ceil((geom.cx + blitBound) * dpr)) - blitX,
+    );
+    const blitH = Math.max(
+      1,
+      Math.min(canvas.height, Math.ceil((geom.cy + blitBound) * dpr)) - blitY,
+    );
 
     const placeSlots = (spring: number, anchorIndex: number): void => {
       for (const line of slotLines) {
@@ -788,10 +805,19 @@ export function PendoloTheme(props: LyricThemeProps): ReactNode {
         const angleDeg = distance * angleStepDeg;
         const angleRad = (angleDeg * Math.PI) / 180;
         const alpha =
-          Math.max(0.12, Math.max(0, Math.cos(angleRad * 0.75)) ** 2.5 * (1 - Math.abs(distance) * 0.18)) *
-          Math.min(1, (ARC_FADE_FULL_DEG * fadeScale - Math.abs(angleDeg)) / (ARC_FADE_SPAN_DEG * fadeScale));
+          Math.max(
+            0.12,
+            Math.max(0, Math.cos(angleRad * 0.75)) ** 2.5 * (1 - Math.abs(distance) * 0.18),
+          ) *
+          Math.min(
+            1,
+            (ARC_FADE_FULL_DEG * fadeScale - Math.abs(angleDeg)) / (ARC_FADE_SPAN_DEG * fadeScale),
+          );
         // 焦点句缩放 = 设置里的「聚焦句缩放」（默认 1.25 = 改造前写死的 1.25）。
-        const scale = line.index === anchorIndex ? pendoloFocusScale : Math.max(0.7, 1 - Math.abs(distance) * 0.08);
+        const scale =
+          line.index === anchorIndex
+            ? pendoloFocusScale
+            : Math.max(0.7, 1 - Math.abs(distance) * 0.08);
         const x = geom.cx + ringRadius * Math.cos(angleRad);
         const y = geom.cy + ringRadius * Math.sin(angleRad);
         element.style.opacity = alpha.toFixed(3);
@@ -843,23 +869,33 @@ export function PendoloTheme(props: LyricThemeProps): ReactNode {
       const spring = springRef.current;
       const target = targetRef.current;
       // 咬合力 F 同时进刚度与阻尼：F = 2 时就是改造前的 180 × 2.0 / 18 + 4 / 2.0。
-      const force = -springStiffness * intensity * (spring.value - target) - springDamping * spring.velocity;
+      const force =
+        -springStiffness * intensity * (spring.value - target) - springDamping * spring.velocity;
       spring.velocity += (force / SPRING_MASS) * dt;
       spring.value += spring.velocity * dt;
       // 摆轮摆角乘设置的 `motionAmount`：motionAmount = 1 时与原来逐位相同，
       // 调小 → 擒纵几乎不摆（字槽仍按弹簧分布在弧上），调大 → 甩得更狠。
-      const rotationRad = ((-(spring.value - target) * angleStepDeg * Math.PI) / 180) * motionAmount;
+      const rotationRad =
+        ((-(spring.value - target) * angleStepDeg * Math.PI) / 180) * motionAmount;
 
-      // 第十五轮第 7 条：小齿轮只跟着**歌词环的转动量**走。把这一帧环转过的角度累进
-      // `gearTravel`；`pendoloGearDrive` 同时给出「这一刻齿轮动没动」，只在标记真的翻转时
-      // 才写一次 DOM（每帧都写属性会白白让样式失效）。
+      // **用户第 11 轮第 3 条**：小齿轮的行程改吃**环的净转角**（= 走过的槽数 × 每档角度），
+      // 一句歌词正好推进一档（见 `PENDOLO_GEAR_TRAVEL_RATIO`）。旧写法累加的是「每一帧角度
+      // 变化的绝对值」，弹簧换句时来回摆一次就被记成 2~4 档、再乘 6 ⇒ 一句能转半圈。
       // 第一帧只记基准、不累积（`lastRotation === null`），免得弹簧初值造成一次假推进。
+      const slotTravelRad = (spring.value * angleStepDeg * Math.PI) / 180;
       if (lastRotation === null) {
-        lastRotation = rotationRad;
+        lastRotation = slotTravelRad;
       } else {
-        const drive = pendoloGearDrive(gearTravel, rotationRad - lastRotation);
-        lastRotation = rotationRad;
+        const drive = pendoloGearDrive(gearTravel, slotTravelRad - lastRotation);
+        lastRotation = slotTravelRad;
         gearTravel = drive.travelRad;
+        /*
+         * 探针接缝（**用户第 11 轮第 3 条**）：把累计行程写到 `data-gear-travel`。
+         * 只在**千分之一 rad**（≈0.06°）真的变了才写 —— 与 `data-gears` 同一个纪律：
+         * 每帧都写属性会让样式失效，而 0.001 rad 这一档已经远细于判据要看的「一档 12.5°」。
+         */
+        const travelText = gearTravel.toFixed(3);
+        if (root.dataset.gearTravel !== travelText) root.dataset.gearTravel = travelText;
         if (drive.moving !== gearMoving) {
           gearMoving = drive.moving;
           const marker = drive.moving ? 'moving' : 'idle';
@@ -911,11 +947,17 @@ export function PendoloTheme(props: LyricThemeProps): ReactNode {
     <div
       className="pi-lyricpendolo"
       ref={rootRef}
-      // 这套主题的字号全写在 `lyric-themes.css` 的 `__slot` / `__translated` 上，
+      // 这套主题的字号全写在 `lyric-themes.css` 的 `__slot` 上，
       // 所以 `fontScale` 只能以变量形式下去，由那边的 `calc()` 乘进每一个 font-size。
       style={{ '--pi-pendolo-font-scale': fontScale.toFixed(3) } as CSSProperties}
       // 第十五轮第 7 条：`data-gears` 的初值（rAF 里只在标记翻转时才改写）。
       data-gears="idle"
+      /*
+       * **用户第 11 轮第 3 条**的探针接缝：小齿轮的累计行程（rad，字符串形式）。
+       * 齿轮是画在 canvas 上的、DOM 里没有别的抓手，而这一条要判的正是「一句歌词走几档」，
+       * 所以把一个纯数字暴露出来（rAF 里每千分之一 rad 变一次才写，见那边的注释）。
+       */
+      data-gear-travel="0"
     >
       <canvas
         className="pi-lyricpendolo__dial"
@@ -932,7 +974,6 @@ export function PendoloTheme(props: LyricThemeProps): ReactNode {
             active={line.index === activeIndex}
             focus={line.index === viewIndex}
             chorus={chorusFlags[line.index] === true}
-            translatedText={translated.get(line.timeMs)}
             progress={line.index === viewIndex ? anchorProgress : 0}
             register={(index, element) => {
               slotRefs.current[index] = element;

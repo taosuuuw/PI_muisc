@@ -70,9 +70,7 @@ const REACHABLE_STAGES: readonly (readonly [number, number])[] = [
   [800, 500],
 ];
 /** 低于应用最小窗口：真机到不了，只记录（见「不可达舞台」用例）。 */
-const TINY_STAGES: readonly (readonly [number, number])[] = [
-  [640, 400],
-];
+const TINY_STAGES: readonly (readonly [number, number])[] = [[640, 400]];
 /** 旋钮档：`fontScale`(0.8~1.3) × `motionAmount`(0.4~1.6) 的四个角 + 默认档。 */
 const TUNINGS: readonly (readonly [number, number, boolean])[] = [
   [1, 1, false],
@@ -165,7 +163,12 @@ interface Case {
   /** 这一档舞台的中间带半径 = `min(舞台高 × 0.22, 170px)`（第十三轮规格，只作日志参考）。 */
   readonly band: number;
   /** 视口在「相对舞台中心」坐标系里的范围（行原点 = (视口宽/2, focusY)）。 */
-  readonly view: { readonly left: number; readonly right: number; readonly top: number; readonly bottom: number };
+  readonly view: {
+    readonly left: number;
+    readonly right: number;
+    readonly top: number;
+    readonly bottom: number;
+  };
 }
 
 function buildCases(
@@ -371,12 +374,15 @@ describe('cadenza 心象排布几何', () => {
       if (hero < 0) continue;
       for (const box of item.boxes) {
         if (box.hero) {
-          if (Math.abs(centerX(box)) > 1) out.push(`${item.where} hero 没居中：${centerX(box).toFixed(1)}`);
+          if (Math.abs(centerX(box)) > 1)
+            out.push(`${item.where} hero 没居中：${centerX(box).toFixed(1)}`);
           continue;
         }
         const x = centerX(box);
-        if (box.index < hero && x > 0) out.push(`${item.where} 左边的词跑到右侧："${box.text}" x=${x.toFixed(1)}`);
-        if (box.index > hero && x < 0) out.push(`${item.where} 右边的词跑到左侧："${box.text}" x=${x.toFixed(1)}`);
+        if (box.index < hero && x > 0)
+          out.push(`${item.where} 左边的词跑到右侧："${box.text}" x=${x.toFixed(1)}`);
+        if (box.index > hero && x < 0)
+          out.push(`${item.where} 右边的词跑到左侧："${box.text}" x=${x.toFixed(1)}`);
       }
       // 同一行内「离 hero 越远、|x| 越大」；只当粗糙度统计（跨行比较无意义）。
       const rows = new Map<number, Box[]>();
@@ -410,7 +416,8 @@ describe('cadenza 心象排布几何', () => {
       for (const box of item.boxes) {
         if (box.hero) continue;
         const reach = Math.abs(centerY(box)) + (box.bottom - box.top) / 2;
-        if (reach > item.band + 1) bandOut.push(`${item.where} reach=${reach.toFixed(1)} band=${item.band.toFixed(1)}`);
+        if (reach > item.band + 1)
+          bandOut.push(`${item.where} reach=${reach.toFixed(1)} band=${item.band.toFixed(1)}`);
       }
       for (let i = 1; i < item.boxes.length; i += 1) {
         for (let j = 0; j < i; j += 1) {
@@ -422,7 +429,9 @@ describe('cadenza 心象排布几何', () => {
     console.log(
       `[cadenza] 不可达舞台（640×400）${cases.length} 组：越带（第十三轮参考值）${bandOut.length} 组，重叠 ${overlapOut.length} 组；` +
         `字号档 ${[...fonts].join(' ')}` +
-        (overlapOut.length > 0 ? `\n[cadenza][tiny-overlap] ${overlapOut.slice(0, 8).join('\n[cadenza][tiny-overlap] ')}` : ''),
+        (overlapOut.length > 0
+          ? `\n[cadenza][tiny-overlap] ${overlapOut.slice(0, 8).join('\n[cadenza][tiny-overlap] ')}`
+          : ''),
     );
   });
 
@@ -435,7 +444,9 @@ describe('cadenza 心象排布几何', () => {
         const plan = layout(makeLine(text, 0), w, h, 1, 1, false);
         const boxes = domBoxes(plan);
         const reach = Math.max(
-          ...boxes.filter((box) => !box.hero).map((box) => Math.abs(centerY(box)) + (box.bottom - box.top) / 2),
+          ...boxes
+            .filter((box) => !box.hero)
+            .map((box) => Math.abs(centerY(box)) + (box.bottom - box.top) / 2),
           0,
         );
         console.log(

@@ -51,12 +51,19 @@
   width: min(380px, 90vw);
   max-height: calc(100vh - 48px);
   overflow: auto;
-  /* 拍立得：左右 16 / 上 16 / 下 26（下沿更厚）。 */
-  padding: 16px 16px 26px;
-  border: 1px solid var(--pi-divider);
-  border-radius: 18px;
-  background: var(--pi-surface);
-  box-shadow: var(--pi-glass-edge), var(--pi-shadow-float);
+  /* 拍立得：左右 16 / 上 16 / 下 22（下沿仍更厚）。 */
+  padding: 16px 16px 22px;
+  /*
+   * 用户第二十轮第 3 条（原话：「整个页面改成磨砂质感」）：材质换成仓库里那套 iOS 液态玻璃
+   * ——半透明底 + 背景模糊 + 内高光 + 一道冷色细边（`tokens.css:26-71`），
+   * 不再用不透明的 `--pi-surface`。卡片浮在沉浸式背景上，封面的颜色会透过它。
+   */
+  border: 1px solid var(--pi-glass-border);
+  border-radius: var(--pi-glass-radius);
+  background: var(--pi-glass-bg-strong);
+  backdrop-filter: var(--pi-glass-blur-strong);
+  -webkit-backdrop-filter: var(--pi-glass-blur-strong);
+  box-shadow: var(--pi-glass-highlight), var(--pi-glass-shadow);
   animation: pi-quick-card-in 0.26s cubic-bezier(0.34, 1.4, 0.64, 1);
 }
 
@@ -111,9 +118,9 @@
   width: 26px;
   height: 26px;
   padding: 0;
-  border: 1px solid var(--pi-divider);
+  border: 1px solid var(--pi-glass-border);
   border-radius: 50%;
-  background: var(--pi-bg-subtle);
+  background: color-mix(in srgb, var(--pi-surface) 58%, transparent);
   color: var(--pi-text-sub);
   cursor: pointer;
   transition:
@@ -158,7 +165,7 @@
   padding: 12px 6px 10px;
   border: 1px solid transparent;
   border-radius: 14px;
-  background: var(--pi-bg-subtle);
+  background: color-mix(in srgb, var(--pi-surface) 62%, transparent);
   color: var(--pi-text);
   cursor: pointer;
   transition:
@@ -179,7 +186,7 @@
   width: 34px;
   height: 34px;
   border-radius: 50%;
-  background: var(--pi-surface);
+  background: color-mix(in srgb, var(--pi-surface) 78%, transparent);
   box-shadow: var(--pi-glass-edge);
   color: var(--pi-primary-deep);
 }
@@ -257,74 +264,184 @@
 }
 
 /* ------------------------------------------------------------------ *
- * 迷你设置
+ * 迷你设置（用户第二十轮第 3 条整页重做）
+ *
+ * 原话：「现在的快速编辑页如图 7 所示，我希望 ui 设计如图 6、图 8 所示一样，
+ * 顶部加图标分页栏把不同类的设置分开，『歌词动效』『默认音质』等这样的黑体标题缩小改成浅色，
+ * 整个页面改成磨砂质感，选项按键文字带图标」。
+ *
+ * 所以这一版是四件事：① 顶部一条**图标分页栏**（选中的那颗抬成小药丸，见 `.pi-quick-tabs`）；
+ * ② 每类的标题降成 12px 的浅色小字（`.pi-quick-head`）；③ 卡片本身换磨砂（见上面的
+ * `.pi-quick-card`）；④ 选项从「一条轨道上的纯文字药丸」改成**图标 + 文字的方块**
+ * （`.pi-quick-choice`）。
+ *
+ * 抓手一个没动：`data-quick-switch` / `data-quick-choice` / `data-quick-quality-group` /
+ * `data-quick-more="settings"|"account"` 仍然是冒烟脚本认的那几个（新增的只有
+ * `data-quick-tab` / `data-quick-tabpanel` / `data-quick-choices`）。
  * ------------------------------------------------------------------ */
 
-.pi-quick-switches {
+.pi-quick-body {
+  display: grid;
+  gap: 12px;
+}
+
+/* 分页栏：一条浅底药丸轨道 + 四颗等宽图标键（图标只给 `size={18}` 的一枚 `<svg>`）。 */
+.pi-quick-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--pi-text) 7%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--pi-text) 5%, transparent);
+}
+
+.pi-quick-tab {
+  flex: 1 1 0;
+  display: grid;
+  place-items: center;
+  height: 34px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--pi-text-sub);
+  cursor: pointer;
+  transition:
+    color 0.16s ease,
+    background 0.16s ease,
+    box-shadow 0.16s ease;
+}
+
+.pi-quick-tab:hover {
+  color: var(--pi-text);
+  background: color-mix(in srgb, var(--pi-surface) 55%, transparent);
+}
+
+.pi-quick-tab[data-active='true'] {
+  border-color: color-mix(in srgb, var(--pi-text) 8%, transparent);
+  background: var(--pi-surface);
+  color: var(--pi-primary-deep);
+  box-shadow: var(--pi-shadow-card);
+}
+
+/*
+ * 未选中的分页整页收起。这条**必须显式写**：下面 `.pi-quick-panel` 的 `display: grid`
+ * 是作者样式，优先级高于浏览器给 `[hidden]` 的那条 `display: none`，不写就四页全摊开。
+ */
+.pi-quick-panel[hidden] {
+  display: none;
+}
+
+.pi-quick-panel {
   display: grid;
   gap: 8px;
 }
 
-.pi-quick-switch {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  align-items: center;
-  gap: 4px 10px;
-  padding: 9px 12px;
-  border-radius: 14px;
-  background: var(--pi-bg-subtle);
-}
-
-.pi-quick-switch__label {
-  color: var(--pi-text);
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.pi-quick-switch__value {
-  justify-self: end;
-  color: var(--pi-text-sub);
-  font-size: 11.5px;
-}
-
-.pi-quick-switch__choices {
-  grid-column: 1 / -1;
+/* 标题行：**浅色小字** + 右侧当前值（原来是 13px/600 的深色黑体标题）。 */
+.pi-quick-head {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 0 4px;
 }
 
-.pi-quick-switch__hint {
-  grid-column: 1 / -1;
+.pi-quick-head__label {
+  color: var(--pi-text-tertiary);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+}
+
+.pi-quick-head__value {
+  color: var(--pi-text-sub);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+/*
+ * 选项方块：三列网格（六档 → 两行，主题三档 → 一行），每颗「图标在上、文字在下」。
+ * 每颗都带 `data-quick-choice` + `data-active`，冒烟照旧能点、能读选中态。
+ */
+.pi-quick-choices {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.pi-quick-choice {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  padding: 12px 6px 10px;
+  border: 1px solid transparent;
+  border-radius: 16px;
+  /* 半透明软底：卡片本身已经是磨砂玻璃，方块用「更亮一点的玻璃」把层次叠出来。 */
+  background: color-mix(in srgb, var(--pi-surface) 62%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--pi-text) 6%, transparent);
+  color: var(--pi-text);
+  cursor: pointer;
+  transition:
+    color 0.16s ease,
+    background 0.16s ease,
+    box-shadow 0.16s ease,
+    transform 0.16s ease;
+}
+
+.pi-quick-choice:hover {
+  transform: translateY(-1px);
+  background: var(--pi-primary-weak);
+}
+
+.pi-quick-choice[data-active='true'] {
+  border-color: var(--pi-primary);
+  background: var(--pi-primary-weak);
+  color: var(--pi-primary-deep);
+  box-shadow: var(--pi-shadow-card);
+}
+
+.pi-quick-choice:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.pi-quick-choice__icon {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--pi-surface) 78%, transparent);
+  box-shadow: var(--pi-glass-edge);
+  color: var(--pi-primary-deep);
+}
+
+.pi-quick-choice__text {
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.pi-quick-note {
+  margin: 2px 4px 0;
   color: var(--pi-text-tertiary);
   font-size: 11px;
   line-height: 1.4;
 }
 
-.pi-quick-chip {
-  padding: 4px 10px;
-  border: 1px solid var(--pi-divider);
-  border-radius: 999px;
-  background: var(--pi-surface);
-  color: var(--pi-text-sub);
-  font-size: 11.5px;
-  cursor: pointer;
-  transition:
-    color 0.16s ease,
-    background 0.16s ease,
-    border-color 0.16s ease;
-}
-
-.pi-quick-chip:hover {
-  color: var(--pi-text);
-  border-color: var(--pi-primary);
-}
-
-.pi-quick-chip[data-active='true'] {
-  border-color: var(--pi-primary);
-  background: var(--pi-primary-weak);
-  color: var(--pi-primary-deep);
-  font-weight: 600;
+/*
+ * `.pi-quick-switch` 现在只剩账号行在用（`styles/quick-account.css` 在它之上把两列网格
+ * 改成三列）：保留这一条当「软底行」的基类，别删——删了账号行会掉底色。
+ */
+.pi-quick-switch {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 8px 10px;
+  padding: 10px 12px 11px;
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--pi-surface) 62%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--pi-text) 6%, transparent);
 }
 
 /*
@@ -342,26 +459,43 @@
   text-align: center;
 }
 
+/*
+ * 「详细设置」从一颗整宽蓝色大按钮（图 1 底部那条）改成**一行**：左边图标 + 文字、右边一个箭头
+ * —— 图 2 里那两行（「时计 标准 ›」「莫奈 全屏叠色 ›」）就是这个样式。
+ * 仍然是一个 `<button>`（`data-quick-more="settings"` 这个抓手没动），点它会开完整设置页。
+ */
 .pi-quick-more {
   display: flex;
   align-items: center;
-  justify-content: center;
-  gap: 7px;
+  justify-content: flex-start;
+  gap: 8px;
   width: 100%;
-  margin-top: 12px;
-  padding: 10px 14px;
+  margin-top: 10px;
+  padding: 11px 14px;
   border: 0;
-  border-radius: var(--pi-radius-btn);
-  background: var(--pi-primary);
-  color: #fff;
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--pi-surface) 62%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--pi-text) 6%, transparent);
+  color: var(--pi-text);
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
-  transition: background 0.16s ease;
+  transition:
+    background 0.16s ease,
+    color 0.16s ease;
+}
+
+.pi-quick-more::after {
+  content: '›';
+  margin-left: auto;
+  color: var(--pi-text-tertiary);
+  font-size: 17px;
+  line-height: 1;
 }
 
 .pi-quick-more:hover {
-  background: var(--pi-primary-hover);
+  background: var(--pi-primary-weak);
+  color: var(--pi-primary-deep);
 }
 
 @media (prefers-reduced-motion: reduce) {

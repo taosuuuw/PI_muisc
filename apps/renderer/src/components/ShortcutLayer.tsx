@@ -14,11 +14,7 @@
 
 import { useEffect, useRef, type ReactNode } from 'react';
 import { quickOrbHomePoint } from './PiQuickOrb';
-import {
-  bindingFromEvent,
-  findMatchingAction,
-  isEditableElement,
-} from '../lib/shortcuts';
+import { bindingFromEvent, findMatchingAction, isEditableElement } from '../lib/shortcuts';
 import { usePlayer } from '../state/player';
 import { useShortcuts } from '../state/shortcuts';
 import { useUi } from '../state/ui';
@@ -36,10 +32,25 @@ type HoldAction = 'volumeUp' | 'volumeDown' | 'seekBackward' | 'seekForward';
 interface Hold {
   /** 上一帧的时间戳，用来算这一帧走了多久。 */
   lastMs: number;
+  /**
+   * 按住期间**自己累计**的 seek 目标（毫秒；`null` = 还没定锚，用 store 当前值起算）。
+   *
+   * **用户第 6 轮第 3 条**（「底部进度条可以连续按左右快捷键调节进度」）：原来每帧都读
+   * `usePlayer.getState().positionMs` 再加一帧的增量。`<audio>` 的 `timeupdate` 也会往同一个字段
+   * 回写**元素真实时间**，于是按住时这一帧的基准可能是「上一次 seek 之前的旧值」——
+   * 增量被反复吃掉，按住的推进就变成一顿一顿（快慢取决于 timeupdate 什么时候到）。
+   * 现在按住期间不再看 store：以按下那一刻的位置为锚，自己累加，每帧只把结果写出去。
+   */
+  targetMs: number | null;
 }
 
 function isHoldActionOf(action: string): action is HoldAction {
-  return action === 'volumeUp' || action === 'volumeDown' || action === 'seekBackward' || action === 'seekForward';
+  return (
+    action === 'volumeUp' ||
+    action === 'volumeDown' ||
+    action === 'seekBackward' ||
+    action === 'seekForward'
+  );
 }
 
 /** 按当前时长夹住进度：越界不写盘（`usePlayer.seek` 自己只夹下界）。 */
@@ -70,15 +81,23 @@ function nudge(action: HoldAction): void {
 }
 
 /** 匀速推进 `deltaMs` 毫秒真实时间对应的那一段。 */
-function advance(action: HoldAction, deltaMs: number): void {
+function advance(action: HoldAction, deltaMs: number, hold: Hold): void {
   const player = usePlayer.getState();
   if (action === 'volumeUp' || action === 'volumeDown') {
     const direction = action === 'volumeUp' ? 1 : -1;
     player.setVolume(player.volume + (direction * VOLUME_PER_SECOND * deltaMs) / 1000);
     return;
   }
+  if (player.durationMs <= 0) return;
   const direction = action === 'seekForward' ? 1 : -1;
-  seekBy((direction * SEEK_MS_PER_SECOND * deltaMs) / 1000);
+  // 见 `Hold.targetMs`：按住期间自己累计，不再逐帧读 store（那个字段会被 timeupdate 抢着写）。
+  const base = hold.targetMs ?? player.positionMs;
+  const next = Math.min(
+    player.durationMs,
+    Math.max(0, base + (direction * SEEK_MS_PER_SECOND * deltaMs) / 1000),
+  );
+  hold.targetMs = next;
+  player.seek(next);
 }
 
 /**
@@ -168,14 +187,14 @@ export function ShortcutLayer(): ReactNode {
       holds.forEach((hold, action) => {
         const deltaMs = Math.max(0, nowMs - hold.lastMs);
         hold.lastMs = nowMs;
-        advance(action, deltaMs);
+        advance(action, deltaMs, hold);
       });
       if (holds.size > 0) frameRef.current = window.requestAnimationFrame(frame);
     };
 
     const startHold = (action: HoldAction): void => {
       if (holds.has(action)) return;
-      holds.set(action, { lastMs: performance.now() });
+      holds.set(action, { lastMs: performance.now(), targetMs: null });
       if (frameRef.current === null) frameRef.current = window.requestAnimationFrame(frame);
     };
 
@@ -215,8 +234,19 @@ export function ShortcutLayer(): ReactNode {
       }
 
       // ② 焦点在输入框 / 文本域 / 下拉 / contenteditable：除了 Esc（先让它失焦）一律不抢。
+      //
+      // **用户第 6 轮第 3 条**（原话：「底部进度条可以连续按左右快捷键调节进度」）：**底部进度条**
+      // （`input[type=range][data-home-progress]`）例外 —— 它就是进度控件，`input` 判定原来把它
+      // 一并让给浏览器原生行为，而原生在滑杆上是「按一次步进 `step=100`」，按住也只是跟系统重复速率
+      // 一格一格挪，读起来不是连续调进度。这里放行之后，方向键照旧走下面的全局动作
+      //（点一下 5s + 按住 15 倍速的 rAF 匀速推进），并且 `preventDefault` 会把原生的步进吃掉。
+      // 设置页那些滑杆 / 真正的输入框不在例外里，本机原生行为一字不动。
       const target = event.target;
-      if (target instanceof Element && isEditableElement(target)) {
+      const onProgressBar =
+        target instanceof HTMLInputElement &&
+        target.type === 'range' &&
+        target.dataset.homeProgress !== undefined;
+      if (!onProgressBar && target instanceof Element && isEditableElement(target)) {
         if (event.key === 'Escape') {
           if (target instanceof HTMLElement) target.blur();
           event.preventDefault();
