@@ -80,3 +80,28 @@ release/
 # 详见 docs/CREDITS.md §4「合规注意」与 §1。
 # ---------------------------------------------------------------------------
 folia-major-复刻速查.md
+
+# ---------------------------------------------------------------------------
+# 【测试产物】冒烟 / 验收过程截图，不进仓库。
+# 这些是每轮改版跑 UI 冒烟时按固定路径写出的过程图，只供开发时肉眼比对，
+# 不是项目资产；README 实际引用的成品图（m3-home-clean / m3-lyric-* /
+# m3-settings-* / m3r16-* 等）另行保留，不受影响。
+# 文件仍留在本地磁盘，只是不入库。
+# ---------------------------------------------------------------------------
+docs/m3r20-*.png
+docs/m3r21-*.png
+docs/m3r22-*.png
+docs/m3r32-lyric-*.png
+docs/m3r33-*.png
+docs/m3r34-*.png
+docs/m3r35-*.png
+
+# 同上：本轮新增的临时单测，不随仓库分发。
+# 只精确列出这几个文件，**故意不用** `*.test.ts` 这类全局模式 ——
+# 项目原有的 300+ 个 Vitest 用例（`pnpm test`）仍然必须入库。
+# ---------------------------------------------------------------------------
+apps/renderer/src/components/Icons.test.tsx
+apps/renderer/src/components/lyric-themes/CadenzaTheme.test.ts
+apps/renderer/src/components/lyric-themes/PartitaTheme.test.ts
+apps/renderer/src/components/lyric-themes/TiltTheme.test.ts
+apps/renderer/src/lib/accent.test.ts
