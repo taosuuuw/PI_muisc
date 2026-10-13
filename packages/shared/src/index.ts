@@ -498,6 +498,20 @@ export interface LyricTuning {
   motionAmount: number;
   /** 辉光强度 0~1.6；缩放 text-shadow 的模糊半径与透明度，默认 1.5（见下面默认值处的说明）。 */
   glowIntensity: number;
+  /**
+   * 背景氛围光（用户本轮第 3 条后半段）：「我指的不是歌词的，是背景的光」。
+   *
+   * 控制**播放页背景**里的光（都跟主题无关，属于沉浸式背景）：
+   * `__aura`（跟着当前这句歌词情绪走的氛围光晕）、`__bloom`（按封面推导的暖光，
+   * **含烤进底图 `leftBloom` 的那一份**）、`__sidelight`（暗档从左侧打进来的侧光）、
+   * 以及 `.pi-home__stage` 那两团从封面取色的环境光。
+   * 默认开；关掉之后背景只剩封面本身与几何浮层，不再有光。
+   *
+   * **本轮修正**：这一项原先只关得掉 CSS 那几层，落在**位图**里的暖光（公共底图的烤图、
+   * 莫奈主题自己那张烤图）与那两团环境光渐变都不听它的 —— 现在这四处一起跟着走。
+   * 凝彩（`tempera`）例外：它的底是一整幅不透明的纸，这几层光在它下面本来就看不到。
+   */
+  backgroundGlow: boolean;
   /** 逐帧主题（fume / cadenza / pendolo / tilt）的帧率上限。 */
   fpsCap: LyricFpsCap;
   /**
@@ -547,6 +561,8 @@ export const DEFAULT_LYRIC_TUNING: LyricTuning = {
    * 想看这一档的效果要在设置里点一下复位键（或把滑杆拉过去）。
    */
   glowIntensity: 1.5,
+  // 背景氛围光默认开（关掉是这一轮新给的选项，不该改变老用户的观感）。
+  backgroundGlow: true,
   fpsCap: 'off',
   randomThemePerSong: false,
   fumeCameraFollow: 'smooth',
@@ -639,6 +655,24 @@ export interface Settings {
    * 判定在 CSS 里按 `<html data-theme>` 做，不在这里分叉。
    */
   edgeVignette: boolean;
+  /**
+   * 点窗口右上角那枚「关闭」时干什么（主人本轮第 4 条：「加入一个退出到后台的功能，
+   * 可以在详情设置页选择退出是直接退出还是退出到后台」）。
+   *
+   * - `quit`（默认）：**直接退出**，跟前几版一模一样 —— 老用户不点这一项的话行为不变；
+   * - `background`：**退出到后台** —— 窗口收起来、进程继续跑（音乐不断），
+   *   托盘里留一枚 π 图标，点它可以再显示主窗口或真正退出。
+   *
+   * 判定写在主进程（`apps/desktop/src/main/index.ts` 的 `closeActionRef`）：渲染层那枚关闭键
+   * 只是调 `window:close`，到底关窗还是收窗由这里决定，所以托盘菜单里的「退出」和窗口的
+   * 关闭键走的是同一条路。**「托盘菜单 → 退出」与「系统关机」永远真退出**，不会被这项拦住。
+   */
+  closeAction: 'quit' | 'background';
+  /**
+   * 播放页自定义背景（主人本轮第 1 条）；`null` = 用这首歌的封面（默认，行为与之前一致）。
+   * 字段与裁切语义见 `PlayerBackground` 的注释。
+   */
+  playerBackground: PlayerBackground | null;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -667,7 +701,37 @@ export const DEFAULT_SETTINGS: Settings = {
   lyricMinMatch: 0.62,
   // 边缘暗角默认开：它只在深色档生效，用户第一次进拼贴页就能看到那个效果。
   edgeVignette: true,
+  // 关闭窗口默认「直接退出」：这是前几版的行为，新增的「退出到后台」要用户自己去设置页开。
+  closeAction: 'quit',
+  // 默认不用自定义背景：背景仍跟着当前这首歌的封面走。
+  playerBackground: null,
 };
+
+/**
+ * 播放页自定义背景（主人本轮第 1 条：「在设置详情页加入封面自定义设定，可以从本地文件夹导入背景图
+ * 设为歌曲播放页背景。支持裁切和多种形式的图片」）。
+ *
+ * 只存**参数**，图本身不在这里：字节由主进程写到 `userData/player-background/<id>.<ext>`，
+ * 设置里留一个文件名（`id`），渲染层通过 `background:read` 把字节取回来变成 `data:` 地址。
+ * 这样做的两个理由：
+ *   ① 设置文件是每次都整份落盘的 JSON，塞几十 MB 的 base64 进去会让它既慢又脆；
+ *   ② 图换个地方（换目录、换电脑）也能用 —— 存的是我们自己的副本，不是用户随手放的那个路径。
+ *
+ * **裁切是非破坏性的**：不改图、不重编码，只记「放大多少、往哪边平移」，
+ * 由渲染层映射成 CSS 的 `--pi-cover-scale` 与 `object-position`。
+ * 好处是连动图（GIF/WebP）都能保留动画 —— 真裁一刀就只能存成静态图了。
+ */
+export interface PlayerBackground {
+  /** 存在 `userData/player-background/` 里的文件名（含扩展名），主进程按它取字节。 */
+  readonly id: string;
+  /** 用户导入时的原文件名，只在设置页显示「当前用的是哪张」。 */
+  readonly name: string;
+  /** 放大倍率：1 = 刚好铺满（内部还会乘封面那支 1.14 的基准，保证漂移不会露边），上限 4。 */
+  readonly zoom: number;
+  /** 平移量（-1~1，相对可视范围的比例）：`0` 居中，`1` 贴到该方向的一端。 */
+  readonly offsetX: number;
+  readonly offsetY: number;
+}
 
 /**
  * 一个音源在 UI 上的可见状态。

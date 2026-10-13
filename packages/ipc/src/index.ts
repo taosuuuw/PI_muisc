@@ -1,4 +1,4 @@
-﻿/**
+/**
  * @pi/ipc —— 渲染进程与主进程之间的**唯一**通道契约。
  *
  * 设计要点（见 docs/PLAN.md §2.3）：
@@ -356,6 +356,62 @@ export type LyricImportRequest = z.input<typeof LyricImportRequestSchema>;
 export type LyricRemoveRequest = z.input<typeof LyricRemoveRequestSchema>;
 
 export const LyricImportsSchema = z.object({ songIds: z.array(z.number()) });
+
+/* ------------------------------------------------------------------ *
+ * 播放页自定义背景（主人本轮第 1 条）
+ * ------------------------------------------------------------------ */
+
+/**
+ * 支持哪些图片格式。
+ *
+ * 这一份同时喂给三处，不许分叉：主进程那道文件对话框的过滤器、扩展名校验、
+ * 以及渲染层「这个文件能不能解码」的兜底判断。选的都是 Chromium 内置能解的类型
+ * （jpeg/png/webp/gif/bmp/avif/ico），**动图不收 svg** —— svg 是矢量，套上「裁切」没有意义，
+ * 而且外部引用会被 CSP 拦掉，画出来缺一块反而像坏了。
+ */
+export const BACKGROUND_IMAGE_EXTENSIONS = [
+  'jpg',
+  'jpeg',
+  'png',
+  'webp',
+  'gif',
+  'bmp',
+  'avif',
+  'ico',
+] as const;
+
+/** 上限 48MB：再大就不是「背景图」而是误选了视频/PSD，读进来只会把内存和 IPC 拖垮。 */
+export const BACKGROUND_IMAGE_MAX_BYTES = 48 * 1024 * 1024;
+
+/** 挑图的结果：取消就只回 `canceled`，成功时把字节一并用 `data:` 地址带回去（渲染层拿它做预览）。 */
+export const BackgroundPickResultSchema = z.object({
+  canceled: z.boolean(),
+  /** 出错时给一句人能看懂的话（格式不支持 / 文件太大 / 读不出来）。 */
+  message: z.string().optional(),
+  name: z.string().optional(),
+  ext: z.string().optional(),
+  /** `data:image/…;base64,…` —— 直接就能塞进 `<img src>`。 */
+  dataUrl: z.string().optional(),
+  width: z.number().optional(),
+  height: z.number().optional(),
+});
+export type BackgroundPickResult = z.infer<typeof BackgroundPickResultSchema>;
+
+export const BackgroundCommitRequestSchema = z.object({
+  name: z.string().min(1).max(200),
+  ext: z.string().min(1).max(8),
+  dataUrl: z.string().min(32),
+});
+export type BackgroundCommitRequest = z.input<typeof BackgroundCommitRequestSchema>;
+
+export const BackgroundRefSchema = z.object({ id: z.string().min(1).max(120) });
+
+export const BackgroundReadResultSchema = z.object({
+  dataUrl: z.string().nullable(),
+  /** 存着的那张图已经找不到了（用户手删了 userData）——渲染层据此退回封面并提示一次。 */
+  missing: z.boolean(),
+});
+export type BackgroundReadResult = z.infer<typeof BackgroundReadResultSchema>;
 
 /* ------------------------------------------------------------------ *
  * 本地数据存储与缓存（用户第五轮第 2 条）
@@ -744,6 +800,12 @@ export const LyricTuningSchema = z
     motionAmount: z.number().min(0.4).max(1.6),
     /** 辉光强度。`1` = 改造前的观感，`0` = 完全不发光。 */
     glowIntensity: z.number().min(0).max(1.6),
+    /**
+     * 背景氛围光开关（用户本轮第 3 条）：管播放页背景里的光 —— 沉浸式背景那三层
+     * （氛围光晕 / 封面暖光 / 暗档侧光）、**烤进底图的那份暖光**，以及
+     * `.pi-home__stage` 那两团从封面取色的环境光（本轮修正把后两处接了进来）。
+     */
+    backgroundGlow: z.boolean(),
     fpsCap: z.enum(['off', '120', '90', '60']),
     randomThemePerSong: z.boolean(),
     /** 浮名的镜头追焦方式（用户 m05281 第 3 条）。 */
@@ -804,6 +866,18 @@ export const SettingsSchema = z.object({
   lyricMinMatch: z.number().min(0).max(1),
   /** 队列拼贴页的边缘暗角（用户第五轮第 9 条）；只在深色档生效。 */
   edgeVignette: z.boolean(),
+  /** 点窗口关闭键时直接退出还是退到后台（主人本轮第 4 条）；见 `Settings.closeAction` 的注释。 */
+  closeAction: z.enum(['quit', 'background']),
+  /** 播放页自定义背景（主人本轮第 1 条）：`null` = 跟着当前歌曲的封面。 */
+  playerBackground: z
+    .object({
+      id: z.string().min(1).max(120),
+      name: z.string().min(1).max(200),
+      zoom: z.number().min(1).max(4),
+      offsetX: z.number().min(-1).max(1),
+      offsetY: z.number().min(-1).max(1),
+    })
+    .nullable(),
 });
 
 export const SettingsPatchSchema = SettingsSchema.partial();
@@ -1000,6 +1074,11 @@ export const CH = {
   windowMinimize: 'window:minimize',
   windowToggleMaximize: 'window:toggle-maximize',
   windowClose: 'window:close',
+  /* 播放页自定义背景（主人本轮第 1 条）：挑图 / 存图 / 取图 / 清掉，四件事四个通道。 */
+  backgroundPick: 'background:pick',
+  backgroundCommit: 'background:commit',
+  backgroundRead: 'background:read',
+  backgroundClear: 'background:clear',
 } as const;
 
 /**
@@ -1171,6 +1250,20 @@ export interface RouteMap {
   [CH.windowMinimize]: { input: void; output: void };
   [CH.windowToggleMaximize]: { input: void; output: void };
   [CH.windowClose]: { input: void; output: void };
+  /** 打开系统文件对话框挑一张背景图；成功时把字节一并用 data: 地址带回渲染层。 */
+  [CH.backgroundPick]: { input: void; output: BackgroundPickResult };
+  /** 把裁好的图存进 userData（会覆盖上一张），返回存下来的文件名。 */
+  [CH.backgroundCommit]: {
+    input: z.input<typeof BackgroundCommitRequestSchema>;
+    output: { id: string };
+  };
+  /** 按文件名把存下来的图取回成 data: 地址（应用启动时用）。 */
+  [CH.backgroundRead]: {
+    input: z.input<typeof BackgroundRefSchema>;
+    output: BackgroundReadResult;
+  };
+  /** 删掉存下来的图（设置里那一项由渲染层同时写回 null）。 */
+  [CH.backgroundClear]: { input: void; output: { cleared: boolean } };
 }
 
 /**
@@ -1180,6 +1273,8 @@ export interface RouteMap {
  */
 export const INPUT_SCHEMAS: Record<string, z.ZodType> = {
   [CH.settingsPatch]: SettingsPatchSchema,
+  [CH.backgroundCommit]: BackgroundCommitRequestSchema,
+  [CH.backgroundRead]: BackgroundRefSchema,
   [CH.ncmSearch]: SearchRequestSchema,
   [CH.ncmComments]: CommentsRequestSchema,
   [CH.ncmLyric]: LyricRequestSchema,

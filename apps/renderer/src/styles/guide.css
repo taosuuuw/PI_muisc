@@ -1,0 +1,248 @@
+/*
+ * 首次使用指引（用户第五轮第 1 条）。
+ *
+ * 三层结构：
+ *   .pi-guide__veil   —— 铺满窗口的背板。没有挖孔时它是唯一的压暗层；
+ *   .pi-guide__ring   —— 有挖孔时那个亮块（靠 9999px 的 box-shadow 把四周压暗）；
+ *   .pi-guide__card   —— 卡片，按 `data-guide-side` 决定落在哪半屏。
+ *
+ * 颜色一律走 `--pi-*` 令牌（tokens.css），所以明暗档、主色档都自动跟着走。
+ */
+
+.pi-guide {
+  position: fixed;
+  inset: 0;
+  z-index: 62; /* 压过快捷卡（46）与设置浮层（40）；指引必须能盖在任何东西上 */
+  display: grid;
+  place-items: center;
+  pointer-events: none; /* 只有背板与卡片吃点击，其余穿透（不然挖孔里的元素也点不到） */
+}
+
+.pi-guide__veil {
+  position: absolute;
+  inset: 0;
+  pointer-events: auto;
+  background: color-mix(in srgb, #0b0f14 46%, transparent);
+  backdrop-filter: blur(2px);
+}
+
+/* 有挖孔时，压暗交给孔的 box-shadow：背板必须变全透明，否则亮块亮不起来。 */
+.pi-guide__veil[data-guide-veil='false'] {
+  background: transparent;
+  backdrop-filter: none;
+}
+
+.pi-guide__ring {
+  position: absolute;
+  border-radius: 16px;
+  pointer-events: none;
+  box-shadow:
+    0 0 0 9999px color-mix(in srgb, #0b0f14 52%, transparent),
+    0 0 0 2px var(--pi-primary),
+    0 0 26px 4px color-mix(in srgb, var(--pi-primary) 45%, transparent);
+  animation: pi-guide-ring-in 0.22s ease-out;
+}
+
+@keyframes pi-guide-ring-in {
+  from {
+    opacity: 0;
+    transform: scale(1.06);
+  }
+}
+
+/* 第 1 步的演示球：与真球同一套观感（圆、带 PI 字、有光晕）。 */
+.pi-guide__orb {
+  position: absolute;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--pi-surface);
+  border: 1px solid var(--pi-divider);
+  box-shadow:
+    var(--pi-glass-edge, 0 1px 0 rgb(255 255 255 / 0.5) inset),
+    0 6px 18px rgb(0 0 0 / 0.28);
+  color: var(--pi-text);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  pointer-events: none;
+  animation: pi-guide-orb-pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes pi-guide-orb-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+    box-shadow:
+      var(--pi-glass-edge, 0 1px 0 rgb(255 255 255 / 0.5) inset),
+      0 6px 18px rgb(0 0 0 / 0.28);
+  }
+  50% {
+    transform: scale(1.12);
+    box-shadow:
+      var(--pi-glass-edge, 0 1px 0 rgb(255 255 255 / 0.5) inset),
+      0 6px 22px rgb(0 0 0 / 0.32),
+      0 0 0 8px color-mix(in srgb, var(--pi-primary) 26%, transparent);
+  }
+}
+
+.pi-guide__card {
+  position: relative;
+  pointer-events: auto;
+  width: min(420px, calc(100vw - 48px));
+  padding: 20px 22px 16px;
+  border-radius: 20px;
+  background: var(--pi-surface);
+  border: 1px solid var(--pi-divider);
+  box-shadow: var(--pi-shadow-float, 0 18px 48px rgb(0 0 0 / 0.32));
+  animation: pi-guide-card-in 0.26s cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+
+@keyframes pi-guide-card-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.98);
+  }
+}
+
+/* 卡片摆位：`data-guide-side` 由组件的 `cardSide()` 给出（挖孔在左就摆右，以此类推）。 */
+.pi-guide[data-guide-side='right'] .pi-guide__card {
+  justify-self: end;
+  margin-right: clamp(24px, 7vw, 96px);
+}
+
+.pi-guide[data-guide-side='left'] .pi-guide__card {
+  justify-self: start;
+  margin-left: clamp(24px, 7vw, 96px);
+}
+
+.pi-guide[data-guide-side='up'] .pi-guide__card {
+  align-self: start;
+  margin-top: clamp(24px, 12vh, 120px);
+}
+
+.pi-guide[data-guide-side='down'] .pi-guide__card {
+  align-self: end;
+  margin-bottom: clamp(24px, 12vh, 120px);
+}
+
+.pi-guide__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.pi-guide__kicker {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--pi-primary);
+  font-weight: 700;
+}
+
+.pi-guide__close {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--pi-text-dim, var(--pi-text));
+  opacity: 0.62;
+  cursor: pointer;
+}
+
+.pi-guide__close:hover {
+  opacity: 1;
+  background: var(--pi-surface-hover, rgb(127 127 127 / 0.12));
+}
+
+.pi-guide__title {
+  margin: 10px 0 0;
+  font-size: 19px;
+  line-height: 1.3;
+  color: var(--pi-text);
+}
+
+.pi-guide__body {
+  margin: 10px 0 0;
+  font-size: 13.5px;
+  line-height: 1.75;
+  color: var(--pi-text-dim, var(--pi-text));
+}
+
+/* 四个手势：两列小胶囊，图标 + 文案。 */
+.pi-guide__gestures {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.pi-guide__gesture {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: 11px;
+  background: var(--pi-surface-hover, rgb(127 127 127 / 0.1));
+  font-size: 12px;
+  color: var(--pi-text);
+}
+
+.pi-guide__gesture-arrow {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--pi-primary) 16%, transparent);
+  color: var(--pi-primary);
+}
+
+.pi-guide__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.pi-guide__dots {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pi-guide__dot {
+  width: 7px;
+  height: 7px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--pi-divider);
+  cursor: pointer;
+  transition: all 0.18s ease;
+}
+
+.pi-guide__dot[data-active='true'] {
+  width: 18px;
+  border-radius: 5px;
+  background: var(--pi-primary);
+}
+
+.pi-guide__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 矮窗口 / 窄窗口：卡片贴上边，避免和挖孔叠在一起看不清。 */
+@media (max-height: 560px) {
+  .pi-guide__card {
+    align-self: start;
+    margin-top: 16px;
+  }
+}

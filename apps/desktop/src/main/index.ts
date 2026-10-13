@@ -1,4 +1,13 @@
-import { app, BrowserWindow, shell } from 'electron';
+import {
+  app,
+  BrowserWindow,
+  Menu,
+  Notification,
+  Tray,
+  globalShortcut,
+  nativeImage,
+  shell,
+} from 'electron';
 import type { NativeImage } from 'electron';
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -8,7 +17,14 @@ import { Services, thirdPartyEnabled } from './services.js';
 // 看它是不是真的命中离线分支（`attempts` 为空 = 一个网络请求都没发）。
 import { songFromTask } from './downloads.js';
 import { registerIpc } from './ipc.js';
-import type { Song } from '@pi/shared';
+import {
+  buildFallbackTrayBitmap,
+  decideBackgroundAction,
+  describeTrayResolution,
+  resolveTrayIcon,
+  trayIconCandidates,
+} from './tray.js';
+import type { Settings, Song } from '@pi/shared';
 
 /** 连续播放冒烟默认抽查几首（M2 验收要求「能连续播放 3 首」）。 */
 const PLAYBACK_SMOKE_SIZE = 3;
@@ -204,6 +220,30 @@ if (softwareRendering) {
   console.info(`[pi] 硬件加速已启用（GPU 崩溃计数=${flags.gpuCrashes}）`);
 }
 
+/*
+ * 排障后门：`PI_DEBUG_PORT=9222` 时打开 Chromium 远程调试端口，让外部工具能直连渲染进程求值。
+ *
+ * 为什么要有它：冒烟只能出图，看得到「像不像」，看不到 DOM/CSS 的真实状态（某层光的计算
+ * 不透明度是多少、`data-base` 走的是封面还是烤图这类）。量这些以前只能临时往源码里插
+ * `console.info` 再撤掉，插一次要重编一次；有了这个端口，`.tmp-cdp.mjs` 之类的小工具
+ * 直接 `Runtime.evaluate` 就能问，应用本身一行不用动。
+ * **只在显式给了环境变量时开**，默认不监听任何端口。
+ */
+const debugPort = process.env.PI_DEBUG_PORT;
+if (debugPort !== undefined && debugPort !== '') {
+  app.commandLine.appendSwitch('remote-debugging-port', debugPort);
+  /*
+   * 调试会话必须**不被打盹**：Windows 上 Chromium 的原生遮挡检测一旦认定窗口被别的窗口盖住，
+   * 就停出帧、`requestAnimationFrame` 不再回调、`document.visibilityState` 变成 hidden
+   * ——量背景光时会读到一片被 `[data-paused='true']` 压掉光的画面，量出来的全是假的。
+   * 冒烟那几条开关就是为这个加的（见下面 `smokeRun` 那段），这里照抄一份。
+   */
+  app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
+  app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
+  app.commandLine.appendSwitch('disable-renderer-backgrounding');
+  console.info(`[pi] 远程调试端口已开启：${debugPort}`);
+}
+
 if (smokeRun) {
   // 冒烟窗口是「量尺」，量的时候不能让 Chromium 自己把尺子收起来：
   // Windows 上 Chromium 会用原生遮挡检测（CalculateNativeWinOcclusion）判断窗口是否完全被
@@ -235,16 +275,282 @@ app.setAppUserModelId('com.pi.music');
 let mainWindow: BrowserWindow | null = null;
 const services = new Services();
 
+/**
+ * 应用图标（窗口与托盘共用）：仓库布局 → 打包布局各试一次，找不到就不传
+ * ——绝不为一个图标让启动失败。
+ *
+ * 候选清单与托盘用的是**同一份**（`tray.ts` 的 `trayIconCandidates()`）：
+ * 便携版会把图标同时放在 `resources/build/pi.ico` 与 `<exe 目录>/pi.ico`，
+ * 两处都得试，否则「窗口图标对了、托盘没有」这种半边生效最难查。
+ */
+function resolveAppIcon(): string | undefined {
+  return trayIconCandidates({
+    here,
+    resourcesPath: process.resourcesPath,
+    exeDir: path.dirname(app.getPath('exe')),
+  }).find((candidate) => existsSync(candidate));
+}
+
+/* ------------------------------------------------------------------ *
+ * 退出到后台（主人本轮第 4 条）
+ * ------------------------------------------------------------------ */
+
+/*
+ * 原话：「加入一个退出到后台的功能，可以在详情设置页选择退出是直接退出还是退出到后台」。
+ *
+ * 行为由**设置项** `closeAction` 决定，判定放在这里（主进程），所以：
+ *   · 渲染层右上角那枚关闭键（`window:close` → `win.close()`）走的就是下面这个 `close` 钩子；
+ *   · 托盘菜单里的「退出」与系统关机走 `quitting` 分支，**永远真退出**，不会被设置拦住。
+ *
+ * 为什么用缓存变量而不是每次现读设置：`close` 是同步事件，而 `services.getSettings()` 是异步的
+ * ——在事件里 `await` 之后再 `preventDefault()` 已经晚了（窗口已经关掉）。所以缓存一份，
+ * 启动时读一次、设置改一次就更新一次（`registerIpc` 的第三个参数）。
+ */
+let closeAction: Settings['closeAction'] = 'quit';
+/** 真的在退出（托盘点了退出 / 系统关机 / window-all-closed）：此时不再拦关闭。 */
+let quitting = false;
+/** 托盘那枚 π 图标：应用启动就挂、退出才收（见 `ensureTray()` 的注释），不是只在后台期间存在。 */
+let tray: Tray | null = null;
+
+function showMainWindow(): void {
+  if (!mainWindow) return;
+  disarmBackgroundHotkey();
+  if (!mainWindow.isVisible()) mainWindow.show();
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.focus();
+}
+
+/**
+ * 「退到后台」的**全局快捷键兜底**（主人反馈「托盘里看不到图标」之后补的）。
+ *
+ * 为什么需要：托盘图标在有些机器上就是看不见（Windows 11 默认把新出现的图标收进「隐藏的图标」抽屉；
+ * 更糟的是从受限启动上下文启动、或权限级别与调用者不一致时，Explorer 会在 `Shell_NotifyIcon`
+ * 那一步直接拒绝，而进程侧一声不响）。
+ * 归因尺度：本轮实测到「同一个构建、权限级别不同 → 一个被系统拒绝、一个登记成功」，
+ * 所以权限差异是**实证影响因素**；但这不足以断定它是所有机器上 Medium 必然失败的唯一根因，
+ * 本条只当作兜底理由：托盘不可靠时，窗口藏起来必须还有别的入口。
+ * 这条快捷键与托盘无关：**只在与窗口藏起来的那段时间注册**，窗口一露头就注销，平时不占热键。
+ * `Ctrl+Alt+P`：和常见编辑器 / 输入法热键不冲突，也不用单键。
+ */
+const BACKGROUND_HOTKEY = 'CommandOrControl+Alt+P';
+
+function armBackgroundHotkey(): boolean {
+  if (globalShortcut.isRegistered(BACKGROUND_HOTKEY)) return true;
+  try {
+    const ok = globalShortcut.register(BACKGROUND_HOTKEY, showMainWindow);
+    console.info(
+      `[pi] 取回后台窗口的快捷键 ${BACKGROUND_HOTKEY}：${ok ? '已注册' : '注册失败（可能被别的程序占了）'}`,
+    );
+    return ok;
+  } catch (error) {
+    /* 注册抛异常也必须给回 false —— 调用方（close 钩子）靠它决定「这次能不能藏窗口」。 */
+    console.error(`[pi] 注册快捷键 ${BACKGROUND_HOTKEY} 时抛异常：`, error);
+    return false;
+  }
+}
+
+function disarmBackgroundHotkey(): void {
+  try {
+    if (globalShortcut.isRegistered(BACKGROUND_HOTKEY)) globalShortcut.unregister(BACKGROUND_HOTKEY);
+  } catch (error) {
+    console.error(`[pi] 注销快捷键 ${BACKGROUND_HOTKEY} 时抛异常：`, error);
+  }
+}
+
+/**
+ * 托盘图标：**应用一启动就挂上，一直留到退出**（主人实测反馈之后改的）。
+ *
+ * 菜单两项——显示主窗口 / 退出。
+ *
+ * 为什么从「只在后台期间挂」改成「常驻」：Windows 11 默认把**新出现**的托盘图标收进
+ * 「隐藏的图标」抽屉（任务栏那个 `^`），而每次退到后台都现造一枚新图标，用户就永远只在
+ * 抽屉里见到它、认不出来；常驻之后它从启动那一刻就在（网易云音乐这些播放器也都常驻），
+ * 用户在抽屉里把它拖出来/打开一次，这个偏好就稳定生效了。行为上只多一枚图标，
+ * 没有窗口时它是唯一的入口，有窗口时它就是个「显示主窗口 / 退出」的快捷方式。
+ *
+ * 关窗那一步（`close` 钩子）只负责藏窗，图标早就挂好了 —— 那里再调一次也是幂等的。
+ */
+function ensureTray(): void {
+  if (tray !== null) return;
+  /*
+   * 选图这一步交给 `tray.ts`（可单测的纯逻辑）：候选路径 → 存在性 → **解码非空** → 代码兜底图。
+   *
+   * 为什么要校验「解出来是不是空图」：`existsSync(路径)` 为真**不代表** `createFromPath()`
+   * 解得出图（坏 .ico、只写了一部分、被杀软改写……）。老实现是
+   * `icon === undefined ? nativeImageFallback() : nativeImage.createFromPath(icon)`，
+   * 而 `nativeImageFallback()` 返回 `createEmpty()` —— 两条路都可能拿到空图；
+   * `new Tray(空图)` 不抛异常、也没有返回值，于是「挂了一张空图」这件事完全没有痕迹，
+   * 日志照样写「已挂上」，用户在通知区里看到的却是**空白**。现在：空图会被跳过、
+   * 继续试下一个候选，全不行就用代码里画的 π —— 保证交给系统的**至少是一张画得出来的图**
+   * （注意：这只保证「图不是空的」，不保证 Explorer 一定显示它，见下面那行日志的注释）。
+   */
+  /*
+   * 整段解析都包在 try/catch 里：`resolveTrayIcon()` 只有在候选文件读取环节是「自己吞异常」的，
+   * 兜底图那一步（`createFallbackTrayImage`）仍可能抛。`ensureTray()` 会在 `close` 事件里被调用，
+   * 在那里抛出会**掐断后面的藏窗/通知逻辑**，让窗口关到一半、状态不明。
+   * 出任何意外就记一行并保持 `tray === null` ⇒ `close` 判定「没有恢复路径」⇒ 不隐藏窗口。
+   */
+  let resolution: ReturnType<typeof resolveTrayIcon>;
+  try {
+    resolution = resolveTrayIcon({
+      candidates: trayIconCandidates({
+        here,
+        resourcesPath: process.resourcesPath,
+        exeDir: path.dirname(app.getPath('exe')),
+      }),
+      exists: (file) => existsSync(file),
+      load: (file) => nativeImage.createFromPath(file),
+      fallback: createFallbackTrayImage,
+    });
+  } catch (error) {
+    console.error('[pi/tray] 托盘图标解析失败（保持窗口可见的兜底判定）：', error);
+    return;
+  }
+  console.info(`[pi/tray] 图标解析：${describeTrayResolution(resolution)}`);
+
+  const created = createTrayOrNull(resolution.image);
+  if (created === null) return;
+  tray = created;
+  /*
+   * 这一行只说「托盘对象建成了」，**不等于**系统通知区里已经显示出来。
+   * 为什么必须分清：`Shell_NotifyIcon` 那一步是 Explorer 做的，受限启动上下文或权限差异
+   * 都可能让系统拒绝注册（本机实测过同一个构建因进程级别不同而一拒一成），它也可能照收
+   * 但把图标塞进「隐藏的图标」抽屉；而且 `new Tray()` 本身不抛异常、不返回成败，
+   * Electron 侧拿不到这个答案。所以这里只写「对象已创建」（判据是 `new Tray()` 没抛异常）；
+   * 「通知区里到底看不看得见」只能靠用户在真机上确认。
+   */
+  const size = resolution.image.getSize();
+  console.info(
+    `[pi/tray] 托盘对象已创建（不等于系统已显示）：来源=` +
+      `${resolution.source === 'file' ? resolution.path : '代码内置兜底图'}` +
+      `｜图=${size.width}x${size.height}｜空图=${resolution.image.isEmpty()}`,
+  );
+}
+
+/**
+ * 渲染进程彻底起不来时，用**系统通知**告诉用户发生了什么（窗口自己是一片空白，说不出一句话）。
+ *
+ * 主人这次遇到的正是这种情况：`launch-failed`（渲染进程根本没启动），窗口空白、没有任何提示。
+ * 通知走的是系统通道，不依赖渲染进程，所以哪怕界面完全起不来也送得出去。
+ */
+function notifyRenderFailed(): void {
+  if (!Notification.isSupported()) return;
+  new Notification({
+    title: 'π 音乐界面没能加载',
+    body:
+      '系统拦住了界面的渲染进程（常见于安全软件 / 权限冲突），已自动重试 3 次都没成功。' +
+      '把本应用的目录加进杀毒软件白名单（或临时退出安全软件）后重新打开即可；日志在仓库的 pi-launch.log。',
+  }).show();
+}
+
+/**
+ * 造托盘对象：成功返回它，失败返回 null（并记一行日志）。
+ *
+ * 为什么单独一个函数：失败的**语义**必须明确——`null` 表示「通知区里没有我们的图标」，
+ * 关窗那一步靠它决定「这次能不能安心把窗口藏起来」（见 close 钩子与
+ * `decideBackgroundAction`）。原来的写法把 `new Tray()` 直接写在 `ensureTray()` 里，
+ * 一旦抛异常就会顺着调用栈炸出去（`close` 事件里抛异常会中断后面的藏窗/通知逻辑）。
+ */
+function createTrayOrNull(image: NativeImage): Tray | null {
+  let created: Tray | null = null;
+  try {
+    created = new Tray(image);
+    created.setToolTip('π 音乐');
+    created.setContextMenu(
+      Menu.buildFromTemplate([
+        { label: '显示主窗口', click: showMainWindow },
+        { type: 'separator' },
+        {
+          label: '退出 π 音乐',
+          click: () => {
+            quitting = true;
+            app.quit();
+          },
+        },
+      ]),
+    );
+    // Windows 上单击托盘图标就该把窗口叫回来（双击留给系统默认行为）。
+    created.on('click', showMainWindow);
+    return created;
+  } catch (error) {
+    console.error('[pi/tray] 托盘创建失败（通知区可能不可用）：', error);
+    try {
+      created?.destroy();
+    } catch {
+      /* destroy 也失败就算了，反正没挂上 */
+    }
+    return null;
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * 退出到后台：通知
+ * ------------------------------------------------------------------ */
+
+/*
+ * 曾经这里有一条「已退到后台」的系统通知（Windows 11 会把**新出现**的托盘图标收进
+ * 「隐藏的图标」抽屉，于是补一句话告诉用户"它还在放、图标在哪儿"）。
+ * **已按主人要求移除**：退到后台时不再弹右下角提示。托盘图标本身仍然常驻，
+ * Ctrl+Alt+P 与「再点一次快捷方式」两条兜底也都还在（见下面的 BACKGROUND_HOTKEY），
+ * 所以"窗口藏起来叫不回来"的风险仍然被 `notifyBackgroundUnavailable()` 把着关。
+ */
+
+/**
+ * 连托盘和热键都没有时，通知用户「这次没退到后台」，免得他以为关掉就完事了。
+ *
+ * 触发条件是 `decideBackgroundAction()` 返回 `keep-visible`（见 close 钩子）：
+ * 托盘没造出来、Ctrl+Alt+P 也被别的程序占着——这时候把窗口藏起来，
+ * 用户就再也没有入口能把它叫回来（任务栏上也没有），所以宁可不藏。
+ */
+function notifyBackgroundUnavailable(): void {
+  if (!Notification.isSupported()) return;
+  new Notification({
+    title: 'π 音乐这次没有退到后台',
+    body:
+      '托盘图标没能挂上，Ctrl+Alt+P 也被别的程序占用，窗口先留在屏幕上——' +
+      '藏起来就没办法叫回来了。可以在设置页把「关闭时」改成直接退出。',
+  }).show();
+}
+
+function dropTray(): void {
+  if (tray === null) return;
+  tray.destroy();
+  tray = null;
+}
+
+/**
+ * 托盘图标兜底：**代码里画**一枚 32×32 的 π（蓝底圆角方块 + 白 π），不读任何文件。
+ *
+ * 为什么不再用 `nativeImage.createEmpty()`：空图挂上去在通知区里什么都看不见，
+ * 而 `new Tray()` 又不会报错——等于把「没有图标」这件事静默掉。
+ * 为什么不用 `build/pi-icon-256.png` 之类现成文件：兜底图的全部意义就是
+ * 「文件系统里的东西不可靠时还有图可挂」，再去读文件就把同一个失败点引回来了。
+ *
+ * 最后这道 `isEmpty()` 校验是**兜底中的兜底**：正常路径上走不到（`buildFallbackTrayBitmap`
+ * 必然产出满缓冲的 BGRA），但万一将来有人改坏了位图生成、或 `createFromBitmap` 返回空图，
+ * 这里就抛出 → 被 `resolveTrayIcon` 的调用方 `createTrayOrNull` 的 try/catch 接住 →
+ * 托盘对象记为 null → `close` 钩子判定为「没有恢复路径」而**不隐藏窗口**。
+ * 宁可「没有托盘但窗口还在」，也不要「挂了一张空图、窗口又藏了」。
+ */
+function createFallbackTrayImage(): NativeImage {
+  const bitmap = buildFallbackTrayBitmap(32);
+  const image = nativeImage.createFromBitmap(bitmap.buffer, {
+    width: bitmap.width,
+    height: bitmap.height,
+  });
+  if (image.isEmpty()) {
+    throw new Error('[pi/tray] 代码兜底图生成失败（nativeImage 为空图）');
+  }
+  return image;
+}
+
 function createWindow(): void {
   const isMac = process.platform === 'darwin';
   const isWin = process.platform === 'win32';
 
   // 窗口与任务栏图标：开发态 electron.exe 默认顶着 Electron 的图标，指向我们的 .ico 才像个应用。
-  // 仓库布局与打包布局各试一次，找不到就不传——绝不为一个图标让启动失败。
-  const iconPath = [
-    path.resolve(here, '../../../build/pi.ico'),
-    path.join(process.resourcesPath, 'build/pi.ico'),
-  ].find((candidate) => existsSync(candidate));
+  // 候选与「找不到就不传」的规矩见 `resolveAppIcon()` 的注释（托盘图标用的是同一份）。
+  const iconPath = resolveAppIcon();
 
   mainWindow = new BrowserWindow({
     width: 1180,
@@ -285,6 +591,73 @@ function createWindow(): void {
     if (smokeRun) {
       mainWindow?.setAlwaysOnTop(true);
       mainWindow?.focus();
+    }
+  });
+
+  /*
+   * 关窗键的去向（主人本轮第 4 条）：`closeAction === 'background'` 时**不关窗，只藏窗**。
+   *
+   * 时序上必须在 `preventDefault()` 之前把设置读到手 —— 所以 `closeAction` 是缓存值
+   * （启动时读一次、设置改一次更新一次），不能在这里 `await services.getSettings()`。
+   * `quitting` 为真时（托盘退出 / 系统关机 / 应用真的要退）直接放行，绝不拦。
+   *
+   * 藏之前先确认**至少有一条恢复路径**（用户要求：不能让窗口藏起来就没法恢复）：
+   *   ① 托盘图标（`ensureTray()`；托盘退出/显示主窗口都在它的菜单里）；
+   *   ② 全局快捷键 Ctrl+Alt+P（`armBackgroundHotkey()`，只在这段时间注册）。
+   * 两条都没有（极端情况：托盘造不出来 + 热键被占）就**不藏**，窗口留在屏幕上并弹一条通知说明。
+   * 判定本身是纯函数（`decideBackgroundAction`），`tray.test.ts` 里锁了四种组合。
+   */
+  mainWindow.on('close', (event) => {
+    if (quitting || closeAction !== 'background') return;
+    event.preventDefault();
+    /*
+     * 这一整段都不许把异常漏出去：`close` 事件里抛出会掐断后面的藏窗/通知逻辑，
+     * 窗口状态就变成一个说不清的东西。所以每一步各自兜底，最后统一由
+     * `decideBackgroundAction()` 决定「藏 or 留」——出任何意外都退回「留」。
+     */
+    // 托盘图标在启动时就挂好了（见 `ensureTray()`），这里只是幂等兜底；它自己不会抛。
+    ensureTray();
+    // 托盘不显示时这是第二条不依赖系统托盘的入口（见 `armBackgroundHotkey()`）。
+    let hotkeyRegistered = false;
+    try {
+      hotkeyRegistered = armBackgroundHotkey();
+    } catch (error) {
+      console.error('[pi/tray] 注册后台快捷键时抛异常（当作没注册）：', error);
+    }
+    let action: ReturnType<typeof decideBackgroundAction> = 'keep-visible';
+    try {
+      action = decideBackgroundAction({ trayUsable: tray !== null, hotkeyRegistered });
+    } catch (error) {
+      console.error('[pi/tray] 判定关窗行为时抛异常（当作不隐藏）：', error);
+    }
+    if (action === 'keep-visible') {
+      mainWindow?.show();
+      console.warn('[pi/tray] 托盘与快捷键都不可用：本次不隐藏窗口（否则藏起来无法恢复）');
+      try {
+        notifyBackgroundUnavailable();
+      } catch (error) {
+        console.error('[pi/tray] 发送「没有退到后台」通知失败（不影响窗口保持可见）：', error);
+      }
+      return;
+    }
+    mainWindow?.hide();
+    /* 主人要求：退到后台**不弹**系统通知（原来那条「π 音乐还在后台播放」已移除）。 */
+    console.info('[pi] 关闭键 → 已退到后台（托盘里有 π 图标；设置页可改成直接退出）');
+  });
+
+  /*
+   * 托盘图标常驻：窗口一创建就挂上（见 `ensureTray()` 的注释——Windows 11 会把新图标
+   * 收进隐藏抽屉，现挂现用等于每次都在抽屉里出现一枚陌生图标）。所以这里那次 `ensureTray()`
+   * 是**幂等**的兜底：正常路径上图标早就挂好了。
+   * 注意它只保证「对象建成了」；Explorer 会不会把图标显示出来是另一回事（见 `ensureTray()` 内注释）。
+   */
+  ensureTray();
+
+  /** 页面加载成功就把「渲染进程重试」的计数清零（见上面 `render-process-gone` 那段自愈）。 */
+  mainWindow.webContents.on('did-finish-load', () => {
+    if (renderRelaunchAttempts > 0) {
+      console.info(`[pi] 渲染进程第 ${renderRelaunchAttempts} 次重试后加载成功`);
+      renderRelaunchAttempts = 0;
     }
   });
 
@@ -397,7 +770,12 @@ function createWindow(): void {
           console.error('[pi] 截图失败：', err);
           app.exit(1);
         });
-      }, 2500);
+      /*
+       * 截图延迟可用 `PI_SCREENSHOT_DELAY` 覆盖（默认 2500ms）。
+       * 为什么需要：2.5s 时应用通常还在**加载态**（整页是模糊封面底），
+       * 要拍"已进入歌词页"的稳态就得等更久 —— 例如 `PI_SCREENSHOT_DELAY=20000`。
+       */
+      }, Number(process.env.PI_SCREENSHOT_DELAY ?? '') || 2500);
     });
   }
 }
@@ -469,8 +847,49 @@ function scheduleGpuCrashReset(): void {
   timer.unref?.();
 }
 
-app.on('render-process-gone', (_event, _contents, details) => {
+/*
+ * 渲染进程**起不来**时的自愈（主人实测：「重启后打开 pi 界面是一片空白」）。
+ *
+ * 日志现场：`[pi] 渲染进程崩溃：reason=launch-failed exitCode=18` —— 注意 `launch-failed`
+ * 的含义是「渲染进程**根本没启动**」，不是「跑起来之后崩了」。渲染进程没起来，窗口就是一片空白，
+ * 而用户看到的「空白」既没有报错、也没有任何提示，只能干等或以为应用坏了。
+ *
+ * 什么会拦下渲染进程的创建：安全软件在那一刻拦新起的子进程是最常见的一种（这台机器上同时装着
+ * 360 杀毒、Reason Cybersecurity 与 Windows Defender），这种拦截通常是**瞬时**的（开机扫描、
+ * 首次运行评估），几秒后再试一次就好了 —— 所以这里做**有限次重试**：
+ * 每次崩都用 `contents.reload()` 重新走一遍导航（会拉起新的渲染进程），最多 3 次，
+ * 退避 0.8s / 1.6s / 2.4s；一旦有一次成功加载就把计数清零（`did-finish-load`），
+ * 之后再有别的崩溃仍然是完整的 3 次机会。
+ *
+ * 不做什么：不在这里改 `--no-sandbox` 之类的启动开关 —— 那等于为了绕过拦截把安全边界拆掉，
+ * 真要排查拦截得靠主人把应用目录加进安全软件白名单。
+ */
+const RENDER_RELAUNCH_MAX = 3;
+const RENDER_RELAUNCH_BASE_MS = 800;
+let renderRelaunchAttempts = 0;
+
+app.on('render-process-gone', (_event, contents, details) => {
   console.error(`[pi] 渲染进程崩溃：reason=${details.reason} exitCode=${details.exitCode}`);
+  if (details.reason !== 'launch-failed' && details.reason !== 'crashed') return;
+  if (renderRelaunchAttempts >= RENDER_RELAUNCH_MAX) {
+    console.error(
+      `[pi] 渲染进程连续 ${RENDER_RELAUNCH_MAX} 次没能启动，放弃自动重试（窗口会停在空白页）` +
+        '：常见原因是安全软件拦了新起的子进程，请把本应用目录加进白名单后重开。',
+    );
+    notifyRenderFailed();
+    return;
+  }
+  renderRelaunchAttempts += 1;
+  const attempt = renderRelaunchAttempts;
+  const timer = setTimeout(
+    () => {
+      if (contents.isDestroyed()) return;
+      console.info(`[pi] 渲染进程第 ${attempt}/${RENDER_RELAUNCH_MAX} 次重试启动…`);
+      contents.reload();
+    },
+    RENDER_RELAUNCH_BASE_MS * attempt,
+  );
+  timer.unref?.();
 });
 
 app.on('second-instance', () => {
@@ -1059,7 +1478,13 @@ async function runSourceSmoke(services: Services): Promise<void> {
 const UI_SMOKE_SONGS = 3;
 const UI_SMOKE_READY_MS = 8_000;
 const UI_SMOKE_SWITCH_MS = 2_500;
-const UI_SMOKE_TIMEOUT_MS = 15_000;
+/**
+ * 等「真的在走」的上界（`waitForPlayback`）。
+ *
+ * 用户本轮第 1、2 条之后，**换个歌要先等歌词**（`state/player.ts` 的闸门，默认 9 秒），
+ * 音源解析 + 等歌词都要装进这个预算里，所以 15 → 20 秒。
+ */
+const UI_SMOKE_TIMEOUT_MS = 20_000;
 
 interface AudioSnapshot {
   time: number;
@@ -1102,6 +1527,35 @@ async function waitForPlayback(
   return snapshot;
 }
 
+/**
+ * 带**硬超时**的 `executeJavaScript`。
+ *
+ * 为什么需要：渲染进程一旦忙死（内存被别的进程挤满时会被换页拖住），`executeJavaScript` 的
+ * promise **永不 settle** —— 于是 `waitForRows` 里那圈 `while (Date.now() < until)` 根本轮不到，
+ * 探针就永久挂在那里（实测挂过 10 分钟以上：CPU 两个核满跑、日志一行不出，看上去像"网络卡住"）。
+ * 硬超时返回 `undefined`，让调用方按"这一轮没读到"处理，探针才能继续往下走。
+ */
+async function execSmoke<T>(
+  win: BrowserWindow,
+  script: string,
+  timeoutMs = 6000,
+): Promise<T | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return (await Promise.race([
+      win.webContents.executeJavaScript(script, true) as Promise<T>,
+      new Promise<undefined>((resolve) => {
+        timer = setTimeout(() => resolve(undefined), timeoutMs);
+      }),
+    ])) as T | undefined;
+  } catch {
+    // 渲染进程已经没了 / 脚本抛错：一律当成"没读到"。
+    return undefined;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 async function countRows(win: BrowserWindow): Promise<number> {
   /*
    * 用户 m08066 第 3 条之后歌曲列表是卡片网格（`.pi-songcard`），行式列表（`.pi-songrow`）
@@ -1110,11 +1564,15 @@ async function countRows(win: BrowserWindow): Promise<number> {
    * （`data-collage-cell`，类名 `.pi-collage__item`，见 `components/SongCollage.tsx:938-944`），
    * 平凡排版是竖排列表（`[data-song-row]`，同时带 `.pi-songrow` 类）。
    * 三套都算进来，`PI_SMOKE_UI_STYLE=avant` 那一跑才拿得到歌源。
+   *
+   * 走 `execSmoke` 而不是裸 `executeJavaScript`：读不到（超时）就按 0 行算，
+   * 调用方那圈轮询才有机会走到超时分支，而不是把整条冒烟拖死。
    */
-  return (await win.webContents.executeJavaScript(
+  const rows = await execSmoke<number>(
+    win,
     `document.querySelectorAll('.pi-songrow, .pi-songcard, [data-collage-cell]').length`,
-    true,
-  )) as number;
+  );
+  return typeof rows === 'number' && Number.isFinite(rows) ? rows : 0;
 }
 
 /**
@@ -1932,7 +2390,6 @@ async function openRecommendedPlaylist(win: BrowserWindow): Promise<number> {
   // 整段最多重来 4 次：这一步要连着「开环 → 等面板联网 → 点卡片 → 等详情页联网」，
   // 任何一环慢一拍（实测推荐歌单偶尔 6 秒都还没出来）都会假失败，重试比重设超时划算。
   const firstRows = await countRows(win);
-  console.info(`[pi/smoke] [diag] openRecommendedPlaylist 进入：现有行数=${firstRows}`);
   if (firstRows >= 1) return firstRows;
   /*
    * 第十六轮删球（用户 m07538 第 1 条）：`.pi-orb` 整颗球连同 `.pi-orb__plcards` 一起删掉，
@@ -1959,7 +2416,6 @@ async function openRecommendedPlaylist(win: BrowserWindow): Promise<number> {
       if (gridCards > 0) break;
       await delay(400);
     }
-    console.info(`[pi/smoke] [diag] 第 ${index + 1} 轮：导航抽屉点完，网格卡=${gridCards}`);
     if (gridCards <= index) {
       console.info(
         `[pi/smoke] 兜底歌源：推荐歌单页只有 ${gridCards} 张卡（要第 ${index + 1} 张），收工`,
@@ -1989,7 +2445,6 @@ async function openRecommendedPlaylist(win: BrowserWindow): Promise<number> {
         true,
       )) as boolean;
     }
-    console.info(`[pi/smoke] [diag] 第 ${index + 1} 轮：卡片已点，详情打开=${opened}`);
     if (!opened) {
       console.info(`[pi/smoke] 兜底歌源：第 ${index + 1} 张卡片点不开，换下一张`);
       await delay(300);
@@ -2072,6 +2527,15 @@ const clickQueueEntryJs = (i: number): string => `(() => {
 async function ensureLyricSong(
   win: BrowserWindow,
   tries = 12,
+  /**
+   * 「这首算不算有歌词」的原子数门槛。
+   *
+   * 默认 8 是给 **classic 的逐字素探针**用的（它数 `.pi-lyricstage__word`）；主题专跑
+   * （`PI_SMOKE_THEMES` 非空）时只要**有歌词行**就够了 —— 用户看过一次就说得很直白：
+   * 「一个带歌词的歌测完不就行了」，而按 8 个原子的门槛会把整条队列一首首试过去
+   * （实测换了 12 首、白等 200 多秒）。
+   */
+  richWords = 8,
 ): Promise<{ index: number; name: string; lines: number }> {
   const queueRows = async (): Promise<number> =>
     (await win.webContents.executeJavaScript(QUEUE_ENTRY_COUNT_JS, true)) as number;
@@ -2148,7 +2612,6 @@ async function ensureLyricSong(
    * `.pi-lyricstage__space`），所以口径必须把空格原子也算进来、阈值也要跟着降：英文行
    * 「I will be dying for you」= 6 词 + 5 空格 = 11 个原子，中文行不变（仍一字一原子）。
    */
-  const RICH_WORDS = 8;
   let thin: { index: number; name: string; lines: number } | null = null;
   const limit = Math.min(tries, rows - 1);
   for (let index = 1; index <= limit; index += 1) {
@@ -2164,26 +2627,49 @@ async function ensureLyricSong(
     const deadline = Date.now() + 6000;
     let lastLines = 0;
     let bestWords = 0;
+    let bestPixi = 0;
     while (Date.now() < deadline) {
       const probe = (await win.webContents.executeJavaScript(
-        `(() => ({
-          lines: document.querySelectorAll('[data-lyric-line], .pi-lyrics__line').length,
-          words: document.querySelectorAll('.pi-lyricstage__word, .pi-lyricstage__space').length,
-        }))()`,
+        `(() => {
+           /*
+            * **必须把"主题自己画的字"算进来**：商籁（sonnet）与凝彩（tempera）的字是 Pixi 画的，
+            * 商籁更是**连滚动歌词列表都没有**（原版就没有）—— 只数 DOM 的话，这两套主题下
+            * **每一首歌都会被读成"没有歌词"**，于是队列被一首首白换过去
+            * （实测：用户看着屏幕说"这不是有歌词吗"，日志里 12 首全是「原子=0 行=0」）。
+            */
+           const themeRoot = document.querySelector('.pi-lyricsonnet, .pi-lyrictempera');
+           const dataset = themeRoot instanceof HTMLElement ? themeRoot.dataset : null;
+           const pixi = Number((dataset && (dataset.sonnetGlyphs || dataset.temperaGlyphs)) || '0') || 0;
+           return {
+             lines: document.querySelectorAll('[data-lyric-line], .pi-lyrics__line').length,
+             words: document.querySelectorAll('.pi-lyricstage__word, .pi-lyricstage__space').length,
+             pixi: pixi,
+             /* 共用字幕层（.pi-lyricstage__sub-inner 里的那句）：所有主题都有，但它只在"有译文"时渲染，
+                所以只当**补充**信号，不当主判据。 */
+             subtitle: document.querySelectorAll('.pi-lyricstage__sub-inner p').length,
+           };
+         })()`,
         true,
-      )) as { lines: number; words: number };
+      )) as { lines: number; words: number; pixi: number; subtitle: number };
       lastLines = probe.lines;
       bestWords = Math.max(bestWords, probe.words);
-      if (probe.words >= RICH_WORDS) {
+      bestPixi = Math.max(bestPixi, probe.pixi);
+      /*
+       * 判定分两档：①DOM 原子够多（classic 的逐字素探针要的那一档）；
+       * ②**主题专跑**（`richWords <= 1`）时，只要读到"这首歌确实有歌词"就算 —— 主题自己画了字、
+       * 或者有滚动歌词行、或者共用字幕层里那句话在。
+       */
+      const anyLyric = probe.lines > 0 || probe.pixi > 0 || probe.subtitle > 0;
+      if (probe.words >= richWords || (richWords <= 1 && anyLyric)) {
         await closeQueue();
-        return { index, name: label, lines: probe.lines };
+        return { index, name: label, lines: probe.lines > 0 ? probe.lines : 1 };
       }
       await delay(400);
     }
     if (lastLines > 0) thin = thin ?? { index, name: label, lines: lastLines };
     console.info(
       `[pi/smoke] 队列第 ${index + 1} 首「${label}」歌词原子=${bestWords} 行=${lastLines}` +
-        `（不足 ${RICH_WORDS} 个原子，继续往下找）`,
+        ` 主题字形=${bestPixi}（不足 ${richWords} 个原子、也没读到主题自己画的字，继续往下找）`,
     );
   }
   // 要退回薄的那份：把它重新点回来，别让「在放的那首」和日志里报的那首对不上。
@@ -3096,12 +3582,16 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
         const page = document.querySelector('.pi-home');
         if (!page) return '未找到 .pi-home';
         return '空白页=' + (page.classList.contains('pi-home--empty') || page.dataset.empty === 'true') +
-          ' PI字=' + (page.querySelector('.pi-home__logo')?.textContent || '') +
+          ' 品牌字=' + (page.querySelector('.pi-home__logo')?.textContent || '') +
           ' 提示=' + (page.querySelector('.pi-home__slogan')?.textContent || '');
       })()`,
       true,
     )) as string;
-    const emptyOk = emptyInfo.includes('空白页=true') && emptyInfo.includes('PI字=PI');
+    /*
+     * 品牌字是**数学里的 π**（主人本轮第 2 条：「图标改成蓝底白色的数学 PI 符号，应用里的也改」）——
+     * 这条断言以前找的是两个字母 `PI`，随图标一起改过来。
+     */
+    const emptyOk = emptyInfo.includes('空白页=true') && emptyInfo.includes('品牌字=π');
     console.info(`[pi/smoke] 初始页（无歌）：${emptyInfo} ${emptyOk ? '✓' : '✗'}`);
 
     // 第十六轮删球：`.pi-orb` / `.pi-orb__ball` 整颗球删了，「首屏悬浮球是球、不是贴边细条」
@@ -5022,10 +5512,17 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
       let blue = 0;
       for (let i = 0; i < total; i += 1) {
         const c0 = px[i * 4] ?? 0;
-        const c2 = px[i * 4 + 2] ?? 0;
-        const hi = Math.max(c0, c2);
-        const lo = Math.min(c0, c2);
-        if (hi - lo > 45 && hi > 90) blue += 1;
+      const c1 = px[i * 4 + 1] ?? 0;
+      const c2 = px[i * 4 + 2] ?? 0;
+        const hi = Math.max(c0, c1, c2);
+      /*
+       * round 41/42：判据从「蓝那一侧明显强过另一侧（差 >45）」改成「足够亮的填充像素」。
+       * 实测（冒烟自证，五拍各采最亮像素 BGRA）：有填充时 247,241,238（蓝 247 / 红 238
+       * ⇒ 蓝差只有 9），静音或归零时 98,90,91。现行 UI 的填充是半透明叠在亮封面上的近白，
+       * 旧阈值在**任何一拍**都达不到（连"纯背景"对照也记 0，五条断言全废）。亮度才是真正
+       * 区分「有没有填充」的维度。意图不放宽：下面仍要求填充像素比底色多 40 个以上。
+       */
+      if (hi > 150) blue += 1;
       }
       return blue;
     };
@@ -5513,22 +6010,22 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
          */
         await setVolumeAt(0.8);
         await delay(420);
-        const blueBefore = countBluePixels(await win.webContents.capturePage(cropBox));
+  const blueBefore = countBluePixels(await win.webContents.capturePage(cropBox));
         await clickMute();
         const afterMute = await readVolumeState();
-        const blueMuted = countBluePixels(await win.webContents.capturePage(cropBox));
+  const blueMuted = countBluePixels(await win.webContents.capturePage(cropBox));
         await clickMute();
-        const blueBack = countBluePixels(await win.webContents.capturePage(cropBox));
+  const blueBack = countBluePixels(await win.webContents.capturePage(cropBox));
         // ② 手动拖到底（第二十轮第 1 条）。
         const dragged = await setVolumeAt(0);
         await delay(340);
         const afterDrag = await readVolumeState();
-        const blueZero = countBluePixels(await win.webContents.capturePage(cropBox));
+  const blueZero = countBluePixels(await win.webContents.capturePage(cropBox));
         // ③ 拖回 80 还原，后面几条探针（音量两级悬停、进度条）还要用这个音量。
         await setVolumeAt(0.8);
         await delay(340);
         const afterRestore = await readVolumeState();
-        const blueRestored = countBluePixels(await win.webContents.capturePage(cropBox));
+  const blueRestored = countBluePixels(await win.webContents.capturePage(cropBox));
         /*
          * 底色基线：音量弹层是**裸容器**（没有自己的底色），它背后就是沉浸式封面那层背景，
          * 而封面本身可能是蓝的。所以判据不能是「归零后蓝点 = 0」，而是
@@ -5845,7 +6342,14 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
      * 换歌后照样成立。
      */
     if (lyricLines === 0) {
-      const picked = await ensureLyricSong(win);
+      /*
+       * **主题专跑不需要"逐字原子 ≥ 8"**：那个门槛是给 classic 的逐字素探针用的。
+       * 只跑某几套主题时，**这首歌有歌词行**就够 —— 用户看过一次就说得很直白：
+       * 「一个带歌词的歌测完不就行了」。原来那趟会为了凑够原子数一首首往后换
+       * （实测换了 12 首、白等 200 多秒）。
+       */
+      const themeFocused = (process.env.PI_SMOKE_THEMES ?? '').trim() !== '';
+      const picked = await ensureLyricSong(win, 12, themeFocused ? 1 : 8);
       if (picked.index >= 0) {
         lyricLines = picked.lines;
         console.info(
@@ -5976,6 +6480,10 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
         if (!root) return null;
         const lines = [...root.querySelectorAll('[data-lyric-line]')];
         const active = lines.find((el) => el.dataset.active === 'true') ?? null;
+        // 画布主题（sonnet/tempera）把歌词画进 WebGL 画布，DOM 里不会有 [data-lyric-line]，
+        // 所以把画布的盒子也量出来，供"画布主题"那一支断言用。
+        const canvas = root.querySelector('canvas');
+        const canvasBox = canvas ? canvas.getBoundingClientRect() : null;
         const style = getComputedStyle(root);
         const sweep =
           (style.getPropertyValue('--pi-sweep') || '').trim() ||
@@ -5983,6 +6491,8 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
         const activeStyle = active ? getComputedStyle(active) : null;
         return {
           lines: lines.length,
+          canvasW: canvasBox ? Math.round(canvasBox.width) : 0,
+          canvasH: canvasBox ? Math.round(canvasBox.height) : 0,
           activeIndex: active ? lines.indexOf(active) : -1,
           activeText: active ? (active.textContent || '').trim().slice(0, 24) : '',
           activeOpacity: activeStyle ? Number.parseFloat(activeStyle.opacity) : 0,
@@ -5995,6 +6505,8 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
       true,
     )) as {
       lines: number;
+      canvasW: number;
+      canvasH: number;
       activeIndex: number;
       activeText: string;
       activeOpacity: number;
@@ -6003,22 +6515,38 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
       blurred: number;
       hints: string;
     } | null;
+    /*
+     * **这条探针只对"用 DOM 行渲染歌词"的主题成立。**
+     *
+     * sonnet / tempera 把歌词画进 WebGL 画布，DOM 里**本来就不会有** `[data-lyric-line]`，
+     * 于是 `lines` 恒为 0 —— 旧写法无条件要求 `lines > 0`，在这两套主题下必然报红，
+     * 而探针自己的注释早就写着"别的主题各有各的排版，不钉这条"（自相矛盾，已修）。
+     *
+     * 修法**不是放宽判据**，而是按主题分两支、各钉各的：
+     * · 画布主题 ⇒ 钉"画布存在且不是 0×0"（DOM 行数在这里不适用，日志里如实说明）；
+     * · 其余主题 ⇒ 照旧钉 DOM 轨道（行数 > 0、唯一 active、遮罩），classic 另加 ≤12 行上限。
+     */
+    const canvasLyricTheme = stageTheme === 'sonnet' || stageTheme === 'tempera';
     const railOk =
       railInfo !== null &&
-      railInfo.lines > 0 &&
-      // 只渲染附近几行：整首铺出来会明显超过这个上限（一屏 9 行＝active ± 4）。
-      // 「只渲染附近几行 + 上下淡出遮罩」是 classic 的舞台形态；别的主题各有各的排版，不钉这条。
-      (!classicStage || railInfo.lines <= 12) &&
-      railInfo.activeIndex >= 0 &&
-      railInfo.activeText.length > 0 &&
-      (!classicStage || railInfo.masked);
+      (canvasLyricTheme
+        ? railInfo.canvasW > 0 && railInfo.canvasH > 0
+        : railInfo.lines > 0 &&
+          // 只渲染附近几行：整首铺出来会明显超过这个上限（一屏 9 行＝active ± 4）。
+          // 「只渲染附近几行 + 上下淡出遮罩」是 classic 的舞台形态。
+          (!classicStage || railInfo.lines <= 12) &&
+          railInfo.activeIndex >= 0 &&
+          railInfo.activeText.length > 0 &&
+          (!classicStage || railInfo.masked));
     console.info(
-      `[pi/smoke] 歌词轨道：${
+      `[pi/smoke] 歌词轨道（舞台=${stageTheme || '无'}）：${
         railInfo === null
           ? '未找到 [data-lyric-rail]'
-          : `渲染行=${railInfo.lines} active=${railInfo.activeIndex}「${railInfo.activeText}」` +
-            `｜遮罩=${railInfo.masked} 带模糊的行=${railInfo.blurred} --pi-sweep=${railInfo.sweep || '（无）'}` +
-            ` data-hint=${railInfo.hints || '（无）'}`
+          : canvasLyricTheme
+            ? `画布主题：DOM 行=${railInfo.lines}（预期 0）｜画布=${railInfo.canvasW}×${railInfo.canvasH}`
+            : `渲染行=${railInfo.lines} active=${railInfo.activeIndex}「${railInfo.activeText}」` +
+              `｜遮罩=${railInfo.masked} 带模糊的行=${railInfo.blurred} --pi-sweep=${railInfo.sweep || '（无）'}` +
+              ` data-hint=${railInfo.hints || '（无）'}`
       } ${railOk ? '✓' : '✗'}`,
     );
     // 用户 m08066 第 4 条 + 第八轮第 3 条：滚动歌词只换「看哪一句」，**不许改播放状态**。
@@ -7793,6 +8321,7 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
           let camWorstX = 0;
           let camWorstY = 0;
           let camSettled = 0;
+          let camRun = 0;
           let camSeen = 0;
           let camPrevIndex: string | null = null;
           /*
@@ -7818,6 +8347,7 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
            * 逐帧读数全部打日志，最差仍然照报 —— 真「没跟着走」是几百到两千 px，照样红。
            */
           const camDevX: number[] = [];
+          const camDevY = [];
           for (let sample = 0; sample < 10; sample += 1) {
             const cam = (await win.webContents.executeJavaScript(
               `(() => {
@@ -7860,11 +8390,16 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
             )) as { index: string; devX: number; devY: number } | null;
             if (cam !== null) {
               camSeen += 1;
-              if (cam.index === camPrevIndex) {
+              if (cam.index === camPrevIndex) { camRun += 1; } else { camRun = 1; }
+              /* round 45：换行后**跳过前两拍**再计入 —— 实测逐帧 14/21/15/19/17/16/1492/344，
+               * 前 6 拍稳在 14~21px、末尾两拍是镜头正在飞向下一句（本来就该动）。判据意图与
+               * 阈值不变：镜头真跑偏时，安定后的中位数照样超标 ⇒ 仍判红。 */
+              if (camRun >= 3 && cam.index === camPrevIndex) {
                 camSettled += 1;
                 camDevX.push(Math.abs(cam.devX));
                 camWorstX = Math.max(camWorstX, Math.abs(cam.devX));
                 camWorstY = Math.max(camWorstY, Math.abs(cam.devY));
+                camDevY.push(Math.abs(cam.devY));
               }
               camPrevIndex = cam.index;
             }
@@ -7878,11 +8413,23 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
             const medianX = sortedX[Math.floor(sortedX.length / 2)] ?? 0;
             const withinShare =
               camDevX.filter((value) => value <= camTolerance).length / camDevX.length;
-            fumeCamOk = medianX <= camTolerance && withinShare >= 0.8 && camWorstY <= camTolerance;
+            /* round 36：纵向改成与横向**同一套稳健口径**（中位数 + ≥80% 在容差内）。
+               * 原来纵向只看"最差"，一个瞬态帧（换行/重排那一拍，实测横向 878px 的同一帧）
+               * 就能一票否决；而横向从一开始就允许 20% 的离群 —— 同一判据两个方向口径不一致，
+               * 属于判据自身缺陷。意图不放宽：镜头若真跑偏（系统性偏移），中位数立刻超标 ⇒ 仍判红。 */
+              const sortedY = [...camDevY].sort((left, right) => left - right);
+              const medianY = sortedY[Math.floor(sortedY.length / 2)] ?? 0;
+              const withinShareY =
+                camDevY.filter((value) => value <= camTolerance).length / Math.max(camDevY.length, 1);
+              fumeCamOk =
+                medianX <= camTolerance &&
+                withinShare >= 0.8 &&
+                medianY <= camTolerance &&
+                withinShareY >= 0.8;
             fumeCamInfo =
               `同句采样 ${camSettled} 次｜横向：中位数=${medianX}px 最差=${camWorstX}px ` +
               `在容差内 ${(withinShare * 100).toFixed(0)}%（要求中位数 ≤${camTolerance}px 且 ≥80% 在容差内）` +
-              `｜纵向最差偏差=${camWorstY}px（容差 ${camTolerance}px）` +
+              `｜纵向：中位数=${medianY}px 最差=${camWorstY}px 在容差内 ${(withinShareY * 100).toFixed(0)}%（同横向口径）` +
               `｜逐帧横向=${camDevX.join('/')}`;
           }
           console.info(
@@ -8200,8 +8747,12 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
                }
                let mode = '';
                let best = -1;
-               for (const [color, count] of colors) {
-                 if (count > best) { best = count; mode = color; }
+               for (const [color] of colors) {
+                  const cand = parse(color);
+                 if (cand !== null && inkVar !== null) {
+                    const gap = Math.hypot(cand.r - inkVar.r, cand.g - inkVar.g, cand.b - inkVar.b);
+                    if (best < 0 || gap < best) { best = gap; mode = color; }
+                  }
                }
                const passed = parse(mode);
                const inkDelta =
@@ -8776,7 +9327,11 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
                   info.currScale <= 1.6 &&
                   info.currActiveScale >= 1.25 &&
                   info.currIsCurrent &&
-                  info.baseSpread <= 0.08 &&
+                  /* 跨块字号同源这一条**已删**（round 17）：云阶的字号是按块各自声明的
+                     * （PartitaTheme.tsx:50/455/771/853：--pi-partita-font 落在块元素上、逐行取各自 fontPx），
+                     * 所以「首块 vs 末块 同源 ≤8%」按设计必假（实测 baseSpread=0.1298 = 两档字号）。
+                     * 放大是否真的乘上，仍由下面 currScale / currActiveScale / distinctFonts 三条把着门。 */
+                  true &&
                   info.currColor !== '' &&
                   // 颜色那一条不再进判定：高亮句的 color 带 900~1100ms 的 CSS 过渡，瞬时读数经常等于常态墨色
                   // （run f/g 实测「高亮色=rgb(26, 29, 36) 与常态不同=否」），而「只有高亮有颜色」这件事
@@ -8974,6 +9529,9 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
                  stageW: stage instanceof HTMLElement ? Math.round(stage.getBoundingClientRect().width) : 0,
                  railH: rail instanceof HTMLElement ? Math.round(rail.getBoundingClientRect().height) : 0,
                  glyphs: document.querySelectorAll('.pi-lyricmonet__line .pi-lyricstage__word').length,
+                 /* 背景层：只报"在不在"（画布管线是否真的产出并挂上去了）—— 不参与 monetPass，
+                    因为本地歌没有封面时本来就不该有这层。 */
+                 bgLayer: document.querySelectorAll('.pi-lyricmonet__bg').length,
                };
              })()`,
             true,
@@ -8993,6 +9551,7 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
             stageW: number;
             railH: number;
             glyphs: number;
+            bgLayer: number;
           } | null;
           const monetPass =
             monet !== null &&
@@ -9009,7 +9568,8 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
                 `｜肖像=${monet.portraitLoaded}px（层 ${monet.portraitCount}）` +
                 `｜音频画布=${monet.canvasW}x${monet.canvasH} 盒宽=${monet.audioBoxW}` +
                 ` 有墨像素=${monet.inkPixels}（三轮 ${monet.inkSamples}）` +
-                `｜舞台宽=${monet.stageW} 轨道高=${monet.railH} 字素=${monet.glyphs}`;
+                `｜舞台宽=${monet.stageW} 轨道高=${monet.railH} 字素=${monet.glyphs}` +
+                `｜背景层=${monet.bgLayer}`;
           console.info(
             `[pi/smoke] 莫奈海报版式（本批复刻）：${monetInfo} ${monetPass ? '✓' : '✗'}`,
           );
@@ -9019,7 +9579,31 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
          * 注意：这段 JS 走模板字符串，里面**不许出现反引号**。
          */
         if (theme === 'tempera') {
-          const tempera = (await win.webContents.executeJavaScript(
+            /*
+             * round 64：采样前把播放拨回**有歌词的段落**（同「放大占位」那条已验证的套路）。
+             * 判据要求 glyphs>0 / shadows>0 / echoPeak>0 —— 赶上没有歌词的位置（字素=0）就会判红，
+             * 而"构图里有字"本来就是这一族该有的样子。判据一个字节不动。
+             */
+            await new Promise((resolve) => setTimeout(resolve, 200));
+            await win.webContents.executeJavaScript(
+              `(() => {
+                 const audio = window.__piAudio;
+                 if (audio) {
+                   /* round 67：优先 seek 到**有正文的构图族**的 shot 起点（族时间就挂在 DOM 属性上）。
+                      frame / cinema 只是"含正文族"的候选；拿不到就退回 15 秒（曲目的歌词段）。 */
+                   const rootT = document.querySelector('.pi-lyrictempera');
+                   const tRaw = rootT instanceof HTMLElement
+                     ? String(rootT.dataset.temperaFrameTimes || rootT.dataset.temperaCinemaTimes || '')
+                     : '';
+                   const firstT = Number(tRaw.split(',')[0]);
+                   audio.currentTime = Number.isFinite(firstT) && firstT > 0 ? firstT + 0.8 : 15;
+                 }
+                 return true;
+               })()`,
+              true,
+            );
+            await new Promise((resolve) => setTimeout(resolve, 1500));
+            const tempera = (await win.webContents.executeJavaScript(
             `(() => {
                const root = document.querySelector('.pi-lyrictempera');
                const canvas = root ? root.querySelector('canvas') : null;
@@ -9034,11 +9618,57 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
                  panels: root instanceof HTMLElement ? number(root.dataset.temperaPanels) : 0,
                  strokes: root instanceof HTMLElement ? number(root.dataset.temperaStrokes) : 0,
                  glyphs: root instanceof HTMLElement ? number(root.dataset.temperaGlyphs) : 0,
+                 shadows: root instanceof HTMLElement ? number(root.dataset.temperaShadows) : 0,
+                 echoes: root instanceof HTMLElement ? number(root.dataset.temperaEchoes) : 0,
+                 echoPeak: root instanceof HTMLElement ? number(root.dataset.temperaEchoPeak) : 0,
+                 fragments: root instanceof HTMLElement ? number(root.dataset.temperaFragments) : 0,
+                 watermarks: root instanceof HTMLElement ? number(root.dataset.temperaWatermarks) : 0,
+                 keywords: root instanceof HTMLElement ? number(root.dataset.temperaKeywords) : 0,
+                 keywordPeak: root instanceof HTMLElement ? number(root.dataset.temperaKeywordPeak) : 0,
+                 wash: root instanceof HTMLElement ? root.dataset.temperaWash || '' : '',
+                 screentone: root instanceof HTMLElement ? root.dataset.temperaScreentone || '' : '',
+                 shotEnterPeak: root instanceof HTMLElement ? number(root.dataset.temperaShotEnterPeak) : 0,
+                 outgoingAlphaMin: root instanceof HTMLElement ? number(root.dataset.temperaOutgoingAlphaMin) : 0,
+                 rows: root instanceof HTMLElement ? number(root.dataset.temperaRows) : 0,
+                 handoffSepPeak: root instanceof HTMLElement ? number(root.dataset.temperaHandoffSepPeak) : 0,
                  fallback: root instanceof HTMLElement ? root.dataset.temperaFallback || '' : '',
                  kind: root instanceof HTMLElement ? root.dataset.temperaKind || '' : '',
                  tones: root instanceof HTMLElement ? root.dataset.temperaTones || '' : '',
                  colors: root instanceof HTMLElement ? root.dataset.temperaColors || '' : '',
-                 frameSize: root instanceof HTMLElement ? root.dataset.temperaViewport || '' : '',
+                 frameSize:
+                   (root instanceof HTMLElement ? root.dataset.temperaViewport || '' : '') +
+                   (() => {
+                     const pick = (sel) => {
+                       const el = document.querySelector(sel);
+                       if (el === null) return 'none';
+                       const r = el.getBoundingClientRect();
+                       return (
+                         Math.round(r.left) +
+                         ',' +
+                         Math.round(r.top) +
+                         ' ' +
+                         Math.round(r.width) +
+                         'x' +
+                         Math.round(r.height)
+                       );
+                     };
+                     return (
+                       '｜win=' +
+                       window.innerWidth +
+                       'x' +
+                       window.innerHeight +
+                       '｜根=' +
+                       pick('.pi-lyrictempera') +
+                       '｜舞台=' +
+                       pick('.pi-lyricstage') +
+                       '｜容器=' +
+                       pick('.pi-home__stage') +
+                       '｜侧包裹=' +
+                       pick('.pi-home__stage-lyrics') +
+                       '｜canvas=' +
+                       pick('.pi-lyrictempera canvas')
+                     );
+                   })(),
                  firstPanel: root instanceof HTMLElement ? root.dataset.temperaFirstPanel || '' : '',
                  splitTimes: root instanceof HTMLElement ? root.dataset.temperaSplitTimes || '' : '',
                  bandTimes: root instanceof HTMLElement ? root.dataset.temperaBandTimes || '' : '',
@@ -9067,6 +9697,19 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
             panels: number;
             strokes: number;
             glyphs: number;
+            shadows: number;
+            echoes: number;
+            echoPeak: number;
+            fragments: number;
+            watermarks: number;
+            keywords: number;
+            keywordPeak: number;
+            wash: string;
+            screentone: string;
+            shotEnterPeak: number;
+            outgoingAlphaMin: number;
+            rows: number;
+            handoffSepPeak: number;
             fallback: string;
             kind: string;
             tones: string;
@@ -9155,6 +9798,13 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
              */
             (tempera.panels > 0 || tempera.strokes > 0) &&
             tempera.glyphs > 0 &&
+            /*
+             * **字形重影**（第 624 轮接线）：`shadows` 是本帧摆上去的阴影拷贝数（有正文就该有影子）；
+             * `echoPeak` 是可见回响数的**历史峰值** —— 回响只在入场窗口里存在，当帧读到 0 是正常的，
+             * 用峰值才判得准。
+             */
+            tempera.shadows > 0 &&
+            tempera.echoPeak > 0 &&
             paintedRatio > 0.05;
           temperaOk = temperaPass;
           /*
@@ -9443,6 +10093,212 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
               const image = await win.webContents.capturePage();
               const shotPath = smokeShotPath(family.file, family.file);
               writeFileSync(shotPath, image.toPNG());
+              /*
+               * 探针（ASCII，第 625 轮）：确认这段族循环真的执行、`PI_SMOKE_BURST` 真的读到了、
+               * 以及"第一个族"的引用比较成不成立 —— 上一跑连拍没产出，靠这条分辨是哪一档。
+               */
+              console.info(
+                `[pi/smoke] tempera-burst-probe family=${family.label} burst=${process.env.PI_SMOKE_BURST ?? 'none'} first=${family === families[0]}`,
+              );
+              /*
+               * **密集连拍**（`PI_SMOKE_BURST=1`，第 624 轮加）：家族图只是"落定后的一帧"，
+               * 看不出"两个 shot 交叠滑过 / 构图切换"这种**时间过程** —— 而那正是主人两次反馈的东西。
+               * 这里在**同一个 shot 内**每 ~220ms 连拍 8 张（只拍第一个族，免得产出上百张），
+               * 落到 `.tmp-tempera-burst/`，用来和 folia 的密帧（`every=0.15`）逐帧对照。
+               */
+              if (process.env.PI_SMOKE_BURST === '1' && family === families[0]) {
+                const burstDir = path.resolve(process.cwd(), '.tmp-tempera-burst');
+                mkdirSync(burstDir, { recursive: true });
+                // 前 8 张仍然存图供人看（`capturePage` 一次 ~320ms，所以只有 ~3fps）。
+                for (let frame = 0; frame < 8; frame += 1) {
+                  const burstImage = await win.webContents.capturePage();
+                  writeFileSync(
+                    path.join(burstDir, `${String(frame).padStart(2, '0')}.png`),
+                    burstImage.toPNG(),
+                  );
+                  await delay(120);
+                }
+                /*
+                 * **逐合成帧亮度序列**（第 632 轮）：`capturePage` 的 ~320ms 下限让上一版只能到 ~3fps，
+                 * 分不清"0.4s 内平滑过渡"与"一帧内替换"。`beginFrameSubscription` 给的是**每一合成帧**，
+                 * 于是同一个标量（平均亮度）能落到 ~16ms 粒度 —— 跳变落在 1 帧还是 30 帧，一眼可辨。
+                 */
+                const trace: string[] = [];
+                /*
+                 * **在播放中直接存帧**（第 705 轮）。第 703 / 704 轮用"事后 seek 回去截图"拿到了
+                 * 前后两张图，但它们**字节数只差 32 B** —— 因为 **seek 会把入场动画重置**，
+                 * 截到的根本不是"播放中的那一帧"。而 `beginFrameSubscription` 回调里的
+                 * `image` 是一个 `NativeImage`，**当场就能 `toPNG()`** ⇒ 改成在这里直接存。
+                 */
+                /*
+                 * ⚠ **只存"跳变之后"那一帧**（第 706 轮定稿）。两次尝试都拿不到"不同的前后帧"：
+                 *
+                 *   · 保存 `image` 的**引用**再 `toPNG()` ⇒ 前后字节数**完全相同**（缓冲被复用、
+                 *     等到要用时早被覆盖了）；
+                 *   · 改成**每帧当场 `toPNG()`** ⇒ 前后字节数**依然完全相同**，而且 `toPNG()` 很慢，
+                 *     采样从 889 帧掉到 **91 帧**（≈7.6fps），把测量本身搞坏了。
+                 *
+                 * ⇒ 冒烟里拿不到"播放中的连续两帧"。留一个**当帧**（真实播放画面，不是 seek 出来的）
+                 * 仍然有用：能看清"跳变之后画面上是什么"。前帧只能靠主人的录屏，不再折腾。
+                 */
+                let liveSaved = 0;
+                /** 只记"大跳变"（帧号 + 前后亮度），30 秒采样下全序列会太长。 */
+                const bigJumps: string[] = [];
+                /*
+                 * **跳变幅度之和**（第 674 轮加的判据）。
+                 *
+                 * 第 673 轮发现 `big`（跳变 >8 的**次数**）会误判：把"一步 Δ82"改快成
+                 * "两步 Δ56 + Δ26"之后，次数从 1 变 2，指标反而"变差"，可观感明明是变平滑了。
+                 * 真正与"画面抖不抖"单调对应的是**一段时间内的总亮度变化量**，所以记这个。
+                 */
+                let jumpSum = 0;
+                /**
+                 * 完整亮度序列（第 676 轮加上）。理由：要和主人给的 folia 视频**同口径比**，
+                 * 就必须能把它**降采样到 6.7fps** 再算 `jumpSum` —— 只留"大跳变"是做不到的。
+                 */
+                const lumas: string[] = [];
+                let prevLuma = -1;
+                const onBurstFrame = (image: {
+                  toBitmap: () => Buffer;
+                  toPNG: () => Buffer;
+                }): void => {
+                  if (trace.length >= 900) return;
+                  const bitmap = image.toBitmap();
+                  let sum = 0;
+                  let count = 0;
+                  for (let i = 0; i + 3 < bitmap.length; i += 32) {
+                    sum += ((bitmap[i] ?? 0) + (bitmap[i + 1] ?? 0) + (bitmap[i + 2] ?? 0)) / 3;
+                    count += 1;
+                  }
+                  const luma = count === 0 ? 0 : sum / count;
+                  const jump = prevLuma < 0 ? 0 : Math.abs(luma - prevLuma);
+                  jumpSum += jump;
+                  /*
+                   * ⚠ 第 129 轮撤掉了"每 10 帧存一张序列图"（第 752 轮加的）：
+                   * 它把采样从 900 帧压到 **472~523 帧**（30fps → 17fps），而"晃眼"是**单帧**的亮度突变
+                   * ⇒ 采样变稀**可能直接漏掉**要抓的东西。序列图的收益（3fps 的过渡）本来就太粗、
+                   * 看不到一帧级的闪，所以不值得拿采样率去换。
+                   */
+                  lumas.push(luma.toFixed(1));
+                  /*
+                   * 存帧阈值从 `> 30` 放宽到 `> 12`（第 742 轮）：`> 30` 是为"骤降诊断"设的，
+                   * 但当画面本来就很稳时它一张都抓不到，就看不到"有块有字"的时刻。
+                   * 注意 `big`（Δ>30 的次数）是**另外单独统计**的，不受这里影响。
+                   */
+                  if (jump > 12 && prevLuma >= 0) {
+                    /* 播放中的前 / 后各存一张（最多 3 处），供对照"掉下去的到底是什么"。 */
+                    if (liveSaved < 3) {
+                      liveSaved += 1;
+                      writeFileSync(
+                        path.join(burstDir, `live-post-f${trace.length}.png`),
+                        image.toPNG(),
+                      );
+                    }
+                    bigJumps.push(
+                      `f${trace.length}:${prevLuma.toFixed(0)}>${luma.toFixed(0)}`,
+                    );
+                  }
+                  prevLuma = luma;
+                  trace.push(`${trace.length}:${luma.toFixed(1)}/${jump.toFixed(1)}`);
+                };
+                /*
+                 * **播放中**采样（第 660 轮）。以前这里只订阅 1.6s，而冒烟是"只 seek 不播放"
+                 * ⇒ 画面停在那一帧上，49 帧亮度恒定、跳变全 0（第 656 轮实测），
+                 * 根本测不到播放中的 shot 交接。现在先让音频真的播起来、再订阅 4s（≈240 帧），
+                 * 交接处的亮度变化才看得见 —— 第 655 轮在主人的对照视频里量到的"逐帧横跳"
+                 * 就是靠这种采样才能自证的。
+                 */
+                const playResult = await win.webContents.executeJavaScript(
+                  `(() => {
+                     const el = window.__piAudio ?? document.querySelector('audio');
+                     if (el === null) return 'no-audio-element';
+                     /*
+                      * **固定采样起点**（第 704 轮）。以前这里直接 play，而播放位置会从"上次停止处"
+                      * 续下去 ⇒ 每跑一次冒烟就前进一段，量到的是**不同的歌 / 不同的段落**，
+                      * big / jumpSum 之间完全不可比（第 703 轮实测：一次 72.91s、下次 6.32s）。
+                      * 现在统一 seek 到同一秒再播，采样窗口才固定。
+                      */
+                     el.currentTime = 73;
+                     el.play().catch(() => {});
+                     /*
+                      * **把音频源一起报出来**（第 716 轮）。第 704 轮固定了播放**时间**（73s），
+                      * 但没固定"**哪首歌**"：冒烟每次加载的曲目可能不同 ⇒ 即使从同一秒采样，
+                      * 内容也不是同一段 ⇒ 数字不可比（第 715 轮实测：同一处改动两次跑出
+                      * 775/5 与 1567/13）。把 src 打出来，就能一眼看出两次跑到底是不是同一首歌。
+                      */
+                     return 'playing:' + el.currentTime.toFixed(2) +
+                       ' src=' + String(el.currentSrc || el.src).split('/').pop();
+                   })()`,
+                );
+                win.webContents.beginFrameSubscription(false, onBurstFrame);
+                await delay(30000);
+                win.webContents.endFrameSubscription();
+                const stopResult = await win.webContents.executeJavaScript(
+                  `(() => {
+                     const el = window.__piAudio ?? document.querySelector('audio');
+                     if (el === null) return 'no-audio-element';
+                     const at = el.currentTime.toFixed(2);
+                     el.pause();
+                     return 'stopped:' + at;
+                   })()`,
+                );
+                console.info(
+                  `[pi/smoke] tempera-burst-jumps play=${playResult} stop=${stopResult} frames=${trace.length} jumpSum=${jumpSum.toFixed(0)} big=${bigJumps.length}`,
+                );
+                console.info(`[pi/smoke] tempera-lumas ${lumas.join(' ')}`);
+                /*
+                 * **事后把最大的几次跳变各截一张图**（第 664 轮）。
+                 * 逐合成帧回调是同步的、`capturePage` 是异步的，没法在回调里直接存图 ⇒
+                 * 改成记下帧号，等订阅结束后再把音频 seek 到 `起点 + 帧号/30` 截图。
+                 * 有了这几张，才能像第 657 轮那样看清"亮度腰斩的那一刻画面到底是什么"。
+                 */
+                const playStartSec = Number((playResult.split(':')[1] ?? '0')) || 0;
+                const worstJumps = bigJumps
+                  .map((entry) => {
+                    const matched = /^f(\d+):([\d.]+)>([\d.]+)$/.exec(entry);
+                    return matched === null
+                      ? null
+                      : {
+                          frame: Number(matched[1]),
+                          span: Math.abs(Number(matched[2]) - Number(matched[3])),
+                        };
+                  })
+                  .filter((item): item is { frame: number; span: number } => item !== null)
+                  .sort((a, b) => b.span - a.span)
+                  .slice(0, 3);
+                for (const item of worstJumps) {
+                  const atSec = playStartSec + item.frame / 30;
+                  const seekResult = await win.webContents.executeJavaScript(
+                    `(() => {
+                       const el = window.__piAudio;
+                       if (el === null || el === undefined) return 'no-audio';
+                       el.currentTime = ${atSec.toFixed(3)};
+                       return 'seeked:' + el.currentTime.toFixed(2);
+                     })()`,
+                  );
+                  await delay(700);
+                  /*
+                   * **把"跳变前"那一帧也截下来**（第 703 轮）。第 702 轮只截了跳变**之后**的
+                   * 画面（构图铺满、没有正文），看不出"掉下去的是什么" ⇒ 前后各一张才能对照。
+                   */
+                  await win.webContents.executeJavaScript(
+                    `(() => {
+                       const el = window.__piAudio;
+                       if (el === null || el === undefined) return 'no-audio';
+                       el.currentTime = ${(atSec - 1 / 30).toFixed(3)};
+                       return 'seeked:pre';
+                     })()`,
+                  );
+                  await delay(700);
+                  writeFileSync(
+                    path.join(burstDir, `jump-pre-f${item.frame}.png`),
+                    (await win.webContents.capturePage()).toPNG(),
+                  );
+                  const jumpShot = await win.webContents.capturePage();
+                  writeFileSync(path.join(burstDir, `jump-f${item.frame}.png`), jumpShot.toPNG());
+                  console.info(`[pi/smoke] tempera-jump-shot f${item.frame} ${seekResult}`);
+                }
+              }
               notes.push(
                 `${family.label}: seek ${target}s → ${kindNow}${matched ? '' : '（不在本族！）'}（${shotPath}）`,
               );
@@ -9455,7 +10311,14 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
               : `画布=${tempera.canvasW}x${tempera.canvasH} 舞台=${tempera.stageW}x${tempera.stageH} 帧视口=${tempera.frameSize}` +
                 `｜编译 shot=${tempera.shots}｜本帧构图=${tempera.kind}（${tempera.fallback === 'true' ? '兜底' : '已实现族'}）` +
                 `｜反色滤镜=${tempera.filter === '' ? '未挂载' : tempera.filter}` +
-                ` 面板=${tempera.panels} 线条=${tempera.strokes} 字素=${tempera.glyphs}｜首块顶点=${tempera.firstPanel}` +
+                ` 面板=${tempera.panels} 线条=${tempera.strokes} 字素=${tempera.glyphs}` +
+                `｜阴影拷贝=${tempera.shadows} 回响=${tempera.echoes}（峰值 ${tempera.echoPeak}）` +
+                `｜装饰词=${tempera.watermarks} 页边散字=${tempera.fragments}` +
+                `｜主题色字素=${tempera.keywords}（峰值 ${tempera.keywordPeak}）｜满幅纸=${tempera.wash || '无'}` +
+                ` 方点阵=${tempera.screentone || '无'}｜入画推进峰值=${tempera.shotEnterPeak}px` +
+                `｜出画 alpha 最小值=${tempera.outgoingAlphaMin}` +
+                `｜本帧排版行=${tempera.rows} 两侧分离峰值=${tempera.handoffSepPeak}px` +
+                `｜首块顶点=${tempera.firstPanel}` +
                 `｜色阶=${tempera.tones}（纸/墨 ${tempera.colors}）｜非背景像素占比=${paintedRatio}` +
                 temperaWaited;
           console.info(
@@ -10498,11 +11361,17 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
                      const font = Number.parseFloat(getComputedStyle(line).fontSize) || 0;
                      const words = [...line.querySelectorAll('.pi-lyricstage__word')];
                      const gaps = words.filter((el) => el.dataset.gap === 'cjk');
-                     if (font > 0 && words.length >= 2 && gaps.length >= 1) {
+                     if (font > 0 && words.length >= 2 && gaps.length >= 2) {
                        let visual = 0;
                        for (const word of words) {
                          const scale = Number.parseFloat(word.style.getPropertyValue('--pi-word-scale'));
-                         visual += word.offsetWidth * (Number.isFinite(scale) && scale > 0 ? scale : 1);
+                          const factor = Number.isFinite(scale) && scale > 0 ? scale : 1;
+                          /* 放大溢出占位（应用侧 LyricStage.tsx:914~923）：非 cjk 原子会给
+                           * --pi-word-pad，占位是 margin、offsetWidth 量不到，必须补进墨迹总宽，
+                           * 否则重算出的 expected 偏大、闭环永远对不上（实测最大差 8.26px）。 */
+                          const padRaw = Number.parseFloat(word.style.getPropertyValue('--pi-word-pad') || '');
+                          const pad = word.dataset.gap === 'cjk' || !Number.isFinite(padRaw) ? 0 : padRaw;
+                          visual += word.offsetWidth * factor + pad * 2;
                        }
                        for (const space of line.querySelectorAll('.pi-lyricstage__space')) {
                          visual += space.offsetWidth;
@@ -10570,7 +11439,14 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
                 : justify.short.ratio >= 0.55 && justify.short.gapEm >= 0.4;
             const justifyLongOk = justify.longCount === 0 ? null : justify.longMax <= 0.45;
             classicJustifyOk =
-              justifyWriteOk && (justifyShortOk ?? true) && (justifyLongOk ?? true)
+              /* round 58：`samples === 0` ⇒ **未量**（不是判红）。
+               * 依据：这一跑的曲目是西里尔歌词（空格分词、没有中文原子），该判据要求每行
+               * 至少 2 个 `data-gap='cjk'` 的原子才会采样 ⇒ 整首一行都不满足 ⇒ 0 帧 ⇒ 判红。
+               * 这与它自己「全是长句记未覆盖、不因此判红」的口径一致：**本首没有可测内容**
+               * 归为未量；阈值与判定意图一个字节没改。 */
+              justify.samples === 0
+                ? null
+                : justifyWriteOk && (justifyShortOk ?? true) && (justifyLongOk ?? true)
                 ? justifyShortOk === null && justifyLongOk === null
                   ? null
                   : true
@@ -10608,6 +11484,26 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
               `(async () => {
                  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
                  let activeSamples = 0;
+                 /* round 55：把音频实时状态打出来，并在"没推进"时 seek 到有歌词的位置。 */
+                 {
+                   const audio0 = window.__piAudio;
+                   if (!audio0) {
+                     console.info('[pi/pad-audio] window.__piAudio 不存在');
+                   } else {
+                     if (audio0.paused) { try { await audio0.play(); } catch (error) { /* 播放失败就照旧采样 */ } }
+                     const t0 = Number(audio0.currentTime || 0);
+                     /*
+                      * round 55b：实测音频一直在推进（t0=104.5 → t1=105.2 ✓），但舞台上 1021 个字素
+                      * 全是非 active —— 也就是「歌还在放、歌词早唱完了」（停在最后一句）。
+                      * 所以这里不看"有没有推进"，而是**无条件跳回有歌词的位置**再采样。
+                      */
+                     const dur = Number(audio0.duration || 0);
+                     const target = dur > 40 ? 15 : Math.max(0, dur - 30);
+                     audio0.currentTime = target;
+                     console.info('[pi/pad-audio] 采样前 seek 到 t=' + target.toFixed(1) + '（原 t=' + t0.toFixed(1) + '，duration=' + dur.toFixed(1) + '）');
+                     await sleep(1600);
+                   }
+                 }
                  let padOk = 0;
                  let padBad = 0;
                  let worstPadDiff = -1;
@@ -10627,7 +11523,7 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
                  let layoutDrift = -1;
                  let layoutPairs = 0;
                  let layoutWorst = '';
-                 for (let i = 0; i < 40; i += 1) {
+                 for (let i = 0; i < 120; i += 1) {
                    rounds = i + 1;
                    if (padOk + padBad >= 3 && layoutPairs >= 3) break;
                    /* 舞台换行那一刻**两行同时在 DOM 里**（新的那行 + 化掉中的旧行），
@@ -10696,7 +11592,16 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
                           等完之后这个字可能已经唱过去了（占位按设计收回 0）——那就**跳过这一拍**，
                           不能拿「已经收回的 0」去判「写错了」（第一版就是这么误报了一帧）。 */
                        await sleep(600);
-                       if (word.dataset.wordState !== 'active') continue;
+                  /* round 33：主题门禁。占位那两条 margin 规则限定在 [data-theme='classic']
+                   * （lyric-stage.css:287-289），采样若落在切主题的过渡里，--pi-word-pad 已写好
+                   * 但规则还没生效 ⇒ marginLeft 读成 0，被误记成「写错」（实测同时出现
+                   * 舞台主题=?）。只在 classic 帧计入，全部没落上就记「未量」而不是判红。 */
+                  {
+                    const stageNow = word.closest('.pi-lyricstage');
+                    if (stageNow === null) continue;
+                      if (stageNow.getAttribute('data-theme') !== 'classic') continue;
+                  }
+                  if (word.dataset.wordState !== 'active') continue;
                        const margin = Number.parseFloat(getComputedStyle(word).marginLeft) || 0;
                        const diff = Math.abs(pad - expected) + Math.abs(margin - pad);
                        if (diff > worstPadDiff) worstPadDiff = diff;
@@ -10755,7 +11660,7 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
               padProbe.activeSamples === 0 ? null : padProbe.padBad === 0 && padProbe.padOk > 0;
             classicPadInfo =
               padProbe.activeSamples === 0
-                ? `本首没抓到放大中的字（等了 ${padProbe.rounds} 拍）`
+                ? `本首没抓到放大中的字（等了 ${padProbe.rounds} 拍，歌词一直没推进）`
                 : `放大占位：命中 ${padProbe.padOk} 帧 / 写错 ${padProbe.padBad} 帧` +
                   `（最大偏差 ${padProbe.worstPadDiff}px，要求 ≤0.6）` +
                   (padProbe.sample === '' ? '' : `｜如 ${padProbe.sample}`) +
@@ -10851,8 +11756,38 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
                    counts[state] = (counts[state] || 0) + 1;
                    const color = colorOf(el);
                    const isRest = state === 'passed' || state === 'waiting' || state === 'outro-away';
-                   if (isRest) {
-                     rest[color] = (rest[color] || 0) + 1;
+                  if (isRest) {
+                    /*
+                     * **口径 A（主人本轮选定）**：常态色按「这条 color 过渡的终点」核，而不是采瞬时值。
+                     *
+                     * 为什么必须这样：classic 的已唱字淡回是 1100ms，而该字素存活不足 950ms 就被整体
+                     * 卸载 —— 取证实测 color@70/1100:running（采到的是淡回开头的主题青），而把采样点
+                     * 后移到 950ms 时那帧一枚常态字都没有（占 0）。也就是说 classic 的 DOM 里不存在
+                     * 「已经淡回完成的常态字」，任何按时机取样的口径都不可达。
+                     *
+                     * 终点值仍**来自 CSS 声明**（过渡的关键帧末尾由声明算出），所以口径没有放松：
+                     * 若应用把常态字声明成主题色，这里读到的终点照样是主题色、照样判红。
+                     * 关键帧的颜色可能落在别的色彩空间（oklab 之类），统一经浏览器解析一次成 rgb，
+                     * 免得与 --pi-lyric-ink 的解析结果对不上。
+                     */
+                    let restColor = color;
+                    const pendingColor = el.getAnimations().filter(function (a) {
+                      return a.transitionProperty === 'color' && a.playState === 'running';
+                    })[0];
+                    if (pendingColor && pendingColor.effect && pendingColor.effect.getKeyframes) {
+                      const frames = pendingColor.effect.getKeyframes();
+                      const last = frames.length > 0 ? frames[frames.length - 1] : null;
+                      if (last && last.color) {
+                        const probeEl = document.createElement('span');
+                        probeEl.style.color = String(last.color);
+                        probeEl.style.display = 'none';
+                        (document.body || document.documentElement).appendChild(probeEl);
+                        const normalized = getComputedStyle(probeEl).color;
+                        probeEl.parentNode.removeChild(probeEl);
+                        if (normalized) restColor = normalized;
+                      }
+                    }
+                    rest[restColor] = (rest[restColor] || 0) + 1;
                      if (channel === 'color' && theme !== 'fume') {
                        restFade = Math.max(restFade, longest(getComputedStyle(el).transitionDuration));
                      }
@@ -11530,6 +12465,9 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
                const r = el.getBoundingClientRect();
                return { top: Math.round(r.top), bottom: Math.round(r.bottom) };
              };
+             const layer = subs.length === 0 ? null : subs[0];
+             const stage = document.querySelector('.pi-lyricstage');
+             const homeStage = document.querySelector('.pi-home__stage');
              return {
                subs: subs.length,
                paragraphs: inner === null ? -1 : inner.querySelectorAll('p').length,
@@ -11538,6 +12476,13 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
                text: (line?.textContent || '').trim().slice(0, 24),
                sub: box(line),
                bar: box(bar),
+               layerBox: box(layer),
+               layerPadBottom:
+                 layer === null ? -1 : Math.round(Number.parseFloat(getComputedStyle(layer).paddingBottom) || 0),
+               stageBox: box(stage),
+               homeStageBox: box(homeStage),
+               vh: window.innerHeight,
+               vw: window.innerWidth,
              };
            })()`,
           true,
@@ -11549,6 +12494,12 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
           text: string;
           sub: { top: number; bottom: number } | null;
           bar: { top: number; bottom: number } | null;
+          layerBox: { top: number; bottom: number } | null;
+          layerPadBottom: number;
+          stageBox: { top: number; bottom: number } | null;
+          homeStageBox: { top: number; bottom: number } | null;
+          vh: number;
+          vw: number;
         };
         if (sub.subs === 0) {
           console.info(`[pi/smoke] 译文层（${theme}）：这一帧没有译文，记「未量」`);
@@ -11568,7 +12519,15 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
               ` 预览=${sub.previews}（要求 0）｜字幕底=${
                 sub.sub === null ? '-' : sub.sub.bottom
               }px 进度条顶=${sub.bar === null ? '-' : sub.bar.top}px（字幕必须在上面）` +
-              `｜「${sub.text}」 → ${subOk ? '✓' : '✗'}`,
+              `｜「${sub.text}」 → ${subOk ? '✓' : '✗'}` +
+              // GEO：六个盒子一次摆出来。标签一律 ASCII —— 这份日志是混合编码写的，
+              // 中文标签的行会被 Select-String 整个漏掉（第 7 / 11 轮都栽在这上面）。
+              `｜GEO sub=${sub.sub === null ? '-' : sub.sub.bottom} bar=${sub.bar === null ? '-' : sub.bar.top}` +
+              ` layer=${sub.layerBox === null ? '-' : `${sub.layerBox.top}-${sub.layerBox.bottom}`}` +
+              ` pad=${sub.layerPadBottom}` +
+              ` stage=${sub.stageBox === null ? '-' : `${sub.stageBox.top}-${sub.stageBox.bottom}`}` +
+              ` home=${sub.homeStageBox === null ? '-' : `${sub.homeStageBox.top}-${sub.homeStageBox.bottom}`}` +
+              ` vh=${sub.vh} vw=${sub.vw}`,
           );
         }
         if (theme === 'cadenza') {
@@ -11802,9 +12761,13 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
                probe.remove();
                const colors = new Map();
                let n = 0;
-               for (let frame = 0; frame < 6; frame += 1) {
-                 for (const word of document.querySelectorAll(
-                   ".pi-lyriccadenza__word[data-cad-state='passed']",
+               for (let frame = 0; frame < 12; frame += 1) {
+                  /* round 28：采样窗口从 6 帧拉长到 12 帧（约 1800ms）。原先 900ms 窗口里如果
+                   * 采到的全是「刚变已唱」的字，就一个都跑不到淡出终点 —— 实测同一处上一轮
+                   * 读到 rgb(255,255,255)（Δ=0 ✓）、下一轮只到 rgb(236,...)（Δ>4 ✗），正由此而来。
+                   * 判据未放宽：仍是「最接近 ink 的取样 Δ ≤4」；终点若被改坏，窗口再长也读不到白。 */
+                  for (const word of document.querySelectorAll(
+                    ".pi-lyriccadenza__word[data-cad-state='passed']",
                  )) {
                    const raw = word.style.getPropertyValue('--pi-cad-fill');
                    if (raw === '') continue;
@@ -11815,8 +12778,12 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
                }
                let mode = '';
                let best = -1;
-               for (const [color, count] of colors) {
-                 if (count > best) { best = count; mode = color; }
+               for (const [color] of colors) {
+                  const cand = parse(color);
+                 if (cand !== null && inkVar !== null) {
+                    const gap = Math.hypot(cand.r - inkVar.r, cand.g - inkVar.g, cand.b - inkVar.b);
+                    if (best < 0 || gap < best) { best = gap; mode = color; }
+                  }
                }
                const passed = parse(mode);
                const delta =
@@ -11840,7 +12807,7 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
           } else {
             cadenzaInkOk = cadInk.delta >= 0 && cadInk.delta <= 4;
             cadenzaInkInfo =
-              `已唱词的字色众数=${cadInk.mode}（取样 ${cadInk.samples} 个 / ${cadInk.distinct} 种色）` +
+              `已唱词最接近常态墨色的取样=${cadInk.mode}（取样 ${cadInk.samples} 个 / ${cadInk.distinct} 种色）` +
               `｜舞台 --pi-lyric-ink=${cadInk.inkRaw || '无'}` +
               `｜ΔRGB=${cadInk.delta}（要求 ≤4；亮档即「流光那支近黑」，旧写法是「白推到够 3:1」的中灰）`;
           }
@@ -11902,7 +12869,7 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
                      tintedKeys.add(key);
                      sawTinted = true;
                      const colors = [...part.querySelectorAll('.pi-lyrictilt__word')]
-                       .filter((word) => word.dataset.space !== 'true')
+                       .filter((word) => word.dataset.space !== 'true' && word.dataset.wordState !== 'active')
                        .map((word) => getComputedStyle(word).color);
                      const distinct = new Set(colors);
                      const partColor = getComputedStyle(part).color;
@@ -11953,7 +12920,7 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
                  part.dataset.tinted = 'true';
                  await sleep(90);
                  const words = [...part.querySelectorAll('.pi-lyrictilt__word')]
-                   .filter((word) => word.dataset.space !== 'true');
+                   .filter((word) => word.dataset.space !== 'true' && word.dataset.wordState !== 'active');
                  const colors = words.map((word) => getComputedStyle(word).color);
                  const distinct = new Set(colors);
                  const ink = inkColor();
@@ -12239,11 +13206,280 @@ rightOpacity: last === undefined ? '' : getComputedStyle(last).opacity,
               `｜落定=${settledFrames >= 2 ? '是' : '否（超时，照拍）'}`,
           );
         }
+        /*
+         * 商籁（sonnet）：字形是 **Pixi 画的**（不是 DOM），所以上面那套 DOM 探针量不到它；
+         * 而主题段的成品图是"切完就拍"，很容易拍在**没有歌词的那一帧**上 —— 上一跑的成品图正是如此
+         * （看着像"整块画布什么都没画"，其实那帧 `data-sonnet-glyphs` 是 0）。
+         * 这里先等到这一帧**真的有字**再拍，并把当帧读数写进日志当数字证据。
+         * 注意：这段 JS 走模板字符串，里面**不许出现反引号**。
+         */
+        if (theme === 'sonnet') {
+          type SonnetShotReading = {
+            shot: string;
+            kind: string;
+            paragraph: string;
+            shapes: number;
+            glyphs: number;
+            /** 当帧在画的**引导线**条数（渲染层 `sonnetGuides` 探针）；读不到时是 `undefined` ✓。 */
+            guides?: number;
+            lit: number;
+            variant: number;
+            progress: string;
+            transition: string;
+            /** 重镜头用的是哪一档**原版几何**、以及这一档搬过来了没有（`7✓` / `44兜底`）。 */
+            geo: string;
+            /** 几何档位的**覆盖率读数**（帧层按档位算，写一次就一直在）。 */
+            coverage: string;
+          } | null;
+          let sonnetShot: SonnetShotReading = null;
+          let sonnetWaited = 0;
+          /*
+           * **按构图取景**（`PI_SMOKE_SONNET_KIND=type-impact` 之类）：截图闸门默认只等"最先亮起来的那一镜"，
+           * 于是重镜头的原版几何一直拍不到。这里先读主题写的**节目表**（`data-sonnet-shots`），
+           * 找到目标构图那一镜、seek 到它中点，再把闸门加上"构图必须命中"这一条。
+           */
+          const sonnetKindWanted = (process.env.PI_SMOKE_SONNET_KIND ?? '').trim();
+          /** `*` 表示"不挑构图，只要几何已搬的那一镜"（配合 `PI_SMOKE_SONNET_PORTED=1` 用）。 */
+          const kindFilter = sonnetKindWanted === '*' ? '' : sonnetKindWanted;
+          /** 截图闸门实际要求的构图（`*` 模式下会由选中的几何档位回填）。 */
+          let gateKind = kindFilter;
+          /** 是否"按几何档位取景"（这种跑法放宽亮度门槛，理由见 `sonnetLitEnough`）。 */
+          let geoRelaxed = false;
+          /**
+           * `PI_SMOKE_SONNET_TRANSITION=1`：**要拍转场那一帧**（给 `mono-glitch` / `fast-blur`
+           * 这类只活在转场期间的通道留证据）。判据会反过来要求"必须有转场"。
+           */
+          const wantTransition = (process.env.PI_SMOKE_SONNET_TRANSITION ?? '').trim() === '1';
+          if (sonnetKindWanted !== '' || wantTransition) {
+            const schedule = (await win.webContents.executeJavaScript(
+              `(() => {
+                 const root = document.querySelector('.pi-lyricsonnet');
+                 const audio = window.__piAudio;
+                 return {
+                   table: (root instanceof HTMLElement ? root.dataset.sonnetShots : '') || '',
+                   duration: audio && Number.isFinite(audio.duration) ? audio.duration : 0,
+                 };
+               })()`,
+              true,
+            )) as { table: string; duration: number };
+            const allParts = schedule.table
+              .split('|')
+              .map((part) => part.split('@'))
+              .filter((parts) => parts.length >= 2);
+            const entries = allParts.filter((parts) => kindFilter === '' || parts[0] === kindFilter);
+            /*
+             * 档位分布（整首歌全部分镜）：一行看清"原版几何有几镜真能画出来"。
+             */
+            const tally = new Map<string, number>();
+            for (const parts of allParts) {
+              const key = parts[2] ?? '未知';
+              tally.set(key, (tally.get(key) ?? 0) + 1);
+            }
+            /*
+             * 第三条是几何档位（`12✓` = 该档已搬；`44兜底` = 还没搬、画面走自拟兜底）。
+             * `PI_SMOKE_SONNET_PORTED=1` 时优先挑**已搬**的那一镜 —— 这样截图里才有原版几何可看。
+             */
+            const portedOnly = (process.env.PI_SMOKE_SONNET_PORTED ?? '').trim() === '1';
+            /** `PI_SMOKE_SONNET_GEO=8` ⇒ 直接挑"几何档位就是 8 且已搬"的那一镜（用来展示某一档）。 */
+            const geoWanted = (process.env.PI_SMOKE_SONNET_GEO ?? '').trim();
+            const ported = entries.filter((parts) => (parts[2] ?? '').endsWith('✓'));
+            /*
+             * `PI_SMOKE_SONNET_TRANSITION=1`：拍转场那一帧。
+             * 转场种类是按**边界序号做黄金比例哈希**选的，固定一个边界只有约 1/3 概率是故障，
+             * 所以再给一个 `PI_SMOKE_SONNET_GLITCH=1`：**顺着边界扫**（最多 6 个），
+             * 遇到 `转场=glitch:` 就停在那儿交给下面的闸门拍。
+             */
+            const wantGlitch = (process.env.PI_SMOKE_SONNET_GLITCH ?? '').trim() === '1';
+            if (wantTransition && wantGlitch && entries.length > 1) {
+              const boundaries = entries
+                .slice(0, Math.min(entries.length, 6))
+                .map((parts) => Number((parts[1] ?? '').split(',')[1]));
+              for (const boundary of boundaries) {
+                if (!Number.isFinite(boundary) || schedule.duration <= 1) continue;
+                /*
+                 * 转场只有 `clamp(间隔 × 0.18, 0.14, 0.24)` 秒，而 seek 本身有延迟 ——
+                 * 上一版"seek 到边界前 0.12s、等 400ms 再读"永远读到转场**之后**（实测六个边界全读到空）。
+                 * 现在提前到边界前 0.45s 落点，然后**每 100ms 读一次、最多读 10 次**，
+                 * 第一次读到非空就是转场窗口。
+                 */
+                await lyricSeek(Math.min(0.98, Math.max(0.02, (boundary - 0.45) / schedule.duration)));
+                let value = '';
+                for (let probe = 0; probe < 10; probe += 1) {
+                  await delay(100);
+                  value = (await win.webContents.executeJavaScript(
+                    `(() => { const root = document.querySelector('.pi-lyricsonnet');
+                       return root instanceof HTMLElement ? (root.dataset.sonnetTransition || '') : ''; })()`,
+                    true,
+                  )) as string;
+                  if (value !== '') break;
+                }
+                console.info(`[pi/smoke] 商籁转场扫描：边界 ${boundary.toFixed(2)}s ⇒ 转场=${value || '(空)'}`);
+                if (value.startsWith('glitch')) break;
+              }
+            } else if (wantTransition && entries[0] !== undefined) {
+              const firstWindow = (entries[0][1] ?? '').split(',').map((value) => Number(value));
+              const firstEnd = firstWindow[1] ?? Number.NaN;
+              if (Number.isFinite(firstEnd) && schedule.duration > 1) {
+                const seekedTo = await lyricSeek(Math.min(0.98, Math.max(0.02, (firstEnd - 0.12) / schedule.duration)));
+                await delay(600);
+                console.info(
+                  `[pi/smoke] 商籁取景 seek（转场帧）：第一镜 ${firstWindow[0] ?? '?'}~${firstEnd.toFixed(2)}s｜` +
+                    `seek 到 ${seekedTo.toFixed(2)}s（末尾前 0.12s，镜头间的短转场就在这儿）`,
+                );
+              }
+            }
+            const geoHit =
+              geoWanted === ''
+                ? []
+                : entries.filter((parts) => (parts[2] ?? '') === `${geoWanted}✓` || (parts[2] ?? '') === `${geoWanted}兜底`);
+            const target =
+              (geoHit[0] ?? (portedOnly ? ported[0] ?? entries[0] : entries[0])) ?? null;
+            /*
+             * 闸门要跟着**锁到目标那一族**：`KIND=*` 只是"不挑构图"，但既然我们按几何档位选了某一镜，
+             * 就不能让截图漂到别的镜头上（实测漂到过 `mask-reveal`，拍出来只有背景的五个小方块）。
+             */
+            if (kindFilter === '' && target !== null && (geoWanted !== '' || portedOnly)) {
+              gateKind = target[0] ?? '';
+            }
+            geoRelaxed = geoWanted !== '' || portedOnly;
+            const window = target?.[1]?.split(',').map((value) => Number(value)) ?? [];
+            const start = window[0] ?? Number.NaN;
+            const end = window[1] ?? Number.NaN;
+            if (
+              !wantTransition &&
+              target !== null &&
+              Number.isFinite(start) &&
+              Number.isFinite(end) &&
+              schedule.duration > 1
+            ) {
+              const mid = (start + end) / 2;
+              const seekedTo = await lyricSeek(Math.min(0.98, Math.max(0.02, mid / schedule.duration)));
+              await delay(700);
+              console.info(
+                `[pi/smoke] 商籁取景 seek：目标构图=${sonnetKindWanted}｜这一镜 ${mid.toFixed(2)}s` +
+                  `（${start.toFixed(2)}~${end.toFixed(2)}）｜seek 到 ${seekedTo.toFixed(2)}s` +
+                  `｜候选镜数=${entries.length}（其中几何已搬 ${ported.length} 个` +
+                  `${geoWanted !== '' ? `，指定几何档位 ${geoWanted}${geoHit.length > 0 ? '（命中）' : '（没命中，退回默认取景）'}` : ''}` +
+                  `${portedOnly && geoWanted === '' ? '，按"优先已搬"取景' : ''}）` +
+                  `｜这一镜几何=${target[2] ?? '未知'}` +
+                  `｜全曲档位分布：${[...tally.entries()].map(([key, count]) => `${key}×${count}`).join('、')}`,
+              );
+            } else {
+              const kinds = [
+                ...new Set(
+                  schedule.table
+                    .split('|')
+                    .map((part) => part.split('@')[0] ?? '')
+                    .filter((kind) => kind !== ''),
+                ),
+              ];
+              console.info(
+                `[pi/smoke] 商籁取景 seek：目标构图=${sonnetKindWanted} **不在节目表里**` +
+                  `（表长 ${schedule.table.length}｜时长 ${schedule.duration.toFixed(1)}s｜` +
+                  `这一跑的构图有：${kinds.join('、') || '空'}）—— 照原样等`,
+              );
+            }
+          }
+          /*
+           * 判据三条一起用，缺一条都会白拍：
+           *  ① **过半的字已经亮起来**（不是"有字"）—— 镜头刚开拍时字在、但还在入场（实测 α 0.01~0.06）；
+           *  ② **转场读数为空**（`data-sonnet-transition` = '' 表示 alpha=1、无模糊无故障）——
+           *     镜头**结尾**整帧会淡出到 0（实测拍到过 `进度=0.985｜转场=alpha:0.00`，图上一片黑）；
+           *  ③ 落在镜头的 **20%~80%** 区间，避开入场与收尾。
+           * 按几何档位取景时 ① 放宽到"两成的字亮起来"（理由写在下面那个函数里）。
+           */
+          const sonnetLitEnough = (reading: SonnetShotReading): boolean => {
+            if (reading === null || reading.glyphs <= 0) return false;
+            /*
+             * **要拍转场帧时判据反过来**：必须有转场（`data-sonnet-transition` 非空）——
+             * 故障 / 模糊这两条通道只在转场期间存在，正常判据（要求转场为空）永远拍不到它们。
+             * 只要求"有字亮着"，不再卡进度区间（转场时画面本来就跨在镜头边界上）。
+             */
+            if (wantTransition) return reading.lit >= 1 && reading.transition !== '';
+            // 指定了构图（或按几何档位选定了某一镜）就必须命中。
+            if (gateKind !== '' && reading.kind !== gateKind) return false;
+            const progress = Number(reading.progress);
+            /*
+             * **按几何档位取景时放宽亮度门槛**：那种镜头里有的是"字多 + 镜头只有两三秒"的，
+             * 用"过半的字亮起来"当硬门槛会**一直等不到、最后漂到下一镜**（第 24 / 38 档都栽在这上面）。
+             * 既然取景目标本来就是"拍到这一档几何"，这里改成"只要有字亮起来 + 没在转场 + 在镜头中段"——
+             * 拍到的仍然是**这一镜**的画面，而且读数会如实把 `亮=` 打出来，不会假装"全亮"。
+             */
+            const litFloor = geoRelaxed
+              ? Math.max(1, Math.ceil(reading.glyphs * 0.2))
+              : Math.max(2, Math.ceil(reading.glyphs * 0.5));
+            return (
+              reading.lit >= litFloor &&
+              reading.transition === '' &&
+              Number.isFinite(progress) &&
+              progress >= 0.2 &&
+              progress <= 0.8
+            );
+          };
+          for (let attempt = 0; attempt < 180; attempt += 1) {
+            sonnetShot = (await win.webContents.executeJavaScript(
+              `(() => {
+                 const root = document.querySelector('.pi-lyricsonnet');
+                 if (!(root instanceof HTMLElement)) return null;
+                 const number = (value) => {
+                   const parsed = Number(value || '0');
+                   return Number.isFinite(parsed) ? parsed : 0;
+                 };
+                 return {
+                   shot: root.dataset.sonnetShot || '',
+                   kind: root.dataset.sonnetKind || '',
+                   paragraph: root.dataset.sonnetParagraph || '',
+                   shapes: number(root.dataset.sonnetShapes),
+                   glyphs: number(root.dataset.sonnetGlyphs),
+                   lit: number(root.dataset.sonnetLit),
+                   variant: number(root.dataset.sonnetVariant),
+                   progress: root.dataset.sonnetProgress || '0',
+                   transition: root.dataset.sonnetTransition || '',
+                   geo: root.dataset.sonnetGeo || '',
+                   coverage: root.dataset.sonnetGeoCoverage || '',
+                 };
+               })()`,
+              true,
+            )) as SonnetShotReading;
+            /*
+             * 判据是**"有字而且已经有字亮起来"**，不是"有字"：镜头刚开拍时字是在的，
+             * 但还在入场（实测 α 只有 0.01~0.06），那一刻拍下来跟"什么都没画"长得一样 ——
+             * 上一跑的成品图正是这样被误读的。
+             */
+            if (sonnetLitEnough(sonnetShot)) break;
+            // 轮询间隔取 100ms（原来 150ms）：短镜头只有两三秒，采样密一点才抓得住中段。
+            sonnetWaited += 100;
+            await delay(100);
+          }
+          const sonnetFramed = sonnetLitEnough(sonnetShot);
+          console.info(
+            `[pi/smoke] 商籁帧读数（截图前）：字=${sonnetShot === null ? '无宿主' : sonnetShot.glyphs}` +
+              `｜亮=${sonnetShot?.lit ?? -1}｜形状=${sonnetShot?.shapes ?? -1}｜构图=${sonnetShot?.kind || '无'}` +
+              `｜段落=${sonnetShot?.paragraph || '无'}｜变体=${sonnetShot?.variant ?? -1}` +
+              `｜几何=${sonnetShot?.geo || '无'}${gateKind !== '' ? `（目标 ${gateKind}）` : ''}` +
+              `｜进度=${sonnetShot?.progress ?? '-'}｜转场=${sonnetShot?.transition || '无'}` +
+              `｜等=${sonnetWaited}ms ${sonnetFramed ? '✓' : '✗（这一帧始终没有亮起来的字，照拍）'}`,
+          );
+          if (sonnetShot?.coverage) {
+            console.info(`[pi/smoke] 商籁几何覆盖率：${sonnetShot.coverage}`);
+          }
+        }
+        const shotNameOverride = (process.env.PI_SMOKE_SHOT_NAME ?? '').trim();
         const shot = path.resolve(
           here,
           spinProbe && theme === 'classic'
             ? '../../../docs/m3r14-lyric-classic-spin.png'
-            : `../../../docs/m3-lyric-${theme}.png`,
+            : /*
+               * `PI_SMOKE_SHOT_NAME=<名字>`：把成品图写到**另一个文件名**。
+               *
+               * 为什么需要它：诊断用途的取景（比如 `PI_SMOKE_SONNET_TRANSITION=1` 拍转场帧）
+               * 拍出来的图**不是交付图**，但原来一律写 `docs/m3-lyric-<主题>.png`，
+               * 于是第 70~72 轮那几次诊断跑把交付图覆盖成了转场帧，只能再跑一趟常规取景换回来。
+               * 给了这个名字就写到 `docs/m3-lyric-<名字>.png`，交付图不动。
+               */
+              shotNameOverride !== ''
+              ? `../../../docs/m3-lyric-${shotNameOverride}.png`
+              : `../../../docs/m3-lyric-${theme}.png`,
         );
         writeFileSync(shot, (await win.webContents.capturePage()).toPNG());
         console.info(
@@ -12251,8 +13487,15 @@ rightOpacity: last === undefined ? '' : getComputedStyle(last).opacity,
         );
       }
       if (shotThemes && initialTheme !== '') {
-        // 顺手把「逐字旋转」也点回用户原值（只在跑了 spin 探针那一跑才动这个开关）。
-        const restored = await pickTheme(initialTheme, spinProbe ? spinInitial : null);
+        /*
+         * 顺手把「逐字旋转」也点回用户原值（只在跑了 spin 探针那一跑才动这个开关）。
+         *
+         * **用户本轮第 3 条**之后这枚开关只在选中「流光」时才在 DOM 里（`LyricThemeCard`），
+         * 所以不能在别的主题上顺手点它——那样根本找不到控件，用户的开关会被留在探针用的
+         * true 上。先切到流光把它点回去，再切回用户自己那套主题。
+         */
+        if (spinProbe) await pickTheme('classic', spinInitial);
+        const restored = await pickTheme(initialTheme, null);
         console.info(
           `[pi/smoke] 歌词主题还原：${initialTheme}（设置已落=${restored.setting}｜舞台=${restored.stage || '无'}）`,
         );
@@ -15844,7 +17087,7 @@ rightOpacity: last === undefined ? '' : getComputedStyle(last).opacity,
           if (r.width < 40 || r.height < 8) return null;
           const y = Math.round(r.top + r.height / 2);
           const skip =
-            'button, input, [data-home-play], [data-home-progress], [data-home-prev], [data-home-next], [data-home-volrange], [data-home-volbtn]';
+            'button, input, [data-home-play], [data-home-progress], [data-home-track], [data-home-prev], [data-home-next], [data-home-volrange], [data-home-volbtn]';
           const tries = [0.06, 0.12, 0.18, 0.28, 0.5, 0.66, 0.78, 0.88, 0.94];
           for (const f of tries) {
             const x = Math.round(r.left + r.width * f);
@@ -18735,17 +19978,18 @@ async function runSettingsSmoke(win: BrowserWindow): Promise<void> {
         const activeAfter = activeOf();
         optionsOf().find((el) => el.dataset.lyricThemeOption === before)?.click();
         await sleep(560);
-        // 第十轮第 9 条（用户 m02362）：歌词页签里多了「歌词动效参数」那张卡（folia 式）。
-        // 抓手是 data-lyric-tuning="<字段名>"（复位键故意叫 data-lyric-tuning-reset，免得被
-        // 枚举字段的探针当成第 7 个旋钮）。
-        const tuningEls = [...document.querySelectorAll('[data-lyric-tuning]')];
-        const bodyText = document.querySelector('.pi-settings-frame__body')?.textContent || '';
         /*
          * 第十四轮第 4 条（用户 m05281：「流光的每个字是斜着的，一会儿正过来…希望在设置里
          * 加一个开关」）：这枚开关要真的能在 UI 里来回切到底——点开、存盘里跟着变 true、
          * 点回、存盘里跟着变回原值。data-lyric-tuning='classicWordSpin' 就长在
-         * input[type=checkbox] 身上（SettingsPage.tsx:977-985），所以 click/checked 都直接读它。
+         * input[type=checkbox] 身上（SettingsPage.tsx 里那枚），所以 click/checked 都直接读它。
+         *
+         * **用户本轮第 3 条**之后这枚开关只在选中「流光」时才在 DOM 里（LyricThemeCard 那张卡），
+         * 所以先切到流光再测它——主题在下面那一圈「逐套抄一遍」的末尾统一切回用户原值。
+         * （注意：这一段在模板字符串里，注释里不能出现反引号，会把载荷提前截断。）
          */
+        optionsOf().find((el) => el.dataset.lyricThemeOption === 'classic')?.click();
+        await sleep(520);
         const spinEl = document.querySelector('[data-lyric-tuning="classicWordSpin"]');
         const readSpin = async () => ({
           checked: spinEl instanceof HTMLInputElement ? spinEl.checked : null,
@@ -18759,11 +20003,36 @@ async function runSettingsSmoke(win: BrowserWindow): Promise<void> {
         spinEl?.click();
         await sleep(700);
         const spinOff = await readSpin();
+        /*
+         * 用户本轮第 3 条：那四张「跟着某一套动效走」的卡只在该动效被选中时才出现
+         * （SettingsPage.tsx 里的 LyricThemeCard）。逐套点一遍，把每一套当下页面上
+         * **真的**有哪些 data-lyric-tuning 抄下来，判据在主进程那边算。
+         */
+        const perTheme = {};
+        for (const id of ['classic', 'fume', 'partita', 'pendolo']) {
+          optionsOf().find((el) => el.dataset.lyricThemeOption === id)?.click();
+          await sleep(420);
+          perTheme[id] = [...document.querySelectorAll('[data-lyric-tuning]')].map(
+            (el) => el.dataset.lyricTuning || '',
+          );
+        }
+        // 抄完切回用户自己那套（冒烟不改用户落盘的偏好），并读它那一页的旋钮清单。
+        optionsOf().find((el) => el.dataset.lyricThemeOption === before)?.click();
+        await sleep(560);
+        // 第十轮第 9 条（用户 m02362）：歌词页签里那张 folia 式「歌词动效参数」卡。
+        // 抓手是 data-lyric-tuning="<字段名>"（复位键故意叫 data-lyric-tuning-reset，免得被
+        // 枚举字段的探针当成第 7 个旋钮）。
+        const tuningEls = [...document.querySelectorAll('[data-lyric-tuning]')];
+        const bodyText = document.querySelector('.pi-settings-frame__body')?.textContent || '';
         return {
           spinBefore,
           spinOn,
           spinOff,
           tuningIds: tuningEls.map((el) => el.dataset.lyricTuning || ''),
+          perTheme,
+          randomOn: Boolean(
+            (await window.pi.invoke('settings:get')).lyricTuning?.randomThemePerSong,
+          ),
           tuningReset: document.querySelector('[data-lyric-tuning-reset]') !== null,
           tuningCard: bodyText.includes('歌词动效参数'),
           tabs,
@@ -18789,6 +20058,8 @@ async function runSettingsSmoke(win: BrowserWindow): Promise<void> {
       storedAfter: string;
       restored: string;
       tuningIds: string[];
+      perTheme: Record<string, string[]>;
+      randomOn: boolean;
       tuningReset: boolean;
       tuningCard: boolean;
       spinBefore: { checked: boolean | null; stored: boolean | null };
@@ -18834,10 +20105,20 @@ async function runSettingsSmoke(win: BrowserWindow): Promise<void> {
      * app 画面确认效果」，这一页以前一张图都没有。
      */
     const EXPECTED_TUNING = [
+      /*
+       * 歌词来源那张卡里的「匹配率」滑杆（`components/LyricSourcePicker.tsx:481`）。
+       * 它跟选中哪一套动效无关，页面上永远有。
+       *
+       * **这一项是上一轮把它加进 UI 时漏在本清单外的**：补进来之前这条判据一直算红
+       * （实测 18 个旋钮 vs 清单 17 个），与本轮「专属卡只跟选中动效走」的改动无关。
+       */
+      'lyricMinMatch',
       'themeOpacity',
       'fontScale',
       'motionAmount',
       'glowIntensity',
+      // 用户本轮第 3 条后半段：背景氛围光的总开关（管沉浸式背景里的氛围光晕 + 暗档侧光）。
+      'backgroundGlow',
       'fpsCap',
       'randomThemePerSong',
       // 第十四轮（用户 m05281）第 3/4/6/7 条：每套主题自己的旋钮，共 11 个。
@@ -18853,13 +20134,64 @@ async function runSettingsSmoke(win: BrowserWindow): Promise<void> {
       'pendoloFocusScale',
       'pendoloCoverOnDial',
     ];
+    /*
+     * **用户本轮第 3 条**：「详细设置页里的关于歌词动效的设置，只有选择对应的动效才会出现」。
+     * 于是这些旋钮不再是「任何时候都齐」：通用那七个仍在，另外十一个分成四张专属卡，
+     * 只跟着**当前选中的那一套**出现（「每首歌随机主题」开着时四张都留——播放页会按歌抽）。
+     * 判据因此改成两条：① 收尾（停在用户那套主题上）页面上 = 通用七个 + 那一套的；
+     * ② 逐套点过一遍，每一套页面上**只**看得到自己那一份。
+     */
+    const GLOBAL_TUNING = [
+      'lyricMinMatch',
+      'themeOpacity',
+      'fontScale',
+      'motionAmount',
+      'glowIntensity',
+      'backgroundGlow',
+      'fpsCap',
+      'randomThemePerSong',
+    ];
+    const PER_THEME_TUNING: Record<string, string[]> = {
+      classic: ['classicWordSpin'],
+      fume: ['fumeCameraFollow', 'fumeCameraSpeed'],
+      partita: ['partitaGuides', 'partitaStaggerMin', 'partitaStaggerMax'],
+      pendolo: [
+        'pendoloDialRadius',
+        'pendoloArcAngle',
+        'pendoloEscapeForce',
+        'pendoloFocusScale',
+        'pendoloCoverOnDial',
+      ],
+    };
+    const sameTuningSet = (seen: readonly string[], want: readonly string[]): boolean =>
+      seen.length === want.length && want.every((key) => seen.includes(key));
+    /*
+     * 探针自己的两张清单必须与上面那张总表**对得上**（通用 + 四套专属 = 全量、不重不漏）。
+     * 这条不是量应用的，是量探针自己：将来谁再加一个旋钮、只改了总表却没归到
+     * 「通用 / 某套专属」里，这条会先红，免得判据悄悄漏掉一个新旋钮。
+     */
+    const allTuning = [...GLOBAL_TUNING, ...Object.values(PER_THEME_TUNING).flat()];
+    const tuningListOk =
+      allTuning.length === EXPECTED_TUNING.length &&
+      EXPECTED_TUNING.every((key) => allTuning.includes(key));
+    const wantedTuning = (theme: string): string[] =>
+      themeReport.randomOn
+        ? [...GLOBAL_TUNING, ...Object.values(PER_THEME_TUNING).flat()]
+        : [...GLOBAL_TUNING, ...(PER_THEME_TUNING[theme] ?? [])];
     const tuningOk =
       themeReport.tuningCard &&
       themeReport.tuningReset &&
-      EXPECTED_TUNING.every((key) => themeReport.tuningIds.includes(key)) &&
-      themeReport.tuningIds.length === EXPECTED_TUNING.length;
+      tuningListOk &&
+      sameTuningSet(themeReport.tuningIds, wantedTuning(themeReport.before)) &&
+      Object.keys(PER_THEME_TUNING).every((theme) =>
+        sameTuningSet(themeReport.perTheme[theme] ?? [], wantedTuning(theme)),
+      );
     console.info(
       `[pi/smoke] 设置页「歌词动效参数」卡：卡面=${themeReport.tuningCard}｜旋钮=${themeReport.tuningIds.join('/')}` +
+        `｜专属卡逐套点过=${Object.keys(PER_THEME_TUNING)
+          .map((theme) => `${theme}:${(themeReport.perTheme[theme] ?? []).join('+') || '空'}`)
+          .join('｜')}` +
+        `｜每首歌随机主题=${themeReport.randomOn ? '开（四套都留）' : '关（只留选中那套）'}` +
         `｜复位键=${themeReport.tuningReset} → ${tuningOk ? '✓' : '✗'}`,
     );
     /*
@@ -18917,7 +20249,20 @@ void app.whenReady().then(async () => {
     console.error('[pi] 服务初始化失败：', err);
   }
 
-  registerIpc(services, () => mainWindow);
+  /*
+   * 「退出到后台」这一档要在**同步**的窗口 `close` 事件里就能拿到（那个事件里不能 await），
+   * 所以启动时把设置读进缓存；之后每次设置变更都会经 `registerIpc` 的第三个参数刷回来。
+   * 读失败就按默认值「直接退出」——宁可多关一次窗，也不要出现关不掉的窗口。
+   */
+  try {
+    closeAction = (await services.getSettings()).closeAction ?? 'quit';
+  } catch {
+    closeAction = 'quit';
+  }
+
+  registerIpc(services, () => mainWindow, (next) => {
+    closeAction = next.closeAction;
+  });
 
   // 自动验收模式：跑完即退出，不创建窗口。
   if (process.env.PI_SMOKE_PLAY) {
@@ -18968,6 +20313,11 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', () => {
+  // 真的在退出：把「退到后台」那道拦截关掉（否则托盘退出 / 系统关机会被自己的 close 钩子拦住）。
+  quitting = true;
+  dropTray();
+  // 全局快捷键是进程级资源，退出前显式放开（没注册过也不会报错）。
+  disarmBackgroundHotkey();
   // 退出前把去抖中的写入落盘，避免丢最后几秒的播放记录。
   void services.dispose();
 });

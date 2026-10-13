@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  PENDOLO_ESCAPE_TEETH,
   PENDOLO_GEAR_MOVE_EPSILON_RAD,
   PENDOLO_GEAR_TRAVEL_RATIO,
+  pendoloEscapeRatio,
   pendoloGearDrive,
 } from './PendoloTheme';
 
@@ -54,5 +56,31 @@ describe('pendoloGearDrive', () => {
     expect(0.218 * PENDOLO_GEAR_TRAVEL_RATIO * (180 / Math.PI)).toBeCloseTo(12.49, 1);
     // 旧值 6 是「一句 75°」的来历，也就是主人说的「一下子转非常多」。
     expect(0.218 * 6 * (180 / Math.PI)).toBeCloseTo(75, 0);
+  });
+});
+
+/**
+ * **用户本轮第 1 条**（原话：「时计的齿轮在转动时转的有点太快了，一句歌词一格齿槽差不多」）：
+ * 主擒纵轮（36 齿，齿周期 10°）原来是「一句 1.25 齿」，现在压成「**一句正好一齿**」。
+ */
+describe('pendoloEscapeRatio（主擒纵轮：一句一齿）', () => {
+  it('默认档（100° 弧 ⇒ 12.5°/句）下，一句正好走一齿（10°）', () => {
+    const ratio = pendoloEscapeRatio(12.5);
+    expect(ratio).toBeCloseTo(0.8, 12);
+    // 一档 12.5° × 0.8 = 10° = 360/36，正好一个齿距。
+    expect(12.5 * ratio).toBeCloseTo(360 / PENDOLO_ESCAPE_TEETH, 10);
+    // 改造前是 1（12.5° = 1.25 齿）—— 主人看到的「有点太快」就是这多出来的 0.25 齿。
+    expect(12.5 / (360 / PENDOLO_ESCAPE_TEETH)).toBeCloseTo(1.25, 10);
+  });
+
+  it('弧宽调成别的档位也保持「一句一齿」（不是写死 0.8）', () => {
+    for (const slotDeg of [7.5, 12.5, 20]) {
+      expect(slotDeg * pendoloEscapeRatio(slotDeg)).toBeCloseTo(360 / PENDOLO_ESCAPE_TEETH, 10);
+    }
+  });
+
+  it('角度是 0 / 负数时不炸（返回 0，齿轮不转）', () => {
+    expect(pendoloEscapeRatio(0)).toBe(0);
+    expect(pendoloEscapeRatio(-5)).toBe(0);
   });
 });

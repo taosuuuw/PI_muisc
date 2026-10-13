@@ -1,4 +1,10 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import {
+  useEffect,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+} from 'react';
 import { useQueryClient, useQuery } from '@tanstack/react-query';
 import { MODE_LABEL, PLAYLIST_MODES } from '@pi/player-core';
 import {
@@ -7,6 +13,7 @@ import {
   type LyricFpsCap,
   type LyricTheme,
   type LyricTuning,
+  type PlayerBackground,
   type Quality,
   type SourceStatus,
   type ThemeMode,
@@ -21,8 +28,10 @@ import { DataStorageSection } from '../components/DataStorageSection';
 import { CH, errorMessage, invoke } from '../bridge';
 import { SHORTCUT_DEFINITIONS, findConflict, formatBinding, shortcutLabel } from '../lib/shortcuts';
 import {
+  playerBackgroundStyle,
   useImportPlugin,
   usePatchSettings,
+  usePlayerBackground,
   usePlugins,
   useRemovePlugin,
   useResetSourceHealth,
@@ -508,6 +517,288 @@ const ACCENT_OPTIONS: readonly { readonly value: AccentMode; readonly label: str
   { value: 'custom', label: '自定义' },
 ];
 
+/* ------------------------------------------------------------------ *
+ * 播放页自定义背景（主人本轮第 1 条）
+ * ------------------------------------------------------------------ */
+
+/** 横向拖满一个预览盒宽度 = 平移量走完整个 ±1（两侧各一半）。 */
+const BACKGROUND_PAN_PER_WIDTH = 2;
+
+/**
+ * 「播放页背景」这一块：导入本地图 → 裁切（缩放 / 拖动）→ 保存 / 恢复封面。
+ *
+ * 原话：「在设置详情页加入封面自定义设定，可以从本地文件夹导入背景图设为歌曲播放页背景。
+ * 支持裁切和多种形式的图片」。
+ *
+ * **裁切是非破坏性的**：这里只记 `zoom` 与 `offsetX/Y` 三个数，图原样存进 userData，
+ * 播放页用 `object-fit: cover` + `object-position` + `--pi-cover-scale` 复现同一个取景。
+ * 好处：① 不动原图、没有二次压缩；② **动图（GIF/WebP）还能继续动**（真裁一刀就只能存静态图）；
+ * ③ 用户随时能改回来，不会「裁歪了只能重导」。
+ *
+ * 预览盒用的样式与播放页**同一套函数**（`playerBackgroundStyle`）⇒ 所见即所得，
+ * 不会出现「设置页看着对、播放页偏了一截」。
+ */
+function PlayerBackgroundSection(): ReactNode {
+  const settings = useSettings();
+  const patch = usePatchSettings();
+  const queryClient = useQueryClient();
+  const active = usePlayerBackground();
+  const current = settings.data?.playerBackground ?? null;
+
+  /** 刚挑进来、还没保存的那张图（保存前一切只在本页状态里，不落盘、不动设置）。 */
+  const [draft, setDraft] = useState<{ name: string; ext: string; dataUrl: string } | null>(null);
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [notice, setNotice] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const drag = useRef<{ px: number; py: number; x: number; y: number } | null>(null);
+  const previewRef = useRef<HTMLDivElement>(null);
+
+  /*
+   * 没有草稿时，滑杆跟着**已保存的设置**走：换到别的 tab 再回来、或者在播放页被改过，
+   * 这里不会停在上一次的旧值上。有草稿时不动——那是用户正在调的那张。
+   */
+  useEffect(() => {
+    if (draft !== null) return;
+    setZoom(current?.zoom ?? 1);
+    setPan({ x: current?.offsetX ?? 0, y: current?.offsetY ?? 0 });
+  }, [current?.id, current?.zoom, current?.offsetX, current?.offsetY, draft]);
+
+  const previewUrl = draft?.dataUrl ?? active.dataUrl;
+  const previewSetting: PlayerBackground | null =
+    previewUrl === null
+      ? null
+      : {
+          id: draft !== null ? 'draft' : (current?.id ?? 'preview'),
+          name: draft?.name ?? current?.name ?? '',
+          zoom,
+          offsetX: pan.x,
+          offsetY: pan.y,
+        };
+
+  const pick = async (): Promise<void> => {
+    setNotice(null);
+    setBusy(true);
+    try {
+      const result = await invoke(CH.backgroundPick);
+      if (result.canceled) return;
+      if (result.dataUrl === undefined || result.name === undefined || result.ext === undefined) {
+        setNotice(result.message ?? '这张图没能读进来。');
+        return;
+      }
+      setDraft({ name: result.name, ext: result.ext, dataUrl: result.dataUrl });
+      setZoom(1);
+      setPan({ x: 0, y: 0 });
+      setNotice(`已选「${result.name}」：拖预览框挪位置，滑杆缩放，满意就按保存。`);
+    } catch (error) {
+      setNotice(errorMessage(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const save = async (): Promise<void> => {
+    setBusy(true);
+    setNotice(null);
+    try {
+      let id = current?.id ?? '';
+      if (draft !== null) {
+        const stored = await invoke(CH.backgroundCommit, {
+          name: draft.name,
+          ext: draft.ext,
+          dataUrl: draft.dataUrl,
+        });
+        id = stored.id;
+      }
+      if (id === '') {
+        setNotice('还没有选图。');
+        return;
+      }
+      await patch.mutateAsync({
+        playerBackground: {
+          id,
+          name: draft?.name ?? current?.name ?? '背景图',
+          zoom,
+          offsetX: pan.x,
+          offsetY: pan.y,
+        },
+      });
+      setDraft(null);
+      // 换过图就要把「取回字节」那个查询作废，否则预览与播放页还挂着上一张的 data: 地址。
+      void queryClient.invalidateQueries({ queryKey: ['playerBackground'] });
+      setNotice('已设为播放页背景。');
+    } catch (error) {
+      setNotice(errorMessage(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const restoreCover = async (): Promise<void> => {
+    setBusy(true);
+    setNotice(null);
+    try {
+      await invoke(CH.backgroundClear);
+      await patch.mutateAsync({ playerBackground: null });
+      setDraft(null);
+      void queryClient.invalidateQueries({ queryKey: ['playerBackground'] });
+      setNotice('已恢复成跟随歌曲封面。');
+    } catch (error) {
+      setNotice(errorMessage(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const cancelDraft = (): void => {
+    setDraft(null);
+    setZoom(current?.zoom ?? 1);
+    setPan({ x: current?.offsetX ?? 0, y: current?.offsetY ?? 0 });
+    setNotice(null);
+  };
+
+  /** 往右拖 = 想看图的左边 ⇒ `object-position` 要变小，所以位移是**减**。 */
+  const onPointerDown = (event: ReactPointerEvent<HTMLDivElement>): void => {
+    if (previewUrl === null || busy) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    drag.current = { px: event.clientX, py: event.clientY, x: pan.x, y: pan.y };
+  };
+
+  const onPointerMove = (event: ReactPointerEvent<HTMLDivElement>): void => {
+    const start = drag.current;
+    const box = previewRef.current;
+    if (start === null || box === null) return;
+    const rect = box.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return;
+    setPan({
+      x: clampPan(start.x - ((event.clientX - start.px) / rect.width) * BACKGROUND_PAN_PER_WIDTH),
+      y: clampPan(start.y - ((event.clientY - start.py) / rect.height) * BACKGROUND_PAN_PER_WIDTH),
+    });
+  };
+
+  const onPointerUp = (event: ReactPointerEvent<HTMLDivElement>): void => {
+    drag.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  };
+
+  const dirty =
+    draft !== null ||
+    (current !== null &&
+      (Math.abs(current.zoom - zoom) > 0.001 ||
+        Math.abs(current.offsetX - pan.x) > 0.001 ||
+        Math.abs(current.offsetY - pan.y) > 0.001));
+
+  return (
+    <section className="pi-card" data-player-background-section="true">
+      <div className="pi-setting pi-setting--stack">
+        <span>
+          <span
+            className="pi-setting__title"
+            title="从本地文件夹挑一张图当播放页背景（跟随歌曲封面的那套背景会被它顶掉）。裁切是「不改原图」的：只记缩放与位置，动图也照样会动。"
+          >
+            播放页背景
+          </span>
+          <span className="pi-setting__hint">
+            {current === null ? '现在跟着这首歌的封面走' : `当前用的是「${current.name}」`}
+            {active.missing ? '（文件已不在，已退回封面）' : ''}
+          </span>
+        </span>
+
+        <div
+          className="pi-bgpreview"
+          ref={previewRef}
+          data-empty={previewUrl === null ? 'true' : 'false'}
+          data-bg-preview="true"
+          onPointerDown={onPointerDown}
+          onPointerMove={onPointerMove}
+          onPointerUp={onPointerUp}
+          onPointerCancel={onPointerUp}
+        >
+          {previewUrl === null || previewSetting === null ? (
+            <span className="pi-bgpreview__empty">还没有背景图</span>
+          ) : (
+            <img
+              src={previewUrl}
+              alt="播放页背景预览"
+              draggable={false}
+              style={playerBackgroundStyle(previewSetting)}
+            />
+          )}
+        </div>
+
+        <div className="pi-bgrow">
+          <label className="pi-bgrow__label" htmlFor="pi-bg-zoom">
+            缩放
+          </label>
+          <input
+            id="pi-bg-zoom"
+            className="pi-range"
+            type="range"
+            min={1}
+            max={3}
+            step={0.01}
+            value={zoom}
+            data-bg-zoom="true"
+            aria-label="背景缩放"
+            disabled={previewUrl === null || busy}
+            onChange={(event) => setZoom(Number(event.currentTarget.value))}
+          />
+          <span className="pi-bgrow__value">{zoom.toFixed(2)}×</span>
+        </div>
+
+        <div className="pi-bgbtns">
+          <button
+            type="button"
+            className="pi-btn"
+            data-bg-pick="true"
+            disabled={busy}
+            onClick={() => void pick()}
+          >
+            {current === null && draft === null ? '从文件夹导入' : '换一张图'}
+          </button>
+          <button
+            type="button"
+            className="pi-btn"
+            data-bg-save="true"
+            disabled={busy || previewUrl === null || !dirty}
+            onClick={() => void save()}
+          >
+            保存裁切
+          </button>
+          {draft === null ? null : (
+            <button type="button" className="pi-btn" data-bg-cancel="true" disabled={busy} onClick={cancelDraft}>
+              取消
+            </button>
+          )}
+          {current === null ? null : (
+            <button
+              type="button"
+              className="pi-btn"
+              data-bg-clear="true"
+              disabled={busy}
+              onClick={() => void restoreCover()}
+            >
+              恢复封面
+            </button>
+          )}
+        </div>
+
+        {notice === null ? null : (
+          <p className="pi-setting__hint" role="status" data-bg-notice="true">
+            {notice}
+          </p>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function clampPan(value: number): number {
+  return Number.isFinite(value) ? Math.min(1, Math.max(-1, value)) : 0;
+}
+
 /** 界面：主题明暗与界面语言。都是 `Settings` 里现成的字段。 */
 function UiTab(): ReactNode {
   const settings = useSettings();
@@ -551,6 +842,38 @@ function UiTab(): ReactNode {
             disabled={patch.isPending}
             options={THEME_ORDER.map((mode) => ({ value: mode, label: THEME_LABEL[mode] }))}
             onChange={(next) => patch.mutate({ theme: next })}
+          />
+        </div>
+
+        {/*
+          主人本轮第 4 条：「加入一个退出到后台的功能，可以在详情设置页选择退出是直接退出还是退出到后台」。
+          默认「直接退出」＝前几版的行为；选「退到后台」之后，右上角那枚关闭键只把窗口收起来，
+          进程继续跑（音乐不断），托盘里留一枚 π 图标负责把窗口叫回来或真正退出。
+          判定在主进程（窗口的 close 事件是同步的，所以那边缓存了一份设置），这里只负责写这个字段。
+        */}
+        <div className="pi-setting" data-close-action-setting="true">
+          <span>
+            <span
+              className="pi-setting__title"
+              title="点右上角的关闭键时：直接退出，还是把窗口收起来继续在后台放歌。选后台时托盘里会留一枚 π 图标（点它可以再显示窗口，或者从它的菜单里真正退出）。"
+            >
+              关闭窗口
+            </span>
+            <span className="pi-setting__hint">
+              {value.closeAction === 'background'
+                ? '退到后台：窗口收起来，音乐继续放，托盘里留一枚 π'
+                : '直接退出：进程一起结束'}
+            </span>
+          </span>
+          <Segmented
+            ariaLabel="关闭窗口时"
+            value={value.closeAction}
+            disabled={patch.isPending}
+            options={[
+              { value: 'quit', label: '直接退出' },
+              { value: 'background', label: '退到后台' },
+            ]}
+            onChange={(next) => patch.mutate({ closeAction: next })}
           />
         </div>
 
@@ -688,6 +1011,9 @@ function UiTab(): ReactNode {
       </section>
 
       <ShortcutSettingsCard />
+
+      {/* 主人本轮第 1 条：从本地文件夹导入一张图当播放页背景（带裁切）。 */}
+      <PlayerBackgroundSection />
 
       <GuideSettingsCard />
     </div>
@@ -961,6 +1287,34 @@ function TuningRange(props: {
   );
 }
 
+/**
+ * 「跟某一套动效走」的那几张卡的外壳（用户本轮第 3 条）。
+ *
+ * 用户贴的图 3 是「云阶 · 错落」那张卡（引导线开关 + 两条错位滑杆），要求是
+ * 「详细设置页里的关于歌词动效的设置，只有选择对应的动效才会出现」——四张专属卡
+ * （浮名 / 流光 / 云阶 / 时计）以前常驻，选哪一套都得滚过另外三套的旋钮。
+ *
+ * 实现上不动卡片内容：只把 `<section className="pi-card">` 换成这个外壳，`show` 为假时
+ * 整张卡不渲染（DOM 里也不在 ⇒ `[data-lyric-tuning]` 自然只剩当前那一套的旋钮）。
+ * `data-lyric-theme-card` 是给冒烟认「这张卡属于哪一套」的抓手。
+ */
+function LyricThemeCard({
+  show,
+  theme,
+  children,
+}: {
+  show: boolean;
+  theme: LyricTheme;
+  children: ReactNode;
+}): ReactNode {
+  if (!show) return null;
+  return (
+    <section className="pi-card" data-lyric-theme-card={theme}>
+      {children}
+    </section>
+  );
+}
+
 /** 歌词：选一个动效主题，写进 `settings.lyricTheme`。 */
 function LyricTab(): ReactNode {
   const settings = useSettings();
@@ -981,6 +1335,17 @@ function LyricTab(): ReactNode {
   const writeTuning = (partial: Partial<LyricTuning>): void => {
     patch.mutate({ lyricTuning: { ...tuning, ...partial } });
   };
+
+  /**
+   * 用户本轮第 3 条：下面四张「跟着某一套动效走」的卡只在该动效被选中时才出现。
+   *
+   * 例外只有一条：「每首歌随机主题」开着时，播放页到底用哪一套是**按歌抽的**
+   * （`tuning.randomThemePerSong`），那就四张都留着——抽到哪一套都有得调；
+   * 关掉时严格只留选中那一张（cadenza / tilt / monet / tempera / sonnet 这五套
+   * 没有专属旋钮，因此那种档位下页面上就只剩通用的「歌词动效参数」卡）。
+   */
+  const showThemeCard = (theme: LyricTheme): boolean =>
+    tuning.randomThemePerSong || value.lyricTheme === theme;
 
   return (
     <div className="pi-settings" data-settings-tab-panel="lyric">
@@ -1086,11 +1451,40 @@ function LyricTab(): ReactNode {
           onCommit={(next) => writeTuning({ motionAmount: next })}
         />
 
+        {/*
+          用户本轮第 3 条：「莫奈歌词动效所示的辉光，我希望是每个歌词动效都可以有，
+          并且可以在详情设置页内关闭」。滑杆拉到 0 本来也算关，但不够显眼，所以补一枚**明确的开关**。
+          两个控件写的是同一个数（`glowIntensity`）：开关关掉写 0、打开写 1；滑杆继续给「多浓」。
+
+          抓手刻意用 `data-lyric-glow-switch` 而**不占** `data-lyric-tuning`——后者是旋钮清单的抓手，
+          多一个会让冒烟那条「通用旋钮七个 + 专属几张卡」的判据对不上。
+        */}
+        <div className="pi-setting">
+          <span>
+            <span
+              className="pi-setting__title"
+              title="字上那圈辉光的总开关：关掉等于把下面的强度拉到 0。流光 / 浮名 / 心象 / 云阶 / 倾诉 / 莫奈 都吃这一项。"
+            >
+              歌词辉光
+            </span>
+            <span className="pi-setting__hint">每套动效字上的那圈光</span>
+          </span>
+          <input
+            className="pi-check"
+            type="checkbox"
+            data-lyric-glow-switch="true"
+            aria-label="歌词辉光"
+            checked={tuning.glowIntensity > 0}
+            disabled={patch.isPending}
+            onChange={(event) => writeTuning({ glowIntensity: event.target.checked ? 1 : 0 })}
+          />
+        </div>
+
         <TuningRange
           field="glowIntensity"
           title="辉光强度"
           hint="0 就是关掉辉光"
-          tip="字上那层辉光的倍数，0 就是彻底关掉。只对自带辉光的主题（心象、浮名）有肉眼可见的变化。"
+          tip="字上那层辉光的倍数，0 就是彻底关掉（等于上面那枚开关关掉）。流光 / 浮名 / 心象 / 云阶 / 倾诉 / 莫奈 都按它缩放自己的辉光；时计 / 凝彩 / 商籁 是把字画在画布上的，字上辉光还没接，这一项对它们暂时没有变化。"
           min={0}
           max={1.6}
           step={0.01}
@@ -1098,6 +1492,38 @@ function LyricTab(): ReactNode {
           resetNonce={resetNonce}
           onCommit={(next) => writeTuning({ glowIntensity: next })}
         />
+
+        {/*
+          用户本轮第 3 条后半段：「我指的不是歌词的，是背景的光」——这一枚管的是**背景**那几层光，
+          与上面那枚「歌词辉光」（字上的 text-shadow）是两件事，别混。
+          关掉之后沉浸式背景只剩封面本身与几何浮层，字与封面都不动。
+
+          **本轮修正**：原先这一枚只关得掉 CSS 那三层（`__aura` / `__bloom` / `__sidelight`），
+          而「封面暖光」在底图烤好之后是**烤在位图里**的、莫奈主题还有一张自己烤的底图整幅盖着窗口、
+          `.pi-home__stage` 那两团从封面取色的环境光更是压根没接进来 —— 于是「关掉还是亮的」。
+          现在这四处一起跟着它走（烤图参数 `glowScale: 0` + 一条 `body:has(...)` 关掉那两团渐变）。
+          凝彩是唯一例外：它的底是一整幅不透明的纸，这几层光在它下面本来就看不到（见 `lyric-tempera.css`）。
+        */}
+        <div className="pi-setting">
+          <span>
+            <span
+              className="pi-setting__title"
+              title="播放页背景里那几层光：跟着当前这句歌词情绪走的「氛围光晕」、按莫奈那团黄光的几何补的「封面暖光」（含烤进底图的那一份）、暗色模式下从左侧打进来的「侧光」，以及铺满整页、色相跟着歌曲走的两团「环境光」。关掉后背景只剩封面与几何浮层。跟主题无关，一次管住所有歌词动效；凝彩的底是一整幅不透明的纸，它下面本来就没有这层光，所以那一套看不出变化。"
+            >
+              背景氛围光
+            </span>
+            <span className="pi-setting__hint">封面暖光 + 氛围光晕 + 暗档侧光 + 两团环境光</span>
+          </span>
+          <input
+            className="pi-check"
+            type="checkbox"
+            data-lyric-tuning="backgroundGlow"
+            aria-label="背景氛围光"
+            checked={tuning.backgroundGlow}
+            disabled={patch.isPending}
+            onChange={(event) => writeTuning({ backgroundGlow: event.target.checked })}
+          />
+        </div>
 
         <div className="pi-setting">
           <span>
@@ -1174,8 +1600,10 @@ function LyricTab(): ReactNode {
        * 第十四轮（用户 m05281）第 3/4/6/7 条：每套主题各有一小组「跟着它走」的旋钮。
        * 参考图 4/5 就是这种「标题 + 数值 → 一条细滑杆」的行。默认值刻意等于改造前的观感，
        * 所以这一页第一次打开时，画面与老版本一模一样。
+       *
+       * 用户本轮第 3 条：四张卡改由 `LyricThemeCard` 按当前选中的动效显隐（见那个组件的注释）。
        * ------------------------------------------------------------------ */}
-      <section className="pi-card">
+      <LyricThemeCard show={showThemeCard('fume')} theme="fume">
         <div className="pi-sectionhead">
           <span className="pi-setting__title">浮名 · 镜头</span>
         </div>
@@ -1225,9 +1653,9 @@ function LyricTab(): ReactNode {
           format={(next) => `${next.toFixed(2)}x`}
           onCommit={(next) => writeTuning({ fumeCameraSpeed: next })}
         />
-      </section>
+      </LyricThemeCard>
 
-      <section className="pi-card">
+      <LyricThemeCard show={showThemeCard('classic')} theme="classic">
         <div className="pi-sectionhead">
           <span className="pi-setting__title">流光 · 逐字</span>
         </div>
@@ -1258,9 +1686,9 @@ function LyricTab(): ReactNode {
             onChange={(event) => writeTuning({ classicWordSpin: event.target.checked })}
           />
         </div>
-      </section>
+      </LyricThemeCard>
 
-      <section className="pi-card">
+      <LyricThemeCard show={showThemeCard('partita')} theme="partita">
         <div className="pi-sectionhead">
           <span className="pi-setting__title">云阶 · 错落</span>
         </div>
@@ -1319,9 +1747,9 @@ function LyricTab(): ReactNode {
           format={(next) => `${Math.round(next)}px`}
           onCommit={(next) => writeTuning({ partitaStaggerMax: next })}
         />
-      </section>
+      </LyricThemeCard>
 
-      <section className="pi-card">
+      <LyricThemeCard show={showThemeCard('pendolo')} theme="pendolo">
         <div className="pi-sectionhead">
           <span className="pi-setting__title">时计 · 表盘</span>
         </div>
@@ -1408,7 +1836,7 @@ function LyricTab(): ReactNode {
             onChange={(event) => writeTuning({ pendoloCoverOnDial: event.target.checked })}
           />
         </div>
-      </section>
+      </LyricThemeCard>
     </div>
   );
 }

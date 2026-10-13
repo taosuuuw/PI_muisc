@@ -490,6 +490,23 @@
       );
 }
 
+/*
+ * 用户本轮第 3 条：「莫奈歌词动效所示的辉光，我希望是每个歌词动效都可以有，并且可以在
+ * 详情设置页内关闭」。设置页那枚开关写的就是 `glowIntensity`，`LyricStage` 在它为 0 时
+ * 给根节点挂 `data-glow='off'`。
+ *
+ * 为什么不能只靠 `--pi-word-glow-gain: 0` 把半径清零就好：上面 classic 那四层里有三层半径
+ * 是**按字号写死的**（`0.06em` / `0.3em`），根本不读 JS 那两个变量，清零关不掉它们；
+ * 所以这里直接把它们按成 `text-shadow: none`。
+ *
+ * 权重：上面那条带 `[data-theme='classic']` 的是 (0,4,0)，所以第一条也得带上它才压得住
+ * （(0,5,0)）；第二条管的是三套主题共用的那条常态亮字规则（(0,2,0)），(0,3,0) 够用。
+ */
+.pi-lyricstage[data-glow='off'][data-theme='classic'] .pi-lyricstage__word[data-word-state='active'],
+.pi-lyricstage[data-glow='off'] .pi-lyricstage__word[data-word-state='active'] {
+  text-shadow: none;
+}
+
 /* （旧方案的实现说明已在用户本轮第 2 条整段删除：流光原来是「四帧关键帧 + 落定回 1 倍 +
  *  一律从左上角 0.9~1.4em 飞来」，与 folia classic 的三态弹簧模型不是一回事。现在的口径见
  *  下面「classic：三态动效（照 folia classic 重做）」那一段。） */

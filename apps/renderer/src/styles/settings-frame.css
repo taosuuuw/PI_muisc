@@ -128,6 +128,80 @@
 
 /* ------------------------------- 内容区 ------------------------------- */
 
+/* ---- 播放页自定义背景（主人本轮第 1 条） ---- */
+
+/*
+ * 预览盒：比例与播放页窗口（1180×770）一致 ⇒ 这里看到的取景就是播放页的取景。
+ * 预览里的图与播放页封面层共用同一套取值方式（`object-fit: cover` + `object-position`
+ * + `--pi-cover-scale`，三个值都由 `playerBackgroundStyle()` 算），所以是「所见即所得」。
+ */
+.pi-bgpreview {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1180 / 770;
+  max-height: 260px;
+  overflow: hidden;
+  border-radius: 12px;
+  background: var(--pi-glass-bg-light);
+  border: 1px solid var(--pi-glass-border-light);
+  cursor: grab;
+  /* 拖动是「挪图」，别让指针事件顺手把设置页滚走。 */
+  touch-action: none;
+  user-select: none;
+}
+
+.pi-bgpreview[data-empty='true'] {
+  display: grid;
+  place-items: center;
+  cursor: default;
+}
+
+.pi-bgpreview:active {
+  cursor: grabbing;
+}
+
+.pi-bgpreview__empty {
+  font-size: 12px;
+  color: var(--pi-text-tertiary);
+}
+
+.pi-bgpreview img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  /* 与播放页封面层同一个变量：裁切与漂移都乘在它上面，见 immersive-background.css。 */
+  transform: scale(var(--pi-cover-scale, 1.14));
+  pointer-events: none;
+}
+
+.pi-bgrow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+}
+
+.pi-bgrow__label,
+.pi-bgrow__value {
+  font-size: 12px;
+  color: var(--pi-text-sub);
+}
+
+.pi-bgrow__value {
+  min-width: 46px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.pi-bgbtns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  width: 100%;
+}
+
 .pi-settings-frame__body {
   /* 外框自己撑高度，滚动条落在内容区上：头部与底部同步键因此始终可见。 */
   max-height: min(58vh, 560px);

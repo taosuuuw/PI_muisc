@@ -53,6 +53,20 @@
 .pi-immersive__blur {
   position: absolute;
   inset: 0;
+  /*
+   * 封面呼吸（用户本轮第 2 条）：「歌曲封面背景应该是会呼吸式浮动，而不是静止不动的」。
+   *
+   * 这棵子树原来只有封面自己那条 46~64 秒的漂移（平移 ≤2.2% + 缩放 ±1.5%）：周期比一首歌
+   * 还长、幅度只有一个像素级，看上去就是「不动」。所以把**呼吸**单独挂在两层的公共父节点上：
+   *   · 父层只做 scale、子层继续各自漂移 —— 两个 `transform` 分属两层，**可以叠加**；
+   *     写在同一层上的两条 transform 动画只会后者覆盖前者（所以不能挂到封面自己身上）。
+   *   · 8 秒走一趟、`alternate` ⇒ 16 秒一个完整呼吸；幅度 1 → 1.055，6% 出头的推拉肉眼
+   *     刚好读得出「在呼吸」，又不至于晃眼。
+   *   · **只放大不缩小**：父层若缩到 1 以下，四周会露出底色（封面自己那 1.14 倍余量是留给
+   *     漂移的，不该被这层吃掉）。
+   * 停帧与降级都沿用现成那两条（`[data-paused='true'] *` 与 `prefers-reduced-motion`）。
+   */
+  animation: pi-immersive-cover-breath 8s ease-in-out infinite alternate;
 }
 
 /*
@@ -310,6 +324,122 @@
   );
 }
 
+/*
+ * 用户本轮第 2 条（贴的图 2）：暗色模式下**不要**「中间一个黑团 + 外面一圈光环」，
+ * 整体变暗就行。
+ *
+ * 图文对照：「黑团」就是这一层的椭圆——暗档的 `--pi-immersive-bg` 是近黑（`#101418`
+ * 那一族），72% 压在最中间、向外衰减到 0 ⇒ 中间被压黑、四周露着封面；「光环」则是
+ * 压在上面的 `__aura`（椭圆 64%×58%，比这一层的 42/46 vmin **更宽**、颜色在暗档又是亮的）
+ * 从黑团边缘露出来的那一圈。
+ *
+ * 所以暗档把这一层改成**满幅平铺**：同一个颜色、同一个浓度铺满整块画布。
+ * ① 没有中心权重 ⇒ 黑团与光环一起没了，四周与中间一样暗；
+ * ② 浓度取 0.55：叠上第 2 层 wash 的 0.34，整体压到约七成暗（改造前只有正中那一点有
+ *    这个量级）——封面仍认得出是哪一张，歌词那一列与四周同色，对比度不再依赖
+ *    「恰好站在圆心」；
+ * ③ **亮档一字未动**：那一层是近白的 `#f2f5fa`，它的中心权重看着是「中间一块亮」，
+ *    不是用户否掉的那个黑团。
+ */
+.pi-immersive[data-scheme='dark'] .pi-immersive__lyric-veil {
+  background: color-mix(in srgb, var(--pi-immersive-bg) 55%, transparent);
+}
+
+/* ---- 底图换成莫奈那条洗色管线烤的图之后，上面那几道压暗各退一档 ---- */
+
+/*
+ * 底图现在与莫奈同源（取封面 → 逐像素按亮度往主题色洗 → 叠光，见 `ImmersiveBackground.tsx`
+ * 的 `posterUrl`；颜色来源已对齐成 `--pi-th-*` 那套界面实时主题色，与莫奈喂的完全一致）。
+ * 那张图自己就带了明暗与色相，而 `__wash`（0.34 底色）、暗档 `__lyric-veil`（0.55 底色）、
+ * `__vignette`（四角 0.5 黑）这三层是按「原封面 + 手动压暗」调出来的 ⇒ 叠上去就是二次压暗。
+ *
+ * 实测（同一首歌切主题，取样点 8%/82% 的 10%×10% 框）：六套 `rgb(55,57,54)` 饱和 4（灰的），
+ * 莫奈 `rgb(58,83,90)` 饱和 26（带主题色）——差的就是这一档。下面按同一侧的读数取中间值，
+ * 再用冒烟实拍复量；没封面 / 还在烤图时（`data-base='cover'`）保持原样，旧观感一字不改。
+ *
+ * 为什么还留一点：遮罩与暗角是**歌词可读性**的最后一道保险（封面亮的时候白字要靠它们压出对比）。
+ *
+ * 第 1 轮量出来的结果：颜色来源对齐之后**饱和**从 4 跳到 33~35（莫奈 57）、左下 15（莫奈 26），
+ * 但亮度还差一截（左中 123 莫奈 166、左下 84 莫奈 119）⇒ 再退一档：wash 0.1→0、暗档遮罩 0.22→0.10、
+ * 暗角 0.18→0.10，并**把暗档那支亮度滤镜还给烤图**（`__cover` 的 `brightness(0.9)` 是给原封面压的，
+ * 烤图自己已经压过一遍，再压就是第三遍）。
+ */
+.pi-immersive[data-base='poster'] .pi-immersive__wash {
+  opacity: 0;
+}
+
+.pi-immersive[data-base='poster'][data-scheme='dark'] .pi-immersive__lyric-veil {
+  background: color-mix(in srgb, var(--pi-immersive-bg) 10%, transparent);
+}
+
+.pi-immersive[data-base='poster'] .pi-immersive__vignette {
+  background: radial-gradient(circle, transparent 50%, rgba(0, 0, 0, 0.1) 100%);
+}
+
+/* 烤图不用再压亮度（暗档那支 0.9 是给原封面准备的）；柔化与饱和度保持原样。 */
+.pi-immersive[data-base='poster'][data-scheme='dark'] .pi-immersive__cover {
+  filter: blur(3px) saturate(1.06) brightness(1);
+}
+
+/*
+ * 自定义背景（主人本轮第 1 条：设置页导入本地图当播放页背景）：
+ * 用户自己挑的图**不吃封面那支 3px「软化」** —— 那支是给「封面」定的（认得出、又别抢戏），
+ * 而这张图就是主人特意选的背景，再糊一层只是白给。
+ * 其余待遇与 `[data-base='cover']` 完全一致（wash / 歌词纱 / 暗角 / 那几层光都照旧）：
+ * 那几层是歌词可读性的保险，跟底图从哪来无关。裁切的放大走 `--pi-cover-scale`（内联写死）。
+ */
+.pi-immersive[data-base='custom'] .pi-immersive__cover {
+  filter: none;
+}
+
+/* ---- 第 7.5 层：封面暖光（用户本轮：图 1 那团黄色光，六套早先的歌词动效都得有） ---- */
+
+/*
+ * 原话：「就像图 1 里的黄色光一样，这个之前六个歌词动效都得有」。
+ *
+ * 图 1 是**莫奈**，那团黄光来自它自己的背景管线（`monetBackground.ts` 的 `leftBloom`）：
+ * 以 `accentColor` 为中心色的径向渐变，圆心 `(18% 宽, 34% 高)`、半径 `55% 宽`、
+ * 峰值 alpha = `overlay × 0.42`（`monetBackground.ts:247~258`）。莫奈那层底图整幅盖住窗口，
+ * 所以只有莫奈看得见它；其余六套（流光/云阶/倾诉/时计/浮名/心象）用的是这层**公共背景**。
+ *
+ * 这里按同一套几何补一层，颜色取 `--pi-immersive-accent`：这个值本身就是**从封面推导出来的**
+ * 主题色（`HomePage` 注入），所以封面是暖金时这团光就是暖金 —— 与图 1 同源，而不是写死一个黄。
+ * 浓度跟着当前这句的情绪强度走（`--pi-immersive-aura`，0.12~0.6），所以它是「跟着歌呼吸的一团光」。
+ *
+ * ⚠ **位置是量出来的，不是拍的**：第一版把它放在 `__wash` 之上（DOM 序在 `__lyric-veil` 之前），
+ * 结果被遮罩那 55% 与暗角吃掉大半 —— 同一首歌（`Ai Đưa Em Về / Boblues Remix`）在莫奈那边
+ * 左中取样是 `rgb(208,142,95)` 的暖金，六套这边量出来还是 `rgb(68,82,92)` 的冷灰，肉眼看不出来。
+ * 它是**光**不是底色，所以现在排在 `__lyric-veil` 与 `__vignette` 之后、与 `__sidelight` 同组
+ * （都是打在背景上的光）。歌词正文在舞台那一层，仍在这几层之上，可读性不受影响。
+ *
+ * ⚠ **峰值浓度是反解出来的，不是拍的**（用户第四轮：「其他歌词动效的氛围光强度要和图 1 一致」）：
+ * 同一首歌（太阳と向日葵 / Flower）、同一取样点（18%/34%，16%×16% 方框）实测——
+ *   图 1 莫奈 = rgb(134,102,88)、亮度 110、暖度 R−B = **+46**；
+ *   图 2 另一套 = rgb(97,85,81)、亮度 88、暖度 **+16**：当时峰值 ≈0.33，只有目标的约三分之一。
+ * 按 `像素 = 底色 × (1−p) + accent × p` 反解（底色由 `中(50%,34%)` 那一带估计、accent 取
+ * rgb(236,151,90)，见冒烟「浮名块诊断」那一行）：要暖度到 +46、亮度到 110，p 必须 ≈ **0.48**。
+ *
+ * ⚠ 这一层只在**没有烤图**时出场（`[data-base='cover']`）：底图换成莫奈那条管线的烤图之后，
+ * 那团暖光由烤图自带的 `leftBloom` 提供（与莫奈完全同源、含量一致），再叠一遍就是双倍。
+ * **反过来说**：这一层与烤图里那团光是**同一团光**，所以「背景氛围光」关掉时必须两边一起关 ——
+ * 这里由下面那条 `[data-ambient='off']` 规则办，位图那头由烤图参数 `glowScale: 0` 办
+ * （见 `ImmersiveBackground.tsx` / `MonetTheme.tsx`）。
+ */
+.pi-immersive[data-base='cover'] .pi-immersive__bloom {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(55% 55% at 18% 34%, var(--pi-immersive-accent) 0%, transparent 100%);
+  /* 0.2 + aura×0.42（≈0.33，比图 1 弱三分之二）→ 0.34 + aura×0.5（≈0.49）。 */
+  opacity: calc(0.34 + var(--pi-immersive-aura) * 0.5);
+  transition: opacity 0.9s ease;
+}
+
+/* 有烤图时暖光在烤图里，这一层不参与：显式关掉，别留个空 div 在 DOM 里猜。 */
+.pi-immersive[data-base='poster'] .pi-immersive__bloom {
+  display: none;
+}
+
 /* ---- 第 6 层：暗角 ---- */
 
 .pi-immersive__vignette {
@@ -356,6 +486,52 @@
   );
 }
 
+/* ---- 背景氛围光总开关（用户本轮第 3 条后半段） ---- */
+
+/*
+ * 原话：「那我问你，我选流光左边的辉光呢？或者说氛围光？我指的不是歌词的，是背景的光」。
+ *
+ * 他指的是**背景里的光**，不是字上的辉光：亮档/暗档都有的那团「氛围光晕」（`__aura`，颜色跟着
+ * 当前这句歌词的情绪走）+ 暗档从左侧打进来的那道侧光（`__sidelight`，用户第二十一轮第 4 条）
+ * + 封面暖光（`__bloom`，本轮按莫奈那团黄光的几何补的那层，所有主题共用）。
+ * 三层都跟主题无关（属于沉浸式背景），所以这一枚开关**一次管住所有歌词动效**。
+ *
+ * 用 `opacity: 0` 而不是 `display: none`：这几层关/开时都能淡出去，在设置页里点开关不会「啪」地跳一下。
+ * 基础规则是 (0,1,0)，这里带 `[data-ambient]` 是 (0,3,0)，不需要 `!important`。
+ *
+ * ⚠ **本轮修正：只有这几条 CSS 是不够的**，光还有两个「不在这几层里」的出口：
+ *   ① **烤进位图的封面暖光** —— 底图烤好之后 `__bloom` 就 `display: none` 了
+ *      （见上面第 7.5 层那段），那团暖光此时在**位图里**，CSS 关不掉；
+ *      莫奈主题自己那张烤图同理（它整幅盖住窗口，这几层根本露不出来）。
+ *      ⇒ 两边都由 `monetBackgroundTuningFor(backgroundGlow, …)` 在**烤图参数**上关掉
+ *        （`glowScale: 0`），调用点在 `ImmersiveBackground.tsx` 与 `MonetTheme.tsx`。
+ *   ② **`.pi-home__stage` 那两团从封面取色的环境光**（`global.css:2682`）——见下面那条规则。
+ */
+.pi-immersive[data-ambient='off'] .pi-immersive__aura,
+.pi-immersive[data-ambient='off'] .pi-immersive__bloom,
+.pi-immersive[data-ambient='off'] .pi-immersive__sidelight {
+  opacity: 0;
+  transition: opacity 0.4s ease;
+}
+
+/*
+ * 那两团「从封面取色的环境光」也归这枚开关管（本轮修正）。
+ *
+ * 它们是 `.pi-home__stage` 自己的一对 radial（`global.css:2682`，色相来自当前歌曲的
+ * `--pi-np-accent`），铺满整页、亮档暗档都在 —— 关掉氛围光而留着这两团，画面上依然「一片有光」，
+ * 用户看到的就是「开关没生效」。它跟上面三层是同一类东西（背景的光，不是字上的辉光），
+ * 所以跟着同一枚开关走：关掉 = 背景只剩封面与几何浮层（与设置页那句 hint 对齐）。
+ *
+ * 为什么写成 `body:has(...)` 而不是 `.pi-immersive[data-ambient='off'] .pi-home__stage`：
+ * `.pi-home__stage` 与 `.pi-immersive` 是**兄弟**（都挂在 `section.pi-home` 下），不是后代 ——
+ * 这个选择器是唯一能一行搞定、又不用把开关状态抬到公共祖先上的写法。`:has()` 在 Electron
+ * （Chromium 13x）可用；万一不支持，整条被忽略，等于退回改造前的行为，不会更差
+ * （凝彩那条 `body:has(...) .pi-home__stage { background-image: none }` 用的是同一个前提）。
+ */
+body:has(.pi-immersive[data-ambient='off']) .pi-home__stage {
+  background-image: none;
+}
+
 /* ---- 关键帧 ---- */
 
 /* 自转：初始角写在元素的 `rotate` 属性上（独立于 transform），所以这里从 0 转到 360 即可。 */
@@ -400,6 +576,16 @@
  * 否则 3px 模糊在四边透出的那圈半透明会被带进画面。
  * `translate3d` 写在 `scale` 前面：百分比位移按元素自身尺寸算，不会再被放大倍率乘一遍。
  */
+/* 封面呼吸（用户本轮第 2 条）：只在这两帧之间来回（`alternate`），幅度固定，不按歌变。 */
+@keyframes pi-immersive-cover-breath {
+  from {
+    transform: scale(1);
+  }
+  to {
+    transform: scale(1.055);
+  }
+}
+
 @keyframes pi-immersive-cover-drift {
   0% {
     transform: translate3d(0, 0, 0) scale(var(--pi-cover-scale));

@@ -1,0 +1,156 @@
+/*
+ * 评论的写操作样式（用户第五轮第 8 条：点赞 / 打字评论 / 回复评论）。
+ *
+ * 面板本身的行样式在 `global.css` 的 `.pi-comment*` 一族里；这一张只管
+ * 输入区（`.pi-commentbox`）与那两枚可点的部件（回复键、红心键）。
+ */
+
+.pi-commentbox {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 14px;
+  padding: 10px 12px 8px;
+  border: 1px solid var(--pi-divider);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--pi-surface) 70%, transparent);
+}
+
+/* 「回复 @某某」那一行：窄、可关，不抢输入框的注意力。 */
+.pi-commentbox__reply {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 3px 8px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--pi-primary) 12%, transparent);
+  color: var(--pi-primary);
+  font-size: 11.5px;
+}
+
+.pi-commentbox__replycancel {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.7;
+}
+
+.pi-commentbox__replycancel:hover {
+  opacity: 1;
+  background: color-mix(in srgb, var(--pi-primary) 20%, transparent);
+}
+
+.pi-commentbox__input {
+  width: 100%;
+  min-height: 44px;
+  max-height: 140px;
+  padding: 6px 2px;
+  border: 0;
+  background: transparent;
+  color: var(--pi-text);
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 1.6;
+  resize: vertical;
+}
+
+.pi-commentbox__input:focus {
+  outline: none;
+}
+
+.pi-commentbox__input::placeholder {
+  color: var(--pi-text-tertiary);
+}
+
+.pi-commentbox__foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pi-commentbox__count {
+  font-size: 11px;
+  color: var(--pi-text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+.pi-commentbox__count[data-comment-over='true'] {
+  color: #e5484d;
+  font-weight: 600;
+}
+
+.pi-commentbox__error {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 11px;
+  color: #e5484d;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pi-commentbox__send {
+  margin-left: auto;
+  min-width: 62px;
+}
+
+/* 评论行底部那两枚可点部件。 */
+.pi-comment__replybtn {
+  padding: 0 2px;
+  border: 0;
+  background: transparent;
+  color: var(--pi-text-tertiary);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.pi-comment__replybtn:hover {
+  color: var(--pi-primary);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/*
+ * 红心键：底子是 `global.css` 里那条 `.pi-comment__like`（一枚心 + 数字），
+ * 这里只把它从「一段文字」变成「一颗按钮」。
+ */
+button.pi-comment__like {
+  margin-left: auto;
+  padding: 2px 7px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--pi-text-tertiary);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: color 0.16s ease, background 0.16s ease, border-color 0.16s ease;
+}
+
+button.pi-comment__like:hover:not(:disabled) {
+  color: var(--pi-primary);
+  background: color-mix(in srgb, var(--pi-primary) 10%, transparent);
+}
+
+button.pi-comment__like[data-liked='true'] {
+  color: var(--pi-primary);
+  border-color: color-mix(in srgb, var(--pi-primary) 40%, transparent);
+  background: color-mix(in srgb, var(--pi-primary) 14%, transparent);
+}
+
+button.pi-comment__like[data-liked='true'] svg {
+  fill: currentColor;
+}
+
+button.pi-comment__like:disabled {
+  opacity: 0.55;
+  cursor: default;
+}

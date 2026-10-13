@@ -1,0 +1,62 @@
+# 「pi」在**系统里**显示成什么名字与图标（用户本轮第 2 条：
+# 「如图所示 pi 在系统显示不是 app 名和图标，应该要改善一下」）。
+#
+# === 为什么必须有这份配置 ===
+# 开发态跑的是 `electron.exe`：任务栏、系统媒体控件（Windows 的 SMTC）读的是**进程所在 exe**
+# 的名字与图标 —— 那是 Electron 自己的（Atom 图标 + 「Electron」）。主进程里
+# `app.setName('pi')` 只改运行时名字、`BrowserWindow({ icon })` 只改窗口图标，两样都改不动
+# 任务栏分组用的那一份（Windows 按 AppUserModelID 找已注册的快捷方式，找不到就回落到 exe 图标）。
+# 只有打包出自己的 **pi.exe** + 安装时写入的快捷方式（其 AUMID 与下面 `appId` 一致）之后，
+# 系统才会把它当成「pi」。
+#
+# === 怎么用（仓库根目录，别在 apps/desktop 里跑）===
+#   node node_modules\electron-builder\out\cli\cli.js --project apps/desktop ^
+#        --config apps/desktop/electron-builder.yml --win
+# `--project` 必须给：所有相对路径（`out/**/*`、`../../build/pi.ico`）都是相对**应用目录**
+# `apps/desktop` 算的，不给就会按仓库根去解析、找不到 out。
+#
+# （这份配置目前只在打包时生效 —— 开发态直接 `npm run dev` 的那套观感一点不受影响。）
+
+# 必须与主进程 `app.setAppUserModelId('com.pi.music')` 完全一致：任务栏分组与通知都认它。
+appId: com.pi.music
+
+# 系统里显示的名字（安装目录名、开始菜单、控制面板卸载项）。
+productName: pi
+copyright: PI
+
+directories:
+  # 产物放到仓库根的 dist/desktop（不污染 app 目录）。
+  output: ../../dist/desktop
+  # 图标等打包资源的基准目录：仓库根的 build/（里面已有 pi.ico / pi-embed.ico / pi-icon-256.png）。
+  buildResources: ../../build
+
+files:
+  - out/**/*
+  - package.json
+
+# 图标跟着产物走：打包后落在 resources/build/pi.ico —— 正好是主进程图标候选里的第二条
+# （`path.join(process.resourcesPath, 'build/pi.ico')`），所以打包态与开发态都找得到图标。
+extraResources:
+  - from: ../../build/pi.ico
+    to: build/pi.ico
+
+win:
+  icon: ../../build/pi.ico
+  target:
+    - nsis
+
+nsis:
+  # 开始菜单/桌面快捷方式的名字。**快捷方式带 AUMID 才是任务栏认「pi」的关键**，
+  # electron-builder 写快捷方式时会带上 appId，所以这里不用再手写 AUMID。
+  shortcutName: pi
+  installerIcon: ../../build/pi.ico
+  uninstallerIcon: ../../build/pi.ico
+  # false = 按当前用户安装，不需要管理员权限。
+  perMachine: false
+
+mac:
+  category: public.app-category.music
+
+linux:
+  category: Audio
+  icon: ../../build

@@ -531,7 +531,11 @@ export function PiQuickOrb({
           onContextMenu={(event) => event.preventDefault()}
         >
           <span className="pi-quick-orb__ball-glow" aria-hidden="true" />
-          <span className="pi-quick-orb__logo">PI</span>
+          {/*
+            球心的品牌字：主人本轮第 2 条把应用图标改成「蓝底白 π」，这里跟着换成数学里的 π
+            （原来是与图标同款的字母 PI）。单字素 ⇒ CSS 那边把为两个字母留的字距去掉了。
+          */}
+          <span className="pi-quick-orb__logo">π</span>
         </button>
       </span>
     </div>

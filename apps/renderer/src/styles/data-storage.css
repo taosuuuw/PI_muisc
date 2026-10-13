@@ -1,0 +1,116 @@
+/*
+ * 本地数据与缓存（用户第五轮第 2 条）。
+ *
+ * 排版是「三行路径 + 一组占用 + 一行按钮」，都用设置页既有的 `.pi-card` /
+ * `.pi-setting__title` / `.pi-setting__hint` / `.pi-btn` 令牌，只补这里特有的网格。
+ */
+
+.pi-dstore .pi-sectionhead {
+  align-items: center;
+}
+
+.pi-dstore .pi-sectionhead .pi-setting__title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pi-dstore__total {
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--pi-primary);
+  white-space: nowrap;
+}
+
+.pi-dstore__paths {
+  display: grid;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.pi-dstore__pathrow {
+  display: grid;
+  gap: 6px;
+}
+
+.pi-dstore__pathmeta {
+  display: grid;
+  gap: 1px;
+}
+
+.pi-dstore__pathline {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+/* 路径是等宽字体才好读（目录名里的数字与斜杠不对齐会很难扫）。
+   字号压到 12px：完整路径很长，撑破卡片比小一号更难看。 */
+.pi-dstore__path {
+  font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+  font-size: 12px;
+}
+
+.pi-dstore__groups {
+  display: grid;
+  gap: 2px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--pi-divider);
+}
+
+.pi-dstore__group {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 0;
+}
+
+.pi-dstore__groupmeta {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+
+.pi-dstore__groupname {
+  font-size: 13px;
+  color: var(--pi-text);
+}
+
+.pi-dstore__bytes {
+  font-size: 12.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--pi-text-dim, var(--pi-text));
+  white-space: nowrap;
+}
+
+.pi-dstore__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+
+.pi-dstore__actions .pi-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.pi-dstore__notice {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--pi-primary);
+}
+
+/* 窄窗口：路径换成竖排，别把「复制」键挤到卡片外面去。 */
+@media (max-width: 460px) {
+  .pi-dstore__pathline {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

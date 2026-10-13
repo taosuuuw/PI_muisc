@@ -12,6 +12,7 @@ import type {
   CommentPage,
   Lyric,
   LyricSourceMode,
+  PlayerBackground,
   Quality,
   Settings,
   Song,
@@ -211,6 +212,63 @@ export function useSettings() {
     queryFn: () => invoke(CH.settingsGet),
     staleTime: 30_000,
   });
+}
+
+/**
+ * 播放页自定义背景（主人本轮第 1 条）。
+ *
+ * 设置里存的是**文件名**（`playerBackground.id`），图本身的字节在主进程那边
+ * （`userData/player-background/`），所以这里把字节取回来变成 `data:` 地址，
+ * 直接就能塞进 `<img src>`（CSP 的 `img-src` 白名单里有 `data:`）。
+ *
+ * key 里带 id：这张图不会自己变，换了图必然换 id，所以 `staleTime: Infinity` 是安全的。
+ */
+export function usePlayerBackground(): {
+  readonly dataUrl: string | null;
+  readonly setting: PlayerBackground | null;
+  readonly missing: boolean;
+} {
+  const settings = useSettings();
+  const setting = settings.data?.playerBackground ?? null;
+  const id = setting?.id ?? '';
+  const query = useQuery({
+    queryKey: ['playerBackground', id],
+    queryFn: () => invoke(CH.backgroundRead, { id }),
+    enabled: id !== '',
+    staleTime: Infinity,
+  });
+  if (id === '' || setting === null) return { dataUrl: null, setting: null, missing: false };
+  return {
+    dataUrl: query.data?.dataUrl ?? null,
+    setting,
+    missing: query.data?.missing === true,
+  };
+}
+
+/**
+ * 裁切参数 → 封面层的内联样式（非破坏性裁切）。
+ *
+ * 两个自由度映射到两个现成的 CSS 口子，一行都不新加渲染路径：
+ *   · `zoom` → `--pi-cover-scale`。封面那支漂移动画的每一帧都是
+ *     `transform: … scale(var(--pi-cover-scale))`，所以把它换掉就等于「连漂移一起放大」，
+ *     不会出现「放大被动画覆盖掉」。基准仍乘 1.14（封面层本来那点余量，漂移不会露边）。
+ *   · `offsetX/Y` → `object-position`。`object-fit: cover` 之下图是溢出盒子的，
+ *     挪 `object-position` 就是把可视窗口在图上游走，纯平移、不重采样。
+ */
+export function playerBackgroundStyle(setting: PlayerBackground): Record<string, string> {
+  const percent = (value: number): string => `${(50 + clampUnit(value) * 50).toFixed(2)}%`;
+  return {
+    '--pi-cover-scale': (1.14 * clampZoom(setting.zoom)).toFixed(3),
+    objectPosition: `${percent(setting.offsetX)} ${percent(setting.offsetY)}`,
+  };
+}
+
+function clampUnit(value: number): number {
+  return Number.isFinite(value) ? Math.min(1, Math.max(-1, value)) : 0;
+}
+
+function clampZoom(value: number): number {
+  return Number.isFinite(value) ? Math.min(4, Math.max(1, value)) : 1;
 }
 
 /**

@@ -152,6 +152,27 @@ export const PENDOLO_GEAR_TRAVEL_RATIO = 1;
 /** 环「这一帧动没动」的阈值（rad/帧）：≤ 它就算停住 —— 同时是 `data-gears` 的判据。 */
 export const PENDOLO_GEAR_MOVE_EPSILON_RAD = 1e-4;
 
+/**
+ * 主擒纵轮的齿数：就是 `gearPath(ctx, radius + 15, 36, 12)` 那一处，参考图实测**齿周期正好 10°/齿**。
+ *
+ * 用户本轮第 1 条（原话）：「时计的齿轮在转动时转的有点太快了，一句歌词一格齿槽差不多」。
+ * 环走一档 = `pendoloArcAngle / 8`（默认 100°/8 = **12.5°**），而擒纵轮一齿 = **10°**
+ * ⇒ 改造前它一句走 **1.25 齿**，正是「有点太快」。现在按「**一句正好一齿**」耦合。
+ */
+export const PENDOLO_ESCAPE_TEETH = 36;
+
+/**
+ * 擒纵轮的转角倍率：让它每档（每句）正好推进一齿。
+ *
+ * `倍率 = (360 / 齿数) / 每档角度`。弧度角度是设置项（`pendoloArcAngle` 60~160°），
+ * 所以倍率跟着它走 —— 不管主人把弧调多宽，都是「一句一齿」，而不是写死一个 0.8。
+ * 默认档（100° ⇒ 12.5°/句）算出来就是 **0.8**（前面注释里那个 1.25 → 1）。
+ */
+export function pendoloEscapeRatio(slotAngleDeg: number): number {
+  if (!(slotAngleDeg > 0)) return 0;
+  return 360 / PENDOLO_ESCAPE_TEETH / slotAngleDeg;
+}
+
 /** 第十五轮第 7 条：小齿轮推进量的纯函数结果（便于单测）。 */
 export interface PendoloGearDrive {
   /** 累计行程（rad，只增不减）。 */
@@ -434,6 +455,8 @@ function drawMovingParts(
   cover: HTMLImageElement | null,
   gearTravel: number,
   coverOnDial: boolean,
+  /** 每档（每句）的角度（度）：主擒纵轮按它算「一句正好一齿」（见 `pendoloEscapeRatio`）。 */
+  slotAngleDeg: number,
 ): void {
   const { radius } = geom;
   const phase = elapsed * BALANCE_SPEED;
@@ -499,9 +522,15 @@ function drawMovingParts(
   }
   ctx.restore();
 
-  // 主擒纵轮：36 齿（参考图实测齿周期正好 10°/齿）、齿根 R + 3、齿顶 R + 15 ⇒ 齿深 12，随歌词棘轮转
+  /*
+   * 主擒纵轮：36 齿（参考图实测齿周期正好 10°/齿）、齿根 R + 3、齿顶 R + 15 ⇒ 齿深 12，随歌词棘轮转。
+   *
+   * **用户本轮第 1 条**：「时计的齿轮在转动时转的有点太快了，一句歌词一格齿槽差不多」。
+   * 环走一档默认 12.5°、而一齿 10° ⇒ 原来一句 1.25 齿（偏快）；现在乘 `pendoloEscapeRatio`
+   * 把它压成「**一句正好一齿**」，弧度角度调宽调窄都保持这个关系。
+   */
   ctx.save();
-  ctx.rotate(rotationRad);
+  ctx.rotate(rotationRad * pendoloEscapeRatio(slotAngleDeg));
   gearPath(ctx, radius + 15, 36, 12);
   ctx.fillStyle = rgba(colors.accent, 0.08);
   ctx.fill();
@@ -844,6 +873,8 @@ export function PendoloTheme(props: LyricThemeProps): ReactNode {
         coverRef.current,
         0,
         pendoloCoverOnDial,
+        // 减少动效那条路：齿轮行程为 0、擒纵轮也不转，但参数照样要给（见 `pendoloEscapeRatio`）。
+        angleStepDeg,
       );
       placeSlots(springRef.current.value, targetRef.current);
       return undefined;
@@ -918,6 +949,7 @@ export function PendoloTheme(props: LyricThemeProps): ReactNode {
         coverRef.current,
         gearTravel,
         pendoloCoverOnDial,
+        angleStepDeg,
       );
       placeSlots(spring.value, target);
       frame = window.requestAnimationFrame(tick);

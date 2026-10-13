@@ -43,11 +43,32 @@ rem  Chromium refuses to initialise its sandbox when electron.exe carries a
 rem  "low integrity" label, and the process then dies instantly with status
 rem  0x80000003 (2147483651) printing nothing at all -- not even from the
 rem  desktop shortcut.  Some sandboxing tools and security suites label a whole
-rem  folder tree that way.  Putting the level back to Medium is a no-op when it
-rem  is already Medium, so this runs on every start on purpose.
+rem  folder tree that way.
+rem
+rem  What label to write:
+rem    * default = Medium.  A Medium launcher must not label the runtime above
+rem      itself: a child any higher than its parent cannot be created.
+rem    * if THIS launcher is already running at High or System (checked with
+rem      whoami /groups), keep High instead of lowering electron.exe to Medium.
+rem      Reason (measured on this machine): when the electron files carry a
+rem      lower integrity label than the caller, the system refuses the tray
+rem      icon registration and the app logs "Unable to create status tray
+rem      icon" (electron ...\win\notify_icon.cc).  With the whole chain at High
+rem      the same build registered the icon fine.  Lowering the label here was
+rem      an active downgrade for such callers, and this preflight must never
+rem      fight the caller's level.
+rem
+rem  Scope is deliberately unchanged: only node_modules\electron plus its dist.
+rem  This is a label choice for this project's own runtime -- it is NOT an
+rem  elevation path.  Nothing here calls runas, raises a UAC prompt, or changes
+rem  any machine-wide policy.  Every value used below is a local variable and
+rem  dies with the setlocal above.
 if not exist "node_modules\electron\dist\electron.exe" goto :pi_preflight_done
-icacls "node_modules\electron" /setintegritylevel "(OI)(CI)Medium" >nul 2>&1
-icacls "node_modules\electron\dist" /setintegritylevel Medium /T /C /Q >nul 2>&1
+set "PI_CALLER_IL=Medium"
+call :pi_probe_caller_integrity
+icacls "node_modules\electron" /setintegritylevel "(OI)(CI)!PI_CALLER_IL!" >nul 2>&1
+icacls "node_modules\electron\dist" /setintegritylevel !PI_CALLER_IL! /T /C /Q >nul 2>&1
+set "PI_CALLER_IL="
 :pi_preflight_done
 
 echo [PI] Starting... closing this window quits the app
@@ -59,4 +80,20 @@ if errorlevel 1 (
   if not "%PI_SILENT%"=="1" pause
   exit /b 1
 )
+exit /b 0
+
+rem ---------------------------------------------------------------------------
+rem  Is THIS launcher already at High (S-1-16-12288) or System (S-1-16-16384)?
+rem  Kept in a subroutine on purpose: `cmd` parses parenthesised blocks up front,
+rem  so a pipeline inside the build block above is exactly the kind of thing that
+rem  goes wrong in a .cmd file.  Only the SID strings are matched, so this cannot
+rem  misfire because of a different Windows display language.  Any failure in
+rem  whoami / findstr leaves the caller at the safe default (Medium).
+rem ---------------------------------------------------------------------------
+:pi_probe_caller_integrity
+set "PI_CALLER_IL=Medium"
+whoami /groups | findstr /c:"S-1-16-12288" >nul 2>&1
+if not errorlevel 1 set "PI_CALLER_IL=High"
+whoami /groups | findstr /c:"S-1-16-16384" >nul 2>&1
+if not errorlevel 1 set "PI_CALLER_IL=High"
 exit /b 0

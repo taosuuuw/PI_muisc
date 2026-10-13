@@ -2601,7 +2601,8 @@ input {
 .pi-home__logo {
   font-size: clamp(96px, 15vw, 190px);
   font-weight: 800;
-  letter-spacing: 8px;
+  /* 单字素 π：原来那 8px 字距是给「P」「I」两个字之间留的，留着会让整块字偏左。 */
+  letter-spacing: 0;
   line-height: 1;
   /* 同 `.pi-quick-orb__logo`：由 `--pi-primary` 现算（用户第二十二轮第 1 条）。 */
   background: linear-gradient(
@@ -3035,6 +3036,9 @@ input {
      （见 `.pi-home__bar:hover .pi-home__track`），悬停档读到的还是 10px / 16px。 */
   --pi-home-track-thick: 6px;
   --pi-home-thumb: 12px;
+  /* 用户本轮第 1 条：指针交互整条搬到这一层（见 `pages/HomePage.tsx` 里 HomeBar 的
+     `scrubTo` 段注释），所以可点的手型也由它给——里头的 `<input>` 已经不吃指针了。 */
+  cursor: pointer;
 }
 /* 暂停键与音量键：**一直占同样大小的位置**，静置时全透明且点不到。
    第十一轮第 2 条（用户 m03279）：跟着整条进度条一起缩小，32 → 24。
@@ -3490,6 +3494,12 @@ input {
      `transparent` = 只留 12px 的抓取盒（拖动好按），视觉上一颗球都不画。
      探针读的就是 input 自己的 computed 值，所以这一条留在 input 上（继承值也是它）。 */
   --pi-home-thumb-fill: transparent;
+  /* 用户本轮第 1 条：「进度条前面一小节点不动」的真因是原生滑块**透明 thumb 占的那一块只认
+     拖动、不认「跳到这儿」**（已播越短，死区就越靠前）。修法是把指针交互整条交给外层
+     `.pi-home__track`（`pages/HomePage.tsx` 的 `scrubTo`），本层因此只留**键盘**这一条路：
+     `pointer-events: none` 之后命中的目标永远是轨道那一层，两套算法不会再各 seek 一次。
+     Tab / `.focus()` / 方向键都不受影响（冒烟那条「进度条方向键连按」照旧）。 */
+  pointer-events: none;
   flex: 1 1 auto;
   min-width: 0;
   height: 16px;
@@ -3499,7 +3509,6 @@ input {
   -webkit-appearance: none;
   border: none;
   background: transparent;
-  cursor: pointer;
 }
 .pi-home__progress::-webkit-slider-runnable-track {
   /* 第十六轮第 5 条：轨道 3 → 6px（与 40px 的停止键成参考图那个约 6.5 : 1 的对比）。 */

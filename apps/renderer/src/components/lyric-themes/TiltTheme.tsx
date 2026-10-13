@@ -379,8 +379,9 @@ export function TiltTheme(props: LyricThemeProps): ReactNode {
   const clock = usePositionClock(positionMs, playing ?? true);
   const reduced = usePrefersReducedMotion();
   const anchor = lines[viewIndex];
-  // 设置的动效参数：字号进 buildPlan 的上限换算，帧率上限进下面的 rAF。
-  const { fontScale, fpsCap } = tuningOf(theme);
+  // 设置的动效参数：字号进 buildPlan 的上限换算，帧率上限进下面的 rAF，
+  // 辉光强度缩放每个字的辉光（用户本轮第 3 条：辉光要每套都能有、也要能在设置里关掉）。
+  const { fontScale, fpsCap, glowIntensity } = tuningOf(theme);
   const plan = useMemo(
     () => (anchor === undefined ? [] : buildPlan(anchor, size.width, fontScale)),
     [anchor, size.width, fontScale],
@@ -433,14 +434,14 @@ export function TiltTheme(props: LyricThemeProps): ReactNode {
         const progress = clamp(elapsed / durationMs, 0, 1);
         const intensity = Math.sin(progress * Math.PI);
         const bump = word.italic ? 0.18 : 0.15;
-        element.style.setProperty('--pi-tilt-glow', glow.toFixed(3));
+        element.style.setProperty('--pi-tilt-glow', (glow * glowIntensity).toFixed(3));
         element.style.setProperty('--pi-tilt-scale', (1 + intensity * bump).toFixed(3));
       }
       frame = window.requestAnimationFrame(tick);
     };
     frame = window.requestAnimationFrame(tick);
     return () => window.cancelAnimationFrame(frame);
-  }, [clock, fpsCap, reduced, wordTimes]);
+  }, [clock, fpsCap, glowIntensity, reduced, wordTimes]);
 
   if (anchor === undefined) return null;
 

@@ -1,4 +1,12 @@
-﻿import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+} from 'react';
 import { createPortal } from 'react-dom';
 import { MODE_LABEL } from '@pi/player-core';
 import type { LyricTheme, PlayMode, Song } from '@pi/shared';
@@ -18,9 +26,17 @@ import type { QuickPlaylistItem } from '../components/PiQuickPanels';
 import { audioTooltip, claimedLabel, measuredLabel, sourceLabel } from '../lib/audio-label';
 import { coverAt } from '../lib/cover';
 import { artistNames, formatDuration } from '../lib/format';
+import { progressTargetMs } from '../lib/progress';
 import type { ThemeColors } from '../lib/cover-palette';
 import { useSongPalette } from '../lib/song-palette';
-import { useAccount, useLikeCheck, useLyric, useSettings, useToggleLike } from '../lib/queries';
+import {
+  useAccount,
+  useLikeCheck,
+  useLyric,
+  usePlayerBackground,
+  useSettings,
+  useToggleLike,
+} from '../lib/queries';
 import { usePlayer } from '../state/player';
 import { useUi } from '../state/ui';
 
@@ -648,6 +664,84 @@ export function HomeBar({ song }: { song: Song }): ReactNode {
    */
   const [volDragging, setVolDragging] = useState(false);
 
+  /*
+   * 用户本轮第 1 条（推翻了上一轮那条的口径）：「进度条按住拖动，歌曲播放会实时变化，这个我不要。
+   * 我想要的是拖到确定位置后，也就是放开了鼠标，歌曲播放进度才变化」。
+   * 所以现在是**两段式**：
+   *   - 按下 / 拖动：只挪填充（`scrubMs`，逐帧跟手），**一动都不碰播放**；
+   *   - 松手：才按落点 `seek()` 一次，然后放手让填充回到 `positionMs`。
+   *
+   * 上一轮为什么改成实时 seek：那次把用户的原话读反了（他是在**要求**「拖动时不实时改播放」，
+   * 我当成了抱怨）。现在的口径同时也顺带解决了当时的另一个问题——拖动期间每动一像素就写
+   * `currentTime`，每一次都会让本地代理中止上一条回源请求（`media-server.ts` 的
+   * `res.on('close')`），既听不出跟随、又白打一串请求。
+   *
+   * 换算是自己按指针 x 算的（`lib/progress.ts`），**没有**退回原生 `<input type=range>`：
+   * 上游那个「透明滑块占的那一小块只认拖动、不认跳位置」的死区还在，图 1 那种「前面一小节
+   * 点不动」会原样回来。
+   */
+  const trackRef = useRef<HTMLDivElement | null>(null);
+  const progressRef = useRef<HTMLInputElement | null>(null);
+  /** 正在拖的那根指针（null = 没人在拖）。 */
+  const scrubPointer = useRef<number | null>(null);
+
+  /** 拖动期间只更新填充的落点（不动播放）。 */
+  const showScrubAt = (clientX: number): void => {
+    const track = trackRef.current;
+    if (track === null || total <= 0) return;
+    setScrubMs(progressTargetMs(clientX, track.getBoundingClientRect(), total));
+  };
+
+  /** 松手（或键盘那条路）才真正改播放位置。 */
+  const commitScrubAt = (clientX: number): void => {
+    const track = trackRef.current;
+    if (track === null || total <= 0) return;
+    const target = progressTargetMs(clientX, track.getBoundingClientRect(), total);
+    // 先放手值、再下发：`seek()` 会把 `positionMs` 写成同一个数，所以填充不会闪。
+    setScrubMs(null);
+    // 地址还没解析出来时（重启后停在详情页）写 `currentTime` 会抛 InvalidStateError：
+    // 那时只挪填充、不下发（与改造前同一条判据）。
+    if (src) seek(target);
+  };
+
+  const onTrackPointerDown = (event: ReactPointerEvent<HTMLDivElement>): void => {
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+    // 上一首 / 下一首那两颗键也挂在这一层里：它们自己的点击归它们，别当成 seek。
+    if (event.target instanceof Element && event.target.closest('button') !== null) return;
+    scrubPointer.current = event.pointerId;
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      // 拿不到指针捕获也照旧按落点走（拖出轨道后就跟丢了，可接受）。
+    }
+    // 焦点照旧交给 `<input>`：方向键连续改进度、`:focus-within` 让药丸停在展开态，都与改造前一致。
+    progressRef.current?.focus({ preventScroll: true });
+    showScrubAt(event.clientX);
+  };
+
+  const onTrackPointerMove = (event: ReactPointerEvent<HTMLDivElement>): void => {
+    if (scrubPointer.current !== event.pointerId) return;
+    showScrubAt(event.clientX);
+  };
+
+  /** 抬手：这一下才真的改播放位置（用户本轮第 1 条）。 */
+  const onTrackPointerUp = (event: ReactPointerEvent<HTMLDivElement>): void => {
+    if (scrubPointer.current !== event.pointerId) return;
+    scrubPointer.current = null;
+    commitScrubAt(event.clientX);
+  };
+
+  /**
+   * 被系统取消 / 捕获被收走：**不 seek**、只把填充放回去。
+   * 这不算「放开鼠标」，按用户本轮第 1 条的口径就不该改播放位置；
+   * 顺带也不读事件坐标（那两个事件的 `clientX` 在 Chromium 里常常是 0）。
+   */
+  const onTrackScrubAbort = (event: ReactPointerEvent<HTMLDivElement>): void => {
+    if (scrubPointer.current !== event.pointerId) return;
+    scrubPointer.current = null;
+    setScrubMs(null);
+  };
+
   // 解析出来的时长比接口给的更准，但解析前 store 里装的就是 `song.durationMs`
   // （`state/player.ts` 的 `restoreLast` / `loadCurrent` 都这么写），这里再兜一次底。
   const total = durationMs > 0 ? durationMs : (song.durationMs ?? 0);
@@ -688,6 +782,16 @@ export function HomeBar({ song }: { song: Song }): ReactNode {
         <div
           className="pi-home__track"
           data-home-track="true"
+          /* 用户本轮第 1 条：指针交互全在这一层（说明见上面 `scrubTo` 那段注释）。
+             两个箭头与 `<input>` 都是它的子孙，所以 `elementFromPoint` 在进度条上取到的
+             仍然是它们自己；命中的是轨道本身（含已播胶囊那段）时才算「按坐标跳位置」。 */
+          ref={trackRef}
+          onPointerDown={onTrackPointerDown}
+          onPointerMove={onTrackPointerMove}
+          onPointerUp={onTrackPointerUp}
+          onPointerCancel={onTrackScrubAbort}
+          /* 兜底：捕获被系统收走而又没等到 cancel 时，别让「正在拖」的状态留在那儿。 */
+          onLostPointerCapture={onTrackScrubAbort}
           /* 用户 m04407 第 3 条：`--pi-progress` 从 `<input>` 挪到这一层——下面那层「已播胶囊」
              是 input 的**兄弟**，读不到 input 自己的自定义属性。挪上来两边都继承得到
              （全仓没有任何探针读 `--pi-progress`）。 */
@@ -717,19 +821,24 @@ export function HomeBar({ song }: { song: Song }): ReactNode {
           </button>
           <input
             className="pi-home__progress"
+            ref={progressRef}
             type="range"
             min={0}
             max={max}
             step={100}
             value={Math.round(Math.min(shown, max))}
+            /*
+             * 用户本轮第 1 条之后，这一层只剩**键盘**这条路（指针交互由外层轨道接管，CSS 里
+             * 本层是 `pointer-events: none`）：Tab / `.focus()` 拿焦点、方向键改进度，都走这里。
+             *
+             * **刻意不写 `scrubMs`**：它现在的语义是「指针正在拖」，而键盘没有松手事件——
+             * 写进去会把填充冻在最后一次按键的值上（改造前那个老毛病）；
+             * `seek` 本身会把 `positionMs` 写成同一个数，所以滑块与填充照样立刻跟上。
+             */
             onChange={(event) => {
               const next = Number(event.target.value);
-              setScrubMs(next);
               if (src) seek(next);
             }}
-            onPointerUp={() => setScrubMs(null)}
-            onPointerCancel={() => setScrubMs(null)}
-            onBlur={() => setScrubMs(null)}
             aria-label="播放进度"
             data-home-progress="true"
           />
@@ -1001,8 +1110,9 @@ function EmptyStage(): ReactNode {
         summonQuick({ x: event.clientX, y: event.clientY }, event.pointerId);
       }}
     >
+      {/* 空态大品牌字：主人本轮第 2 条把图标换成「蓝底白 π」，这里跟着换（原来是与图标同款的 PI）。 */}
       <div className="pi-home__logo" aria-hidden="true">
-        PI
+        π
       </div>
       <p className="pi-home__slogan">还没有在听的歌</p>
       <p className="pi-home__hint">
@@ -1035,6 +1145,25 @@ function StageMood({ song }: { song: Song }): ReactNode {
   const query = useLyric(song);
   const positionMs = usePlayer((s) => s.positionMs);
   const lines = useMemo(() => query.data?.lines ?? [], [query.data]);
+  /*
+   * 用户本轮第 3 条后半段：「我指的不是歌词的，是背景的光」——背景氛围光的总开关
+   * （沉浸式背景里的氛围光晕 + 封面暖光 + 暗档侧光，以及 `.pi-home__stage` 那两团环境光）
+   * 住在设置的 `lyricTuning.backgroundGlow` 里。莫奈主题不看这个 prop：它整幅盖住窗口，
+   * 自己那张烤图由 `tuningOf(theme).backgroundGlow` 直接管（见 `MonetTheme.tsx`）。
+   * 设置还没读回来时按「开」算：默认就是开，别让加载瞬间闪一下没光的背景。
+   */
+  const settings = useSettings();
+  const ambientGlow = settings.data?.lyricTuning.backgroundGlow ?? true;
+  /*
+   * 主人本轮第 1 条：设置页可以导入一张本地图当播放页背景。`usePlayerBackground` 把
+   * 主进程那边的字节取回来变成 `data:` 地址，这里连同裁切参数一起交给沉浸式背景当底图。
+   * 没导入（或图被删了）时是 `null`，背景照旧跟着这首歌的封面走。
+   */
+  const background = usePlayerBackground();
+  const customBackground =
+    background.dataUrl !== null && background.setting !== null
+      ? { ...background.setting, url: background.dataUrl }
+      : null;
 
   const activeIndex = useMemo(() => {
     let index = -1;
@@ -1045,7 +1174,15 @@ function StageMood({ song }: { song: Song }): ReactNode {
     return index;
   }, [lines, positionMs]);
 
-  return <ImmersiveBackground song={song} lines={lines} activeIndex={activeIndex} />;
+  return (
+    <ImmersiveBackground
+      song={song}
+      lines={lines}
+      activeIndex={activeIndex}
+      ambientGlow={ambientGlow}
+      customBackground={customBackground}
+    />
+  );
 }
 
 /**
@@ -1248,7 +1385,39 @@ function Lyrics({
     [palette, tuning],
   );
 
-  if (!query.isPending && !query.isError && query.data?.hasLyric && lines.length > 0) {
+  /*
+   * **凝彩在"整首没歌词"时也要挂载全屏舞台**（第 784 轮）—— 它要自己画 🎵 占位。
+   *
+   * 原条件要求 `hasLyric && lines.length > 0`，于是纯音乐时**全屏舞台整块不渲染** ⇒
+   * 凝彩组件不挂载 ⇒ 第 778 / 779 轮写的 🎵 平铺**永远到不了画面**。
+   * （第 781 轮我已修过内层同类阻断：`LyricStage` 内部的 `lines.length === 0` 提前返回；
+   *  这一处是**更靠上游的第二层**，两层都放开才真的通。）
+   *
+   * ⚠ 只对凝彩放开，**其余五套主题一字不变**。
+   * 安全性依据：空歌词走进 `LyricStage` 之后那条 `displayLine` 路径时，
+   * 所有消费点都有守卫 —— `displayLine === undefined ? … : …`（`:1772 / :1786 / :1795 / :1879`）
+   * 或可选链（`stageLines[i]?.…`，`:1279 / :1624`）⇒ 空输入是被这套代码容忍的。
+   */
+  const allowLyriclessStage = theme === 'tempera';
+  /*
+   * ⚠ **第 786 轮的改动理由后来被推翻，这里更正（第 787 轮）**：
+   * 我当时推测"没有歌词的歌是走 `isError` 分支"，所以把 `!query.isError` 收进了非凝彩那一支。
+   * 但 `lib/queries.ts:479` 明确写着：
+   *   「拿不到歌词**不是错误**（纯音乐、没有翻译、所有源都没收录），`hasLyric` 会是 false」
+   * ⇒ **纯音乐是"查询成功但没有歌词"，不是错误。** 所以那次改动**理由不成立**。
+   * 改动本身无害（凝彩在查询出错时也挂载，由它自己按 `lines` 是否为空画占位），**故保留**，
+   * 但**不能**把它当作"🎵 不出现"的原因 —— 真正的原因见 `TemperaTheme` 里 emoji 字体那段注释。
+   *
+   * 所以把 `!query.isError` **收进非凝彩那一支**：凝彩只要查询**结算过**（不是 pending）就挂载，
+   * 由它自己按 `lines` 是否为空画 🎵。其余五套主题的条件**一字未动**。
+   *
+   * ⚠ 保留 `!query.isPending`：查询还在跑时不能挂 —— 否则带歌词的歌会先闪一下占位再进正片。
+   */
+  if (
+    !query.isPending &&
+    (allowLyriclessStage ||
+      (!query.isError && query.data?.hasLyric === true && lines.length > 0))
+  ) {
     /*
      * 封面与元信息：**莫奈**（`monet`）的右列肖像、**时计**（`pendolo`）的表盘封面都吃 `coverUrl`，
      * 海报头版的艺人 / 歌名 / 专辑吃那三个字符串 prop。这一处原先一个都没传 ——

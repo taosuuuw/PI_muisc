@@ -23,7 +23,7 @@ import type {
 type LyricSourceMode = Settings['lyricSource'];
 import { CH, errorMessage, invoke } from '../bridge';
 import { applyVolume, getAudio } from '../lib/audio-engine';
-import { LYRIC_GATE_MS, prefetchLyric } from '../lib/lyric-prefetch';
+import { LYRIC_GATE_MS, isLyricPending, prefetchLyric } from '../lib/lyric-prefetch';
 import { useNowPlaying } from './nowPlaying';
 
 /**
@@ -178,6 +178,16 @@ export const usePlayer = create<PlayerState>((set, get) => {
   async function loadCurrent(): Promise<void> {
     // 解析期间元素里还是上一首（下面有 await）：先关时钟，别让它的 timeupdate 写进新歌状态。
     clockArmed = false;
+    /*
+     * 用户本轮第 1 条：「切换歌曲时，下一首加载歌词前，上一首歌就应该停止播放了」。
+     *
+     * 这里以前只关时钟、**不动元素**，于是上一首会一直唱到新歌的地址与歌词都就位（音源解析几百
+     * 毫秒到几秒 + 等歌词；最坏是那个防挂死的上界）——用户听到的就是「词还没加载好，上一首还在唱」。
+     * `pause()` 是同步的，函数后面每一个 `await` 都在静音之后，所以这一下按下去立刻没声。
+     * 它触发的 `pause` 事件不会把状态写成 `paused`：本函数紧接着就把状态置成 `resolving`，
+     * 而 `reportPlaying()` 只认 `playing` ↔ `paused` 两态（见文件末尾）。
+     */
+    getAudio().pause();
     const state = get();
     const id = currentId(state.queue);
     const song = id === undefined ? undefined : state.songs[id];
@@ -360,6 +370,13 @@ export const usePlayer = create<PlayerState>((set, get) => {
         set({ status: 'paused' });
         return;
       }
+      /*
+       * 用户本轮第 2 条：「点击播放音乐，当前播放歌曲还在加载歌词时，音乐不应该出声」。
+       *
+       * 加载中（解析音源 or 等歌词）按播放键**什么都不做**：正在跑的那一次加载会在歌词到位后
+       * 自己出声。放它进来只会再起一次解析，还可能抢在歌词前面出声——正是用户否掉的那件事。
+       */
+      if (state.status === 'resolving') return;
       if (state.src) {
         // 顺序播放停在列表末尾时，元素的播放位置正卡在结尾：原样 `play()` 会立刻再触发一次
         // `ended`，又回到 `next('auto')` 的「停住」那一支——按下去像坏了。这种情况把这一首
@@ -368,6 +385,22 @@ export const usePlayer = create<PlayerState>((set, get) => {
           state.queue.mode === 'sequence' &&
           state.durationMs > 0 &&
           state.positionMs >= state.durationMs - END_EPSILON_MS;
+        /*
+         * 用户本轮第 2 条：**这一首的歌词还没落定就先不出声**。
+         *
+         * 什么时候会走到这儿：闸门到点上界、先播过一次，而歌词其实还在路上
+         * （`isLyricPending` 认「已经失败过」那一档——纯音乐 / 上游没收录的歌词不会让每次按
+         * 播放键都白等一次闸门）。等的时候亮同一个「少女祈祷中⭐」（`loadingGate`），与
+         * `loadCurrent` 那条路一致。
+         */
+        const song = state.currentSong;
+        if (song && isLyricPending(song, state.lyricMode)) {
+          set({ loadingGate: true });
+          await waitForLyric(song, state.lyricMode).done;
+          set({ loadingGate: false });
+          // 等歌词期间用户可能又切了歌：那一下不该再放「上一首」的地址（`loadCurrent` 会把 src 换掉）。
+          if (get().src !== state.src) return;
+        }
         if (atSequenceEnd) getAudio().currentTime = 0;
         set(atSequenceEnd ? { status: 'playing', positionMs: 0, notice: null } : { status: 'playing' });
         try {

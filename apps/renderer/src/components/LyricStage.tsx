@@ -156,6 +156,14 @@ const WHEEL_STEP_PX = 72;
 /** `deltaMode === 1`（按行滚）时一行折算多少像素，否则永远凑不满一格。 */
 const WHEEL_LINE_PX = 16;
 /**
+ * 连续滚动的最小折算量（行）：小于它的事件当抖动丢掉。
+ *
+ * 主人本轮第 1 条「真·列表滚动」之后，滚轮不再只取整（原来 `Math.trunc` 会把一次滚轮里
+ * 不足一格的位移整段吞掉），而是按像素比例给连续位置；这条阈值只是别让极小的高精度滚轮
+ * （触控板/自由滚轮）每帧都推一次状态 —— 0.02 行 ≈ 1.4px，肉眼看不出来，但足够省下大量重排。
+ */
+const WHEEL_CONTINUOUS_EPSILON = 0.02;
+/**
  * 第十八轮第 4 条（用户 m01482：「**只允许时计**（主题）的歌词动效可以滚轮滑动查看不同歌词，
  * 并且一段时间无操作自动回到当前歌词」）。
  *
@@ -163,8 +171,14 @@ const WHEEL_LINE_PX = 16;
  * 切换歌词，并且点击歌词可以跳进度」——这推翻了 m08066 第 4 条给 classic 开的滚轮浏览
  * （那条本来配的是「滚动只许查看、不 seek」，用户现在整条不要了）。所以今天只剩时计一套吃
  * 滚轮，其余五套主题（流光 / 浮名 / 心象 / 云阶 / 倾诉）舞台上滚轮回到页面本身。
+ *
+ * **本轮追加（主人第 5 条）**：「对于莫奈的歌词动效，歌词可以滚轮滚动以及点击切换进度，
+ * 一段时间没操作回到当前进度的歌词显示」⇒ 把 `monet` 加进白名单。
+ * 莫奈本来就是「锚点 ±2 行的轨道」（`MonetTheme.tsx` 的 `anchorIndex` 直接取 `viewIndex`），
+ * 它不缺渲染能力，缺的只是白名单里那个名字 —— 滚轮换的仍是舞台锚点（`viewIndex`），
+ * 点行 seek 走下面那条事件委托（莫奈每行都按契约带了 `data-lyric-line` + `data-line-time`）。
  */
-const WHEEL_BROWSE_THEMES: readonly LyricTheme[] = ['pendolo'];
+const WHEEL_BROWSE_THEMES: readonly LyricTheme[] = ['pendolo', 'monet'];
 /**
  * 允许「点击歌词行跳进度」的主题白名单（用户 m00001 第 4 条 + m00736 第 1 条）。
  *
@@ -175,8 +189,11 @@ const WHEEL_BROWSE_THEMES: readonly LyricTheme[] = ['pendolo'];
  * - classic 走的是自己那条分支（行按钮的 `onSelect`，用户第八轮第 3 条），m00736 之后那条 seek
  *   也摘掉了（`onSelect={undefined}`，见下面 classic 分支的注释）；m01402 第 7 条又把它的滚轮
  *   浏览一起收掉（见上面 `WHEEL_BROWSE_THEMES`）——所以流光今天点行、滚轮都不再动进度。
+ *
+ * **本轮追加（主人第 5 条）**：莫奈也要「点击切换进度」⇒ `monet` 一并加进来。
+ * 滚轮看、点行跳在莫奈上是同一套（点完 `setViewIndex(null)` 回到跟着播放走，与其它主题一致）。
  */
-export const CLICK_SEEK_THEMES: readonly LyricTheme[] = ['pendolo'];
+export const CLICK_SEEK_THEMES: readonly LyricTheme[] = ['pendolo', 'monet'];
 /** 滚轮停手多久自动交还给播放（`viewIndex` 复位成「跟着播放走」）。 */
 const WHEEL_IDLE_RETURN_MS = 4000;
 /**
@@ -1348,8 +1365,12 @@ function StageLineView({
   const style = {
     // 进场时长按这一行的档位与行时长算；出场时长三档写死在 CSS 里。
     '--pi-stage-enter-ms': `${enterMsFor(line.hint, line.durationMs)}ms`,
-    '--pi-word-glow-sm': `${timing.glowSmallPx}px`,
-    '--pi-word-glow-lg': `${timing.glowLargePx}px`,
+    /*
+     * 两个辉光半径按根节点上的 `--pi-word-glow-gain`（= 设置的 `glowIntensity`）缩放：
+     * 写死 px 会绕开设置页那枚开关（用户本轮第 3 条），所以这里必须是 `calc()`。
+     */
+    '--pi-word-glow-sm': `calc(${timing.glowSmallPx}px * var(--pi-word-glow-gain, 1))`,
+    '--pi-word-glow-lg': `calc(${timing.glowLargePx}px * var(--pi-word-glow-gain, 1))`,
   } as CSSProperties;
   return (
     <button
@@ -1496,6 +1517,16 @@ export function LyricStage({
    * 播放照常推进、当前行照常高亮，只是舞台停在用户滚到的地方。
    */
   const [viewIndex, setViewIndex] = useState<number | null>(null);
+  /**
+   * **连续**锚点：`viewIndex` 的小数版（单位「行」，`null` = 跟着播放走）。
+   *
+   * 主人本轮第 1 条：「莫奈要真·列表滚动」。滚轮是像素事件，只把它折算成整数行、让主题按
+   * 「离锚点几行」重排，观感就是「一格重排一次」；把零头也留着，主题就能按**连续**位置排，
+   * 一行一行滑过去（这才叫列表滚动）。ref 是给滚轮闭包读的当前值（和 `wheelAcc` 同一套路），
+   * state 只负责触发重渲染。整数锚点（`viewIndex`）照旧维护 —— 冒烟与其它主题读的还是它。
+   */
+  const [viewAnchor, setViewAnchor] = useState<number | null>(null);
+  const viewAnchorRef = useRef<number | null>(null);
   /** 正在演出场动画的上一行（`null` = 没有）。 */
   const [leavingIndex, setLeavingIndex] = useState<number | null>(null);
   /** 上一次的锚点，用来判断「换行了」并让上一行演完出场。 */
@@ -1573,6 +1604,8 @@ export function LyricStage({
   // 顺手把「上一行」也清掉：不然新歌下标相同的那一行会以旧歌残影的身份演一次出场。
   useEffect(() => {
     setViewIndex(null);
+    setViewAnchor(null);
+    viewAnchorRef.current = null;
     setLeavingIndex(null);
     previousAnchor.current = null;
     wheelAcc.current = 0;
@@ -1636,12 +1669,19 @@ export function LyricStage({
   /**
    * 滚轮换行——**只移舞台锚点，不 seek**（用户 m08066 第 4 条）。
    *
-   * 用原生监听是因为 React 把 `wheel` 挂成 passive，`preventDefault` 会失效；
-   * 挂载点是根节点（见 lyric-stage.css 里「根节点必须保留 pointer-events: auto」的说明）。
+   * 用原生监听是因为 React 把 `wheel` 挂成 passive，`preventDefault` 会失效。
+   *
+   * 挂载点是**舞台根的外壳**（宿主里的 `.pi-home__stage-lyrics`，见 `global.css` 的歌词可用区），
+   * 不是舞台根自己。这是主人实测反馈「莫奈滚轮没反应」之后查出来的：
+   * 舞台根算出来的 `pointer-events` 是 `none`（各主题的那几层都是 `none`，只有行元素靠
+   * `overlays.css` 单独放行），真实滚轮的命中落在更外层的外壳上 —— 而事件**从外往内不经过**
+   * 舞台根，所以只要指针没正好落在某一行上，挂在根上的这条监听就永远收不到事件。
+   * 换到外壳：整条歌词带里滚都能换句，同时不会把名片、进度条那两块的滚轮抢过来（它们在外壳之外）。
+   * 拿不到外壳（别的挂载方式）就退回舞台根，行为与改动前一致。
    *
    * 第十八轮第 4 条（用户 m01482）两处改动；m01402 第 7 条把白名单收到只剩时计：
-   * ① 这条监听对所有主题都挂（职责是拦掉浏览器默认滚动），但只有 `pendolo`（时计）
-   *    会真的换行：其余五套主题滚进来就 `preventDefault` 后原样返回，视图一动不动；
+   * ① 这条监听对所有主题都挂（职责是拦掉浏览器默认滚动），但只有白名单里的主题（见
+   *    `WHEEL_BROWSE_THEMES`）会真的换行：其余主题滚进来就 `preventDefault` 后原样返回；
    * ② 每滚一次就重置一个「停手 4s 自动回到当前歌词」的定时器（`wheelIdleTimer`），
    *    因为是**定时器在等**、不是靠 `viewIndex` 变化重置，所以播放继续换行也不会把它冲掉。
    */
@@ -1653,8 +1693,33 @@ export function LyricStage({
       if (wheelIdleTimer.current !== null) window.clearTimeout(wheelIdleTimer.current);
       wheelIdleTimer.current = window.setTimeout(() => {
         wheelIdleTimer.current = null;
+        viewAnchorRef.current = null;
+        setViewAnchor(null);
         setViewIndex(null);
       }, WHEEL_IDLE_RETURN_MS);
+    };
+    /**
+     * 把**绝对连续锚点**写进状态，并同步维护整数 `viewIndex`。
+     *
+     * 三条规矩：
+     *   · 夹在 `[0, 最后一行]`：滚到头就停住，不会滑出歌词范围；
+     *   · 落在**当前句半个行距以内**就当「交还给播放」（`viewIndex = null`、连续锚点也清掉）
+     *     —— 这样「往回滚到当前句」与「停手 4s 自动回来」是同一个收尾，界面会**吸附**到那一行；
+     *   · 其余情况整数锚点取最近的一行（`data-view-index` 与其它主题读它）。
+     */
+    const applyAnchor = (absolute: number): void => {
+      const maxIndex = Math.max(lines.length - 1, 0);
+      const clamped = clamp(absolute, 0, maxIndex);
+      const nearest = Math.round(clamped);
+      if (nearest === followIndex) {
+        viewAnchorRef.current = null;
+        setViewAnchor(null);
+        setViewIndex(null);
+        return;
+      }
+      viewAnchorRef.current = clamped;
+      setViewAnchor(clamped);
+      setViewIndex(nearest);
     };
     const onWheel = (event: WheelEvent): void => {
       // 拦掉默认滚动：滚歌词只该换「看哪一句」，不该把页面/抽屉滚走。
@@ -1666,20 +1731,20 @@ export function LyricStage({
       const unit =
         event.deltaMode === 1 ? WHEEL_LINE_PX : event.deltaMode === 2 ? root.clientHeight : 1;
       wheelAcc.current += event.deltaY * unit;
-      const steps = Math.trunc(wheelAcc.current / WHEEL_STEP_PX);
-      if (steps === 0) return;
+      /*
+       * 连续折算：一格 = `WHEEL_STEP_PX` 像素，但**不取整**（原来 `Math.trunc` 把零头丢掉，
+       * 一次滚轮里小于一格的位移全被吞掉，观感就是「要么不动、要么跳一行」）。
+       * 小于阈值的抖动丢掉，其余按像素比例给出去，零头留在 `wheelAcc` 里继续累积。
+       */
+      const steps = wheelAcc.current / WHEEL_STEP_PX;
+      if (Math.abs(steps) < WHEEL_CONTINUOUS_EPSILON) return;
       wheelAcc.current -= steps * WHEEL_STEP_PX;
       armIdleReturn();
-      // 一次滚轮事件**最多 setState 一次**：累积够多格就一次跳到位，别在事件里连点。
-      setViewIndex((current) => {
-        const from = current ?? followIndex;
-        const next = clamp(from + steps, 0, lines.length - 1);
-        // 滚回当前行就交还给播放，不用再点一次「回到当前」。
-        return next === followIndex ? null : next;
-      });
+      applyAnchor((viewAnchorRef.current ?? followIndex) + steps);
     };
-    root.addEventListener('wheel', onWheel, { passive: false });
-    return () => root.removeEventListener('wheel', onWheel);
+    const host = root.parentElement ?? root;
+    host.addEventListener('wheel', onWheel, { passive: false });
+    return () => host.removeEventListener('wheel', onWheel);
   }, [followIndex, lines.length, wheelBrowsable]);
 
   /**
@@ -1693,6 +1758,9 @@ export function LyricStage({
       wheelIdleTimer.current = null;
     }
     setViewIndex(null);
+    // 连续滚动的零头也一起归零，否则换到不吃滚轮的主题后莫奈那头还留着半行的偏移。
+    setViewAnchor(null);
+    viewAnchorRef.current = null;
   }, [wheelBrowsable]);
 
   // 卸载时别把定时器留在后台（它会 setState 到已卸载的组件上）。
@@ -1747,6 +1815,7 @@ export function LyricStage({
     return () => observer.disconnect();
   }, [smooth, anchorIndex, stageLines]);
 
+
   /**
    * **版式在换行那一刻就定死**（用户第二十四轮第 2 条）。
    *
@@ -1756,7 +1825,17 @@ export function LyricStage({
    * 现在播放期间只跑 transform（入场、错落、放大），排版一个像素都不动。
    */
 
-  if (lines.length === 0) return null;
+  /*
+   * **凝彩在"整首没歌词"时也要挂载**（第 781 轮）—— 让它自己画 🎵 占位。
+   *
+   * 原来这里是 `if (lines.length === 0) return null;`：没歌词就整个舞台不挂载。
+   * 于是凝彩里那段"合成 90 条 🎵 平铺"的代码（第 778 / 779 轮写的）**永远跑不到** ——
+   * 是**死代码**。⇒ 给凝彩开一个例外，**其余五套主题行为一字不变**。
+   *
+   * ⚠ 安全性依据：这条提前返回之后紧接的取值（`stageLines[anchorIndex]`）在空输入下是 `undefined`，
+   * 而下面几处本来就在判 `displayLine === undefined`（见 :1762 / :1764）⇒ 空输入是被容忍的。
+   */
+  if (lines.length === 0 && activeTheme !== 'tempera') return null;
 
   const displayLine = stageLines[anchorIndex];
   const wordStates = displayLine === undefined ? undefined : atomStatesFor(displayLine, clockMs);
@@ -1787,6 +1866,17 @@ export function LyricStage({
       : clamp((clockMs - displayLine.timeMs) / displayLine.durationMs, 0, 1);
   const rootStyle = {
     '--pi-sweep': lineProgress.toFixed(4), // 主题舞台的整体不透明度（设置页「主题不透明度」）。
+    /*
+     * 辉光总增益（用户本轮第 3 条：「莫奈歌词动效所示的辉光，我希望是每个歌词动效都可以有，
+     * 并且可以在详情设置页内关闭」）。
+     *
+     * 设置页那枚开关写的就是 `glowIntensity`（0 = 关）：这里把它落成两个抓手——
+     *   · `--pi-word-glow-gain`：classic 的两个辉光半径按它 `calc()` 缩放（见下面 `StageLineView`）；
+     *   · `data-glow='off'`：给 CSS 里那些**半径按字号写死**的层（0.06em / 0.3em）一个关掉的钩子，
+     *     见 `styles/lyric-stage.css` 末尾那两条。
+     * 主题组件（浮名 / 心象 / 云阶 / 倾诉 / 莫奈）各自读 `glowIntensity` 走自己的算法。
+     */
+    '--pi-word-glow-gain': tuningOf(palette ?? DEFAULT_PALETTE).glowIntensity.toFixed(3),
     // 只挂在主题分支上：classic 的舞台结构是另一回事，多一个变量就多一处
     // 将来会被误读成「classic 也吃这个设置」的地方。变量落在根节点上、由舞台继承。
     ...(Themed === undefined
@@ -1806,6 +1896,8 @@ export function LyricStage({
       }
       data-lyric-rail
       data-theme={activeTheme}
+      /* 用户本轮第 3 条：辉光关掉时（`glowIntensity = 0`）由 CSS 那条规则把写死半径的层按掉。 */
+      data-glow={tuningOf(palette ?? DEFAULT_PALETTE).glowIntensity > 0 ? 'on' : 'off'}
       data-word-spin={classicSpin ? 'true' : undefined}
       data-lines={lines.length}
       data-active-index={activeIndex}
@@ -1849,6 +1941,9 @@ export function LyricStage({
                 }
                 onSeek?.(timeMs);
                 setViewIndex(null);
+                // 点行 seek 之后就是「跟着播放走」，连续滚动的零头也归零（莫奈那头不残留半行偏移）。
+                setViewAnchor(null);
+                viewAnchorRef.current = null;
               }
         }
       >
@@ -1895,6 +1990,8 @@ export function LyricStage({
             translated={translated}
             activeIndex={activeIndex}
             viewIndex={anchorIndex}
+            /* 连续锚点（滚轮零头也算进去，主人本轮第 1 条）；只有莫奈读它。 */
+            viewAnchor={viewAnchor ?? anchorIndex}
             leavingIndex={leavingIndex}
             positionMs={positionMs}
             {...(durationMs === undefined ? {} : { durationMs })}

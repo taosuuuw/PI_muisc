@@ -491,11 +491,18 @@
  * seek 静默失效，反倒被 `HomePage` 那条「点空白 → 浮出 PI 球」接走（正是用户看到的现象）。
  * 行元素打开之后：委托那条 `CLICK_SEEK_THEMES` 恢复生效，而 HomePage 排除名单里本来就有
  * `[data-lyric-line]`，圆球不会再冒出来。
+ *
+ * 主人本轮第 5 条把 **monet（莫奈）** 也补进来了：同一个坑。莫奈的轨道层、行、列、行容器
+ * 一路到舞台根 `.pi-lyricstage` 全是 `pointer-events: none`（实测计算值），**连滚轮监听都收不到**
+ * —— `LyricStage` 那条 `wheel` 是挂在舞台根上的，而真实滚轮的命中落在更外层的
+ * `.pi-home__stage-lyrics`（它才是 `pointer-events: auto` 的那一层），事件从外往内**不经过**舞台根。
+ * 行元素一开指针，滚轮与点击都从行冒泡到舞台根 ✓，两件事一起恢复。
  */
 .pi-lyricstage[data-theme='fume'] [data-lyric-line],
 .pi-lyricstage[data-theme='cadenza'] [data-lyric-line],
 .pi-lyricstage[data-theme='partita'] [data-lyric-line],
-.pi-lyricstage[data-theme='pendolo'] [data-lyric-line] {
+.pi-lyricstage[data-theme='pendolo'] [data-lyric-line],
+.pi-lyricstage[data-theme='monet'] [data-lyric-line] {
   pointer-events: auto;
   cursor: pointer;
 }

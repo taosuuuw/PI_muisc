@@ -1,11 +1,16 @@
-import { app, ipcMain } from 'electron';
-import { readFileSync } from 'node:fs';
+import { app, dialog, ipcMain, nativeImage } from 'electron';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import {
+  BACKGROUND_IMAGE_EXTENSIONS,
+  BACKGROUND_IMAGE_MAX_BYTES,
   CH,
   EVT,
   INPUT_SCHEMAS,
   OUTPUT_SCHEMAS,
+  type BackgroundCommitRequest,
+  type BackgroundPickResult,
+  type BackgroundReadResult,
   type CacheClearRequest,
   type CommentLikeRequest,
   type CommentPostRequest,
@@ -60,6 +65,23 @@ const DEV = Boolean(process.env.PI_DEV);
  */
 const IPC_LOG = process.env.PI_IPC_LOG === '1';
 
+/** 扩展名 → MIME：只用于把字节包成 `data:` 地址；认不出的按 png 兜底（浏览器按内容嗅探）。 */
+const BACKGROUND_MIME: Record<string, string> = {
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  png: 'image/png',
+  webp: 'image/webp',
+  gif: 'image/gif',
+  bmp: 'image/bmp',
+  avif: 'image/avif',
+  ico: 'image/x-icon',
+};
+
+/** 自定义背景的落盘目录（`userData/player-background/`，与设置、缓存同一个域）。 */
+function backgroundDir(): string {
+  return path.join(app.getPath('userData'), 'player-background');
+}
+
 /**
  * `bootstrap.json` 里记着的 GPU 崩溃累计次数（用户第五轮第 17 条）。
  *
@@ -106,7 +128,18 @@ function register<P, R>(channel: string, handler: (payload: P) => Promise<R> | R
   });
 }
 
-export function registerIpc(services: Services, getWindow: () => Electron.BrowserWindow | null): void {
+/**
+ * 注册全部 IPC 通道。
+ *
+ * `onSettingsPatched`（本轮第 4 条加）：设置写成功后回调一次，让主进程把需要**同步**读到的
+ * 设置同步进缓存 —— 目前只有「关闭窗口时退到后台还是直接退出」（窗口的 `close` 事件是同步的，
+ * 在里面 await 读设置来不及）。不传就不回调，冒烟里的独立调用点因此一个都不用改。
+ */
+export function registerIpc(
+  services: Services,
+  getWindow: () => Electron.BrowserWindow | null,
+  onSettingsPatched?: (next: Settings) => void,
+): void {
   /** 需要联网的通道统一先等内嵌服务就绪，失败时给一句人能看懂的话。 */
   const requireNcm = async (): Promise<void> => {
     const ready = await services.ensureNcmReady();
@@ -138,9 +171,12 @@ export function registerIpc(services: Services, getWindow: () => Electron.Browse
 
   register<void, Settings>(CH.settingsGet, () => services.getSettings());
 
-  register<Partial<Settings>, Settings>(CH.settingsPatch, (patch) =>
-    services.patchSettings(patch ?? {}),
-  );
+  register<Partial<Settings>, Settings>(CH.settingsPatch, async (patch) => {
+    const next = await services.patchSettings(patch ?? {});
+    // 主进程侧需要同步读到的设置（关窗行为）在这里同步过去，见 `registerIpc` 的注释。
+    onSettingsPatched?.(next);
+    return next;
+  });
 
   register<void, RouteMap[typeof CH.ncmHealth]['output']>(CH.ncmHealth, () => {
     const state = services.getNcmState();
@@ -474,5 +510,111 @@ export function registerIpc(services: Services, getWindow: () => Electron.Browse
   });
   register<void, void>(CH.windowClose, () => {
     getWindow()?.close();
+  });
+
+  /* ---------------- 播放页自定义背景（主人本轮第 1 条） ---------------- */
+
+  /*
+   * 四件事：挑（系统对话框）→ 存（写进 userData 的副本）→ 取（启动时读回来）→ 清。
+   *
+   * 为什么存副本而不是记用户的文件路径：用户的图可能在 U 盘/临时目录/会被挪走的相册里，
+   * 记路径就等于埋一个「过几天背景消失了」的坑。副本放 `userData/player-background/`，
+   * 与设置、缓存同域，跟着这个安装走。
+   *
+   * 为什么只留一张：设置里那一项本来就只有一个（`settings.playerBackground`），
+   * 存两张会让「哪张在用」和磁盘占用都变得需要解释。换图时先清目录再写。
+   */
+  register<void, BackgroundPickResult>(CH.backgroundPick, async () => {
+    const win = getWindow();
+    const options: Electron.OpenDialogOptions = {
+      title: '选一张播放页背景图',
+      properties: ['openFile'],
+      filters: [
+        { name: '图片', extensions: [...BACKGROUND_IMAGE_EXTENSIONS] },
+        { name: '所有文件', extensions: ['*'] },
+      ],
+    };
+    const picked = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
+    const filePath = picked.filePaths[0];
+    if (picked.canceled || filePath === undefined) return { canceled: true };
+
+    const ext = path.extname(filePath).slice(1).toLowerCase();
+    if (!(BACKGROUND_IMAGE_EXTENSIONS as readonly string[]).includes(ext)) {
+      return {
+        canceled: false,
+        message: `认不出「.${ext}」这种格式。可以用：${BACKGROUND_IMAGE_EXTENSIONS.join(' / ')}。`,
+      };
+    }
+    let bytes: Buffer;
+    try {
+      bytes = readFileSync(filePath);
+    } catch (error) {
+      return { canceled: false, message: `这张图读不出来：${(error as Error).message}` };
+    }
+    if (bytes.length > BACKGROUND_IMAGE_MAX_BYTES) {
+      return {
+        canceled: false,
+        message: `图太大了（${(bytes.length / 1024 / 1024).toFixed(1)}MB，上限 ${BACKGROUND_IMAGE_MAX_BYTES / 1024 / 1024}MB）。`,
+      };
+    }
+    const size = nativeImage.createFromBuffer(bytes).getSize();
+    return {
+      canceled: false,
+      name: path.basename(filePath),
+      ext,
+      dataUrl: `data:${BACKGROUND_MIME[ext] ?? 'image/png'};base64,${bytes.toString('base64')}`,
+      ...(size.width > 0 && size.height > 0 ? { width: size.width, height: size.height } : {}),
+    };
+  });
+
+  register<BackgroundCommitRequest, { id: string }>(CH.backgroundCommit, (payload) => {
+    const ext = payload.ext.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (ext === '') throw new Error('背景图的扩展名不合法。');
+    const matched = /^data:[^;,]+;base64,([\s\S]+)$/.exec(payload.dataUrl);
+    if (matched === null) throw new Error('背景图数据不是 data:base64 形式。');
+    const bytes = Buffer.from(matched[1] ?? '', 'base64');
+    if (bytes.length === 0) throw new Error('背景图是空的。');
+    if (bytes.length > BACKGROUND_IMAGE_MAX_BYTES) {
+      throw new Error(`背景图太大（上限 ${BACKGROUND_IMAGE_MAX_BYTES / 1024 / 1024}MB）。`);
+    }
+    const dir = backgroundDir();
+    mkdirSync(dir, { recursive: true });
+    for (const entry of readdirSync(dir)) {
+      try {
+        rmSync(path.join(dir, entry), { force: true });
+      } catch {
+        /* 删不掉旧的就留着，反正新的一张马上写下去，取的时候按设置里的文件名找。 */
+      }
+    }
+    const id = `bg-${Date.now().toString(36)}.${ext}`;
+    writeFileSync(path.join(dir, id), bytes);
+    console.info(`[pi/background] 已存下播放页背景：${id}（${(bytes.length / 1024).toFixed(0)}KB）`);
+    return { id };
+  });
+
+  register<{ id: string }, BackgroundReadResult>(CH.backgroundRead, (payload) => {
+    // `basename` 是防目录穿越那道闸：id 来自渲染层，不能直接拼进路径。
+    const file = path.join(backgroundDir(), path.basename(payload.id));
+    if (!existsSync(file)) return { dataUrl: null, missing: true };
+    const ext = path.extname(file).slice(1).toLowerCase();
+    return {
+      dataUrl: `data:${BACKGROUND_MIME[ext] ?? 'image/png'};base64,${readFileSync(file).toString('base64')}`,
+      missing: false,
+    };
+  });
+
+  register<void, { cleared: boolean }>(CH.backgroundClear, () => {
+    const dir = backgroundDir();
+    if (!existsSync(dir)) return { cleared: false };
+    let cleared = false;
+    for (const entry of readdirSync(dir)) {
+      try {
+        rmSync(path.join(dir, entry), { force: true });
+        cleared = true;
+      } catch {
+        /* 忽略：下一张写进来时会再清一遍。 */
+      }
+    }
+    return { cleared };
   });
 }

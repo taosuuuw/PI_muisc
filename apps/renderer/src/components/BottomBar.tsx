@@ -86,13 +86,17 @@ export function BottomBar(): ReactNode {
        *
        * 仍然让开的是**拖拽类控件**：
        *   - `input[type=range]`（进度条）：拖进度条 / 原地按一下设位置，都不该被拽回播放页；
+       *   - `[data-home-track]`（用户本轮第 1 条）：指针交互整条搬到了轨道那一层，`<input>`
+       *     现在是 `pointer-events: none` 的纯键盘通道 ⇒ 命中的目标从 `input` 变成了轨道。
+       *     不认这一层的话，在拼贴页点一下进度条就会连人带页一起被送回播放页
+       *     （「原地按一下 = 回播放页」那条判定会吃下这一下）；
        *   - `[data-home-volrange]`：音量条是自接指针的 div（`components/VolumeSlider.tsx`），
        *     同上。
        * 原来的判定是 `button, input, select, a, …` 一把全让，于是暂停键永远回不去。
        */
       if (
         target instanceof HTMLElement &&
-        target.closest('input, [data-home-volrange], [role="slider"]') !== null
+        target.closest('input, [data-home-track], [data-home-volrange], [role="slider"]') !== null
       ) {
         return;
       }

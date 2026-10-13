@@ -58,6 +58,16 @@ export interface StageLine {
 export interface LyricPalette {
   readonly primaryColor: string;
   readonly accentColor: string;
+  /**
+   * 第二强调色（上游 `theme.secondaryColor`），目前**只有凝彩的 `duo` 档色阶**在用
+   * （作为 `tintB`；`tintA` 用 `accentColor`）。
+   *
+   * **可选且默认不填**：`DEFAULT_PALETTE` 里**故意不给它一个猜出来的 CSS 变量名** ——
+   * 宁可不填（凝彩色阶就退化成纯中性阶梯），也不写一个没核实过的 `var(...)`。
+   * 由 `HomePage` 建 palette 时从应用主题／封面调色板取，**先落成实色**再传
+   * （`mixColor` 只认 `rgb()/rgba()`）。
+   */
+  readonly secondaryColor?: string;
   readonly backgroundColor: string;
   /** 情绪词 → 颜色（folia 的 `wordColors`）；没有就退到 accentColor / primary。 */
   readonly wordColors?: Readonly<Record<string, string>>;
@@ -87,6 +97,14 @@ export interface LyricThemeProps {
   readonly activeIndex: number;
   /** 舞台锚点：跟随播放时等于 `activeIndex`（没到第一句时是 0），手动查看时是用户滚到的那行。 */
   readonly viewIndex: number;
+  /**
+   * **连续**锚点（可小数，单位「行」）—— 主人本轮第 1 条「莫奈要真·列表滚动」加的。
+   *
+   * `viewIndex` 是整数（滚一格跳一行），拿它排位置只能「一格重排一次」；这个值是滚轮**按像素**
+   * 累积出来的连续位置（`锚点 + 零头`），支持连续滚动的主题（现在只有莫奈）拿它当列表偏移，
+   * 一行一行滑过去。不传就退回整数 `viewIndex` —— 其它主题与老调用点一个字都不用改。
+   */
+  readonly viewAnchor?: number;
   /** 上一行（正在演「出场」）；没有就是 null。 */
   readonly leavingIndex?: number | null;
   readonly positionMs: number;

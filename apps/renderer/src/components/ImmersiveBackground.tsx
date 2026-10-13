@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
-import type { LyricLine, Song } from '@pi/shared';
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import type { LyricLine, PlayerBackground, Song } from '@pi/shared';
 
 import { energyToScale, pseudoEnergy } from '../lib/audio-bands';
 import { coverAt } from '../lib/cover';
@@ -19,6 +19,12 @@ import {
   type MoodFamily,
   type ThemeContract,
 } from '../lib/lyric-mood';
+import { playerBackgroundStyle } from '../lib/queries';
+import { DEFAULT_PALETTE, useLiveThemeColors } from './lyric-themes';
+import {
+  monetBackgroundTuningFor,
+  resolveMonetBackgroundDataUrl,
+} from './lyric-themes/monetBackground';
 
 /**
  * 播放页沉浸式背景（用户 m08768 第 5 条：学习 folia-major 的「按歌曲情绪与歌词内容生成的
@@ -35,7 +41,8 @@ import {
  * 4. `__shapes` 几何浮层：15 个形状（圆/方/三角/十字，`clip-path` 画的）+ 20 个粒子；
  * 5. `__lyric-veil` 歌词区半透明遮罩：椭圆渐变，颜色取自**主题底色**
  *    （`--pi-immersive-bg`，和歌词配色做对比度校准时用的就是它），压在浮层之上、
- *    只罩住歌词那一列，保证正文对比度；
+ *    只罩住歌词那一列，保证正文对比度；**暗档改成满幅平铺**（用户本轮第 2 条：
+ *    不要「中间一个黑团 + 外面一圈光环」，整体变暗就行，见 `immersive-background.css`）；
  * 6. `__vignette` 暗角（`radial-gradient(circle, transparent 42%, rgba(0,0,0,.5) 100%)`）；
  * 7. `__sidelight` 侧光（**用户第二十一轮第 4 条**：暗档左侧一道侧光打入、往右渐暗；
  *    亮档这一层不给背景色，数值见 `styles/immersive-background.css`）。
@@ -80,12 +87,34 @@ export interface ImmersiveBackgroundProps {
   /** 由设置决定：true 时用封面取色，false 时用一套中性色。 */
   enabled?: boolean;
   /**
+   * 背景氛围光（用户本轮第 3 条）：设置页那枚开关。false 时关掉 `__aura`（跟着当前句情绪
+   * 走的那团光晕）、`__bloom`（按封面推导的暖光）与 `__sidelight`（暗档左侧那道侧光），
+   * 背景只剩封面与几何浮层。默认 true —— 老用户没存过这个字段，观感不该变。
+   *
+   * **底图那团暖光也吃它**（本轮修正）：烤图里的 `leftBloom` 与 `__bloom` 是同一团光，
+   * 只是前者被烤进了位图，CSS 关不掉 —— 所以 `false` 时连底图也重烤一张没有光的
+   * （见下面那段 `posterUrl` 的注释）。
+   */
+  ambientGlow?: boolean;
+  /**
    * 封面图地址覆盖（可选）。默认从 `song.album.coverUrl` 经 `coverAt(…, 640)` 派生——
    * 但网易云 CDN 不回 CORS 头、生产环境又是 `file://`，canvas 取色必然被污染，
    * 所以默认路径基本都会回退中性色。以后主进程能给出封面字节（docs/PLAN.md §4.1 计划的
    * `blob:` 封面）时，把那个 `blob:`/`data:` 地址从这里传进来，取色就能成功。
    */
   coverSrc?: string;
+  /**
+   * 播放页自定义背景（主人本轮第 1 条）：设了它就拿这张图当底图。
+   *
+   * 三件事随之改变：
+   *   ① **不再烤封面底图**（莫奈那条洗色管线是「把封面洗成主题色」的，用户自己挑的图不该再被洗一遍）；
+   *   ② `data-base` 变成 `custom`，CSS 那边据此把封面那支 3px 软化去掉（自定义图要看得清）；
+   *   ③ 裁切参数（`zoom` / `offsetX/Y`）由 `playerBackgroundStyle` 映射成
+   *      `--pi-cover-scale` 与 `object-position`，非破坏性、连动图都能保留。
+   *
+   * `url` 是主进程把字节取回来后的 `data:` 地址（见 `lib/queries.ts` 的 `usePlayerBackground`）。
+   */
+  customBackground?: (PlayerBackground & { readonly url: string }) | null;
 }
 
 /** 形状/粒子的数量（folia 的浮层规模：约 15 个形状 + 约 20 个粒子）。 */
@@ -463,7 +492,9 @@ export function ImmersiveBackground({
   lines,
   activeIndex,
   enabled = true,
+  ambientGlow = true,
   coverSrc,
+  customBackground = null,
 }: ImmersiveBackgroundProps): ReactNode {
   // 父层只有在有歌时才渲染我们（HomePage 的空态是另一棵子树），但这里仍然防一手：
   // 没有 song.id 就当作「没有歌」，画面静止，绝不让种子随机数退化成 0 号歌的图形。
@@ -575,20 +606,95 @@ export function ImmersiveBackground({
 
   const theme: ThemeContract = useMemo(() => composeTheme(palette.colors, mood), [palette, mood]);
 
+  /** 根节点 ref：`useLiveThemeColors` 要拿它当 scope 去读 `--pi-th-*`。 */
+  const rootRef = useRef<HTMLDivElement | null>(null);
+
+  /** 给 `useLiveThemeColors` 的兜底 palette（真值从 DOM 的 `--pi-th-*` 读，见那个 hook）。 */
+  const liveFallbackPalette = useMemo(
+    () => ({
+      ...DEFAULT_PALETTE,
+      primaryColor: theme.primaryColor,
+      accentColor: theme.accentColor,
+      backgroundColor: theme.backgroundColor,
+    }),
+    [theme.primaryColor, theme.accentColor, theme.backgroundColor],
+  );
+
+  /**
+   * 界面实时主题色（`--pi-th-surface / primary / accent`，`HomePage` 按当前歌曲注入）。
+   *
+   * **这一支就是莫奈那条洗色管线喂进去的颜色**（`MonetTheme.tsx` 的 `resolveMonetBackgroundDataUrl`
+   * 调用点传的是 `colors.surface / primary / accent`）。上一版我把 `composeTheme` 那张
+   * 「情绪合成」的背景色喂了进去——它比 surface 暗一档，烤出来的底图就比莫奈暗：
+   * 同一首歌实测左中 100（莫奈 166）、左下 78（莫奈 119）、饱和掉到 2。所以这次先对齐来源再烤。
+   */
+  const sceneColors = useLiveThemeColors(rootRef, liveFallbackPalette);
+
+  /**
+   * 公共背景的底图：用莫奈那条管线（取封面 → 逐像素按亮度往主题色洗 → 叠光）烤一张。
+   * 参数整份取上游默认值，只关掉 18 根竖条（莫奈海报版式独有的装饰）。
+   *
+   * **那张光也跟着「背景氛围光」开关走**（本轮修正）：烤图里那团 `leftBloom` 就是
+   * `__bloom` 那层 CSS 画的东西 —— 底图一换成烤图，CSS 那层就 `display: none` 了
+   * （见 `immersive-background.css`），于是开关**只关得掉没烤好时的那一版**，
+   * 烤好之后那团暖光照旧留在位图里。所以这里把开关一起喂进烤图参数：关掉时烤一张没有光的底图。
+   */
+  const [posterUrl, setPosterUrl] = useState<string | null>(null);
+  useEffect(() => {
+    /*
+     * 用户自定义了播放页背景（主人本轮第 1 条）：底图就是他挑的那张，**这一支整个跳过** ——
+     * 烤图那条管线是「把封面洗成主题色」的，对用户自己的图做这件事既慢又没道理
+     * （图变暗变色，等于把用户选的图改掉了）。裁切由 CSS 那头做，见 `playerBackgroundStyle`。
+     */
+    if (!enabled || customBackground !== null || !coverUrl) {
+      setPosterUrl(null);
+      return;
+    }
+    let cancelled = false;
+    void resolveMonetBackgroundDataUrl({
+      coverUrl,
+      theme: {
+        backgroundColor: sceneColors.surface,
+        primaryColor: sceneColors.primary,
+        accentColor: sceneColors.accent,
+      },
+      tuning: monetBackgroundTuningFor(ambientGlow, { streaksEnabled: false }),
+    }).then((url) => {
+      if (!cancelled) setPosterUrl(url);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    enabled,
+    coverUrl,
+    ambientGlow,
+    customBackground,
+    sceneColors.surface,
+    sceneColors.primary,
+    sceneColors.accent,
+  ]);
+
+  /**
+   * 底图三层优先级：用户自定义的背景 → 烤好的封面底图 → 原封面。
+   * 自定义那张永远最优先：它是用户在设置里明确挑的，换歌也不该被顶掉。
+   */
+  const baseImage = customBackground?.url ?? posterUrl ?? coverUrl;
+
   // 封面交叉淡入：只留最近两张。旧的那张永远停在 opacity 0，等下一次换歌时才被替换——
   // 这样不需要定时器，也不会在过渡中间把 DOM 掀掉。
   const [coverStack, setCoverStack] = useState<readonly string[]>(() =>
     coverUrl ? [coverUrl] : [],
   );
   useEffect(() => {
-    if (!coverUrl) {
+    if (!baseImage) {
       setCoverStack([]);
       return;
     }
     setCoverStack((previous) =>
-      previous[previous.length - 1] === coverUrl ? previous : [...previous, coverUrl].slice(-2),
+      previous[previous.length - 1] === baseImage ? previous : [...previous, baseImage].slice(-2),
     );
-  }, [coverUrl]);
+  }, [baseImage]);
   const activeCover = coverStack[coverStack.length - 1];
 
   const paused = !hasSong || hidden || reducedMotion;
@@ -616,6 +722,7 @@ export function ImmersiveBackground({
 
   return (
     <div
+      ref={rootRef}
       className="pi-immersive"
       data-immersive="true"
       data-mood={theme.mood}
@@ -623,6 +730,13 @@ export function ImmersiveBackground({
       data-line-shape={lineShape.kind}
       data-theme-source={palette.source}
       data-scheme={dark ? 'dark' : 'light'}
+      /* 底图是原封面、莫奈那条洗色管线烤的图，还是用户自己挑的背景——CSS 靠它决定压暗层退几档。 */
+      data-base={
+        customBackground !== null ? 'custom' : posterUrl === null ? 'cover' : 'poster'
+      }
+      /* 用户本轮第 3 条后半段：背景氛围光的总开关（关掉时 CSS 把 `__aura` / `__bloom` /
+         `__sidelight` 按掉；而烤进位图的那团暖光在 `posterUrl` 那一支就已经不烤了）。 */
+      data-ambient={ambientGlow ? 'on' : 'off'}
       data-chorus={isChorus ? 'true' : 'false'}
       data-paused={paused ? 'true' : 'false'}
       data-reduced-motion={reducedMotion ? 'true' : 'false'}
@@ -641,7 +755,9 @@ export function ImmersiveBackground({
             draggable={false}
           />
         ))}
-        {/* 可辨认的封面：blur(3px) + scale(1.14)，暗角与歌词遮罩在后面几层里。 */}
+        {/* 可辨认的封面：blur(3px) + scale(1.14)，暗角与歌词遮罩在后面几层里。
+            自定义背景那一支不走这套「软化」：用户挑的图要看得清，裁切由 `playerBackgroundStyle`
+            写进 `--pi-cover-scale` 与 `object-position`（漂移动画的每一帧都吃那个变量）。 */}
         {coverStack.map((src) => (
           <img
             key={src}
@@ -650,6 +766,11 @@ export function ImmersiveBackground({
             src={src}
             alt=""
             draggable={false}
+            style={
+              src === customBackground?.url && customBackground !== null
+                ? (playerBackgroundStyle(customBackground) as CSSProperties)
+                : undefined
+            }
           />
         ))}
       </div>
@@ -683,6 +804,20 @@ export function ImmersiveBackground({
           （歌词配色的对比度就是对着它校准的），保证正文可读。 */}
       <div className="pi-immersive__lyric-veil" />
       <div className="pi-immersive__vignette" />
+      {/*
+        封面暖光（用户本轮：「就像图 1 里的黄色光一样，这个之前六个歌词动效都得有」）：
+        那团黄光是**莫奈自带背景管线**里的一层 —— `monetBackground.ts` 的 `leftBloom`
+        （accent 色、圆心在 18%/34%、半径 55% 宽、峰值 alpha = overlay × 0.42）。
+        莫奈自己有那层底图、整幅盖住窗口，所以只有莫奈看得到；其余六套用的是这层公共背景。
+        这里按同一套几何补一层，颜色取 `--pi-immersive-accent`（从封面推导出来的主题色，
+        封面暖金时它就是暖金），浓度跟着当前这句的情绪走（`--pi-immersive-aura`）。
+
+        ⚠ **必须排在 `__lyric-veil` 之后**：它是「光」，不是底色。第一版放在 `__wash` 上面
+        （压暗层之下），实测被遮罩的 55% 与暗角吃掉大半 —— 同一首歌在莫奈那边左中是
+        rgb(208,142,95) 的暖金，六套这边量出来还是 rgb(68,82,92) 的冷灰。
+        挪到与 `__sidelight` 同一组（都是打在背景上的光）之后才真的看得见 ✓。
+      */}
+      <div className="pi-immersive__bloom" />
       {/*
         用户第二十一轮第 4 条：「暗色模式下背景光照要左侧一道侧光打入、往右渐暗」。
         压在暗角之上（暗角会把四角一起压暗，包括左边那道光的落点），只在暗档有背景色，

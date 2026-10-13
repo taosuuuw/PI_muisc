@@ -1,0 +1,709 @@
+/**
+ * lyric-monet.css — 莫奈（`monet`）歌词主题的样式。
+ *
+ * === AGPL 说明 ===
+ * 数值借鉴自 folia-major 的 `src/components/visualizer/monet/`（**AGPL-3.0**，
+ * `chthollyphile/folia-major@main`）：字号 clamp、间距、圆角、阴影槽、入场时序与缓动曲线。
+ * 这里只按那些数值重写 CSS，**没有拷贝 folia 的样式表文本**；逐帧变化的部分（扫光遮罩、
+ * 辉光、行位移）由 `MonetTheme.tsx` 的 rAF 写 CSS 变量，本文件只负责静态布局与颜色继承。
+ *
+ * 命名空间：`.pi-lyricmonet*`（与既有 `.pi-lyrictilt*` / `.pi-lyricpartita*` 同构）。
+ * 舞台铺满的规则照 `lyric-themes.css` 里那五条主题的写法：`position: absolute; inset: 0` 贴住
+ * `position: relative` 的 `.pi-home__stage`，不写死任何 px / vh 的盒子尺寸。
+ */
+
+/* ------------------------------------------------------------------ *
+ * 舞台铺满（同 lyric-themes.css 里 fume / cadenza / partita 那一条）
+ * ------------------------------------------------------------------ */
+
+.pi-lyricstage[data-theme='monet'] {
+  position: absolute;
+  inset: 0;
+  width: auto;
+  height: auto;
+  max-width: none;
+  min-height: 0;
+  margin: 0;
+  grid-template-rows: minmax(0, 1fr);
+  pointer-events: none;
+  --pi-stage-bleed-bottom: clamp(86px, 11vh, 132px);
+}
+
+/* ------------------------------------------------------------------ *
+ * 根：一横行（左列 + 右列肖像），铺满舞台
+ * ------------------------------------------------------------------ */
+
+.pi-lyricmonet {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  pointer-events: none;
+  contain: paint;
+  user-select: none;
+  -webkit-user-select: none;
+  font-family: var(--pi-monet-font, inherit);
+  /* 大屏整体放大的那道系数（folia 的 resolveMonetLargeScreenScale，1 ~ 1.16）。 */
+  --pi-monet-layout-scale: 1;
+  --pi-monet-row-max-width: 1520px;
+  --pi-monet-portrait-max: 430px;
+  --pi-monet-portrait-inner-max: 380px;
+  --pi-monet-portrait-offset-x: 0px;
+}
+
+/* 标签 + 标题 + 专辑 + 轨道的左列，与右列肖像并排。 */
+.pi-lyricmonet__row {
+  position: relative;
+  z-index: 10;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  max-width: var(--pi-monet-row-max-width);
+  margin: 0 auto;
+  overflow: hidden;
+}
+
+.pi-lyricmonet__col {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 0;
+  min-height: 0;
+  padding: 20px 20px;
+  /* 入场：整列从左侧滑入（folia 的 title / artist 各自有 delay，见下面各条）。 */
+  animation: pi-monet-col-in 1.2s cubic-bezier(0.25, 1, 0.5, 1) both;
+  animation-delay: 0.1s;
+}
+
+@media (min-width: 640px) {
+  .pi-lyricmonet__col {
+    padding: 24px 32px;
+  }
+}
+
+@media (min-width: 1024px) {
+  .pi-lyricmonet__col {
+    padding: 32px 56px;
+  }
+}
+
+@media (min-width: 1536px) {
+  .pi-lyricmonet__col {
+    padding: 32px 80px;
+  }
+}
+
+/* 艺人名：斜体、字距 0、延迟 0.15s 从左上飘入。 */
+.pi-lyricmonet__artist {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-style: italic;
+  font-size: clamp(1rem, 1.8vw, calc(1.8rem * var(--pi-monet-layout-scale)));
+  letter-spacing: 0;
+  color: var(--pi-monet-artist, var(--pi-monet-primary));
+  animation: pi-monet-artist-in 1.2s cubic-bezier(0.25, 1, 0.5, 1) both;
+  animation-delay: 0.15s;
+}
+
+/* 艺人名下方那一条竖线：`scaleY 0 → 1`，延迟 0.5s，1.5s。 */
+.pi-lyricmonet__rule {
+  width: 1px;
+  height: 56px;
+  margin-top: 6px;
+  border-radius: 999px;
+  transform-origin: top;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--pi-monet-primary) 72%, transparent),
+    transparent
+  );
+  animation: pi-monet-rule-in 1.5s cubic-bezier(0.25, 1, 0.5, 1) both;
+  animation-delay: 0.5s;
+}
+
+.pi-lyricmonet__head {
+  margin-bottom: 12px;
+}
+
+/* 歌名：字重 600、行高 1.06、最多两行。 */
+.pi-lyricmonet__title {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  font-weight: 600;
+  line-height: 1.06;
+  letter-spacing: 0;
+  color: var(--pi-monet-primary);
+  font-size: clamp(1.45rem, 3.3vw, calc(2.8rem * var(--pi-monet-layout-scale)));
+  /* 行高比多数衬线字体的 em 盒还紧，负半行距会把降部切掉——上下把内边距撑开，再拉回来。 */
+  padding-block: 0.25em;
+  margin-top: -0.25em;
+  margin-bottom: -0.12em;
+  text-shadow: 0 14px 36px color-mix(in srgb, var(--pi-monet-surface) 28%, transparent);
+  animation: pi-monet-title-in 1.3s cubic-bezier(0.25, 1, 0.5, 1) both;
+  animation-delay: 0.3s;
+}
+
+/* 专辑行：小号大写。 */
+.pi-lyricmonet__album {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  margin-bottom: 24px;
+  font-size: 0.875rem;
+  text-transform: uppercase;
+  letter-spacing: 0;
+  color: color-mix(in srgb, var(--pi-monet-secondary, var(--pi-monet-primary)) 84%, transparent);
+}
+
+/* ------------------------------------------------------------------ *
+ * 歌词轨道（folia: MonetLyricsRail）
+ * ------------------------------------------------------------------ */
+
+.pi-lyricmonet__rail {
+  position: relative;
+  overflow: hidden;
+  width: 100%;
+  height: clamp(280px, 52vh, var(--pi-monet-rail-max-height, 520px));
+  max-width: var(--pi-monet-rail-max-width, 780px);
+  margin-left: calc(var(--pi-monet-glow-buffer, 0px) * -1);
+  margin-right: calc(var(--pi-monet-glow-buffer, 0px) * -1);
+  padding-left: var(--pi-monet-glow-buffer, 0px);
+  padding-right: var(--pi-monet-glow-buffer, 0px);
+  touch-action: auto;
+  /* 上下淡出：顶部 11% / 底部 88%（folia 的 `linear-gradient(to bottom, ...)` 同一组档位）。 */
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0%,
+    #000 11%,
+    #000 88%,
+    transparent 100%
+  );
+  mask-image: linear-gradient(to bottom, transparent 0%, #000 11%, #000 88%, transparent 100%);
+  animation: pi-monet-rail-in 1.2s cubic-bezier(0.25, 1, 0.5, 1) both;
+  animation-delay: 0.65s;
+}
+
+/* 一行歌词：绝对定位在轨道上，`transform` 由 JS 每帧写（y + 缩放）。
+ *
+ * === 滚轮换行的手感（主人本轮反馈「切换不流畅」之后调的）===
+ * 实测（把 transform 的时间序列打出来）：过渡本来就在跑，0.42s 内 141px → −15px 是平滑插值的，
+ * 卡的不是「有没有过渡」，而是**这套轨道一次只渲染 ±2 行**——滚一格时每一行都换槽位，
+ * 于是整块文字一起横移，读起来像「糊过去」而不是「列表滚动」。三处调整：
+ *   ① 位移给足时间、用一条「慢起快走再收」的曲线（0.52s + `cubic-bezier(0.32, 0.72, 0, 1)`）：
+ *      0.42s 配原来的强 ease-out 前 30% 就走完大半，观感是「弹一下」；现在前段更稳、后段收得干净。
+ *   ② **`filter` 不再参与过渡**：这几行是大块文字 + 辉光，`blur()` 每帧重算要重绘整行，
+ *      是这套动效里唯一真正的开销来源；模糊值本身变化很小（0~1.6px），瞬切看不出来，
+ *      但省下来的每帧重绘正好用在位移上。`will-change` 也一起去掉 filter。
+ *   ③ 新进入窗口的行**淡入**（`pi-monet-line-in`，只动 opacity，从 0 到 JS 给的那个值）：
+ *      挂载时没有任何过渡可用，原来是「啪」地满不透明地出现。
+ */
+.pi-lyricmonet__line {
+  position: absolute;
+  top: 0;
+  left: var(--pi-monet-glow-buffer, 0px);
+  right: var(--pi-monet-glow-buffer, 0px);
+  min-width: 0;
+  transform-origin: left top;
+  will-change: transform, opacity;
+  /* 位移 / 缩放走弹簧观感（folia 的 spring 142/28/0.82、150/30/0.78 换成等效曲线）；
+     opacity 用 folia 的 0.28s 与同一条 cubic-bezier。 */
+  transition:
+    transform 0.52s cubic-bezier(0.32, 0.72, 0, 1),
+    opacity 0.3s cubic-bezier(0.32, 0.72, 0, 1);
+  /* 只写 `from`：终点就是 JS 写进内联样式那个 opacity，两条规则不会打架。 */
+  animation: pi-monet-line-in 0.36s ease-out backwards;
+}
+
+@keyframes pi-monet-line-in {
+  from {
+    opacity: 0;
+  }
+}
+
+/*
+ * 唱过的行**不再**自己换一支词色：folia 的莫奈把唱过的字写成 `wordColor`，但本仓库用户
+ * （第 11 轮第 1/2 条）要求「所有主题的常态字色与流光的 `--pi-lyric-ink` 同源」——
+ * 也就是「唱过」这件事由**行级** `opacity` / `blur` 表达，字色不回退成另一支颜色。
+ * 词色仍然出现在**扫光层**里（当前句唱到哪，哪一段就是词色）。
+ */
+
+/* 副歌：当前句背后一层柔光（folia 的 radial-gradient + blur(10px)）。 */
+.pi-lyricmonet__chorus {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: 1rem;
+  pointer-events: none;
+  background: radial-gradient(
+    circle at 50% 45%,
+    color-mix(in srgb, var(--pi-monet-accent) 14%, transparent) 0%,
+    color-mix(in srgb, var(--pi-monet-accent) 4%, transparent) 55%,
+    transparent 82%
+  );
+  filter: blur(10px);
+  opacity: 0;
+  transition:
+    opacity 0.45s ease-out,
+    transform 0.45s ease-out;
+}
+
+.pi-lyricmonet__line[data-active] .pi-lyricmonet__chorus {
+  opacity: 1;
+  transform: scale(1.02);
+}
+
+.pi-lyricmonet__text {
+  display: block;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  font-size: var(--pi-monet-lyric-size, 36px);
+  font-weight: 600;
+  line-height: var(--pi-monet-line-height, 42px);
+  letter-spacing: 0;
+}
+
+/* 一个字素：本体一层 + 扫光一层（叠在同一位置）。
+ *
+ * 契约（`lyric-themes.css:11-12`）：字素必须挂 `.pi-lyricstage__word` + `data-word-state`
+ * —— UI 冒烟按这两个选择器数逐字状态。但**共用**的三态规则（`lyric-stage.css:322` /
+ * `:413` / `:622`，权重 0,1,0 / 0,2,0）会把字素写成 `opacity: 0` + `scale(1.4)` + 主题色辉光，
+ * 而莫奈是「一行一盒、行级三态」的版面：字素本身既不能缩放也不能自己淡入。
+ * 所以这里用 `[data-theme='monet']` 前缀（0,3,0）把三态**逐条复位** —— tilt / pendolo / partita
+ * 三套主题在 `lyric-themes.css` 里就是这么压的。莫奈的颜色与辉光全部写在里面的
+ * `.pi-lyricmonet__ink` 上（它不带那个共用类，不受影响）。 */
+.pi-lyricstage[data-theme='monet'] .pi-lyricmonet__word,
+.pi-lyricstage[data-theme='monet'] .pi-lyricmonet__word[data-word-state='active'],
+.pi-lyricstage[data-theme='monet'] .pi-lyricmonet__word[data-word-state='passed'],
+.pi-lyricstage[data-theme='monet'] .pi-lyricmonet__word[data-word-state='waiting'] {
+  position: relative;
+  display: inline-block;
+  white-space: pre-wrap;
+  opacity: 1;
+  transform: none;
+  filter: none;
+  color: var(--pi-monet-base);
+  text-shadow: none;
+  /* 唱过之后从「当前句的压暗墨色」淡回常态墨色（本仓库 `--pi-word-fade-ms` 的 1100ms 口径）。
+     探针「歌词常态白与高亮色」要求常态那一支 color 过渡 ≥400ms —— 这不是给探针凑数：
+     少了它，一句唱完时整行颜色是硬切回常态的。 */
+  transition: color 1100ms linear;
+}
+
+.pi-lyricmonet__ink {
+  display: inline;
+  color: inherit;
+}
+
+/* 当前句的字素带辉光（folia: `MonetWordSweep` 的 `glowShadow`：两层、半径按字号、副歌那档更大）。
+   半径与透明度上限由 rAF 每帧写在 `--pi-monet-glow-*` 上。 */
+.pi-lyricstage[data-theme='monet'] .pi-lyricmonet__line[data-active] .pi-lyricmonet__ink {
+  text-shadow:
+    0 0 var(--pi-monet-glow-1, 0px)
+      color-mix(
+        in srgb,
+        var(--pi-monet-word) calc(var(--pi-monet-glow-alpha, 0) * 100%),
+        transparent
+      ),
+    0 0 var(--pi-monet-glow-2, 0px)
+      color-mix(
+        in srgb,
+        var(--pi-monet-word) calc(var(--pi-monet-glow-alpha, 0) * 100%),
+        transparent
+      );
+}
+
+/* 扫光层：`mask-image` 由 rAF 写（`--pi-monet-mask`），内部是 `background-clip: text` 的渐变字。
+   folia 把这一层上下各撑出 `0.5 × 字号`，再靠负 margin 拉回来——因为
+   `background-clip: text` 只在填充盒内上色、而遮罩又在边框盒处裁切，字号一大就会把
+   降部（g / j / p / y / 诸多 CJK 字形）切掉半截。 */
+.pi-lyricmonet__sweep {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(var(--pi-monet-sweep-overflow, 0px) * -1);
+  bottom: calc(var(--pi-monet-sweep-overflow, 0px) * -1);
+  display: block;
+  padding-top: var(--pi-monet-sweep-overflow, 0px);
+  padding-bottom: var(--pi-monet-sweep-overflow, 0px);
+  box-sizing: border-box;
+  pointer-events: none;
+  -webkit-mask-image: var(--pi-monet-mask, none);
+  mask-image: var(--pi-monet-mask, none);
+  -webkit-mask-size: 100% 100%;
+  mask-size: 100% 100%;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+}
+
+.pi-lyricmonet__fill {
+  display: block;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  padding-top: var(--pi-monet-sweep-overflow, 0px);
+  padding-bottom: var(--pi-monet-sweep-overflow, 0px);
+  margin-top: calc(var(--pi-monet-sweep-overflow, 0px) * -1);
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  /* 扫过的那一段：歌词词色，尾端略淡（folia 的 `linear-gradient(90deg, c 0%, c/0.92 68%, c/0.72 100%)`）。 */
+  background-image: linear-gradient(
+    90deg,
+    var(--pi-monet-word) 0%,
+    color-mix(in srgb, var(--pi-monet-word) 92%, transparent) 68%,
+    color-mix(in srgb, var(--pi-monet-word) 72%, transparent) 100%
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+}
+
+/* ------------------------------------------------------------------ *
+ * 右列肖像（folia: MonetPortraitImage + 两种 portraitStyle）
+ * ------------------------------------------------------------------ */
+
+.pi-lyricmonet__portrait {
+  display: none;
+  flex: 0 0 clamp(220px, 28vw, var(--pi-monet-portrait-max));
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  padding: 0 12px 0 20px;
+  overflow: visible;
+  animation: pi-monet-portrait-in 1.6s cubic-bezier(0.25, 1, 0.5, 1) both;
+  animation-delay: 0.25s;
+}
+
+@media (min-width: 768px) {
+  .pi-lyricmonet__portrait {
+    display: flex;
+  }
+}
+
+@media (min-width: 1024px) {
+  .pi-lyricmonet__portrait {
+    justify-content: flex-end;
+    padding-right: 40px;
+  }
+}
+
+.pi-lyricmonet__portraitframe {
+  position: relative;
+  /* 方形档：画 135.135% 宽再左移多出来的 35.135%，于是封面越过中缝、压住文字列的右侧留白
+     （folia 的 `width: 135.135%; margin-left: -35.135%`）。 */
+  width: 135.135%;
+  max-width: calc(var(--pi-monet-portrait-inner-max) * 1.35135);
+  margin-left: calc(-35.135% + var(--pi-monet-portrait-offset-x, 0px));
+  aspect-ratio: 1 / 1;
+  overflow: hidden;
+  border-radius: 2rem;
+  background-color: color-mix(in srgb, var(--pi-monet-primary) 8%, transparent);
+  box-shadow:
+    0 36px 80px color-mix(in srgb, var(--pi-monet-surface) 45%, transparent),
+    0 20px 42px color-mix(in srgb, var(--pi-monet-accent) 22%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--pi-monet-primary) 6%, transparent);
+  /* 动效强度 chaotic 时整块缓慢飘（folia 的 y ±18 / x ±9 / rotate ±1.2°，周期 9s）。 */
+  animation: pi-monet-portrait-float 9s ease-in-out infinite;
+  animation-delay: 0.2s;
+  will-change: transform;
+}
+
+.pi-lyricmonet__portraitinner {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+.pi-lyricmonet__portraitimg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
+  animation: pi-monet-portrait-fade 0.9s ease-in-out both;
+}
+
+/* ------------------------------------------------------------------ *
+ * 左下音频条（folia: AudioOverlay，柱状档）
+ * ------------------------------------------------------------------ */
+
+.pi-lyricmonet__audio {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  z-index: 20;
+  width: min(450px, 55vw);
+  height: 40px;
+  padding: 0 20px;
+  overflow: hidden;
+  animation: pi-monet-audio-in 1.2s cubic-bezier(0.25, 1, 0.5, 1) both;
+  animation-delay: 0.8s;
+}
+
+@media (min-width: 640px) {
+  .pi-lyricmonet__audio {
+    padding: 0 32px;
+  }
+}
+
+@media (min-width: 1024px) {
+  .pi-lyricmonet__audio {
+    padding: 0 56px;
+  }
+}
+
+.pi-lyricmonet__audiocanvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* ------------------------------------------------------------------ *
+ * 飘着的花瓣（folia: MonetFloatingDecor 的十个粒子）
+ * ------------------------------------------------------------------ */
+
+.pi-lyricmonet__decor {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  overflow: hidden;
+  pointer-events: none;
+  animation: pi-monet-decor-in 2.2s ease-out both;
+}
+
+.pi-lyricmonet__petal {
+  position: absolute;
+  display: block;
+  color: color-mix(in srgb, var(--pi-monet-secondary, var(--pi-monet-primary)) 55%, transparent);
+  opacity: var(--pi-monet-petal-opacity, 0.1);
+  transform: rotate(var(--pi-monet-petal-rotate, 0deg));
+  animation: pi-monet-petal-drift var(--pi-monet-petal-duration, 24s) ease-in-out infinite;
+  animation-delay: var(--pi-monet-petal-delay, 0s);
+  will-change: transform, opacity;
+}
+
+.pi-lyricmonet__petal svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* 反向的那一半往上飘（folia: `p.reverse` 决定 y / x 轨迹的正负）。 */
+.pi-lyricmonet__petal[data-reverse='true'] {
+  animation-name: pi-monet-petal-drift-reverse;
+}
+
+/* ------------------------------------------------------------------ *
+ * keyframes
+ * ------------------------------------------------------------------ */
+
+@keyframes pi-monet-col-in {
+  from {
+    opacity: 0;
+    transform: translate3d(-30px, 0, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes pi-monet-artist-in {
+  from {
+    opacity: 0;
+    transform: translate3d(-30px, -10px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes pi-monet-rule-in {
+  from {
+    transform: scaleY(0);
+  }
+  to {
+    transform: scaleY(1);
+  }
+}
+
+@keyframes pi-monet-title-in {
+  from {
+    opacity: 0;
+    transform: translate3d(-40px, 0, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes pi-monet-rail-in {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 20px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes pi-monet-portrait-in {
+  from {
+    opacity: 0;
+    transform: translate3d(50px, 0, 0) scale(0.95) rotate(1deg);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1) rotate(0deg);
+  }
+}
+
+@keyframes pi-monet-portrait-float {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) rotate(0deg);
+  }
+  25% {
+    transform: translate3d(-9px, -18px, 0) rotate(1.2deg);
+  }
+  50% {
+    transform: translate3d(0, 0, 0) rotate(0deg);
+  }
+  75% {
+    transform: translate3d(9px, 18px, 0) rotate(-1.2deg);
+  }
+}
+
+@keyframes pi-monet-portrait-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes pi-monet-audio-in {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 15px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes pi-monet-decor-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/*
+ * 莫奈背景的**缓慢漂移**（照抄 folia 的语义：**DOM 侧 transform、不参与位图缓存** ✓）：
+ * 在"预放大"与"预放大 − 缩放幅度"之间来回，并带一点点位移 ✓。
+ * 幅度/周期由主题写入的变量决定；**这里给兜底值**（对应 `driftStrength 0.5` 那一档）⇒ 主题没写入也不崩 ✓。
+ * 挂载由主题决定（`driftEnabled === false` 时不加 `--drift` 类 ✓）。
+ */
+@keyframes pi-monet-bg-drift {
+  from {
+    transform: scale(var(--pi-monet-bg-prescale, 1.0567)) translate(0, 0);
+  }
+  to {
+    transform: scale(calc(var(--pi-monet-bg-prescale, 1.0567) - var(--pi-monet-bg-scale-range, 0.03)))
+      translate(var(--pi-monet-bg-translate, 0.6%), calc(var(--pi-monet-bg-translate, 0.6%) * -1));
+  }
+}
+
+.pi-lyricmonet__bg--drift {
+  animation: pi-monet-bg-drift var(--pi-monet-bg-duration, 18s) ease-in-out infinite alternate;
+  will-change: transform;
+}
+
+/* 无障碍：用户要求减少动效时**直接关掉漂移** ✓（与这个文件里其它动效同一立场 ✓）。 */
+@media (prefers-reduced-motion: reduce) {
+  .pi-lyricmonet__bg--drift {
+    animation: none;
+  }
+}
+
+@keyframes pi-monet-petal-drift {
+  0% {
+    transform: translate3d(0, 0, 0) rotate(var(--pi-monet-petal-rotate, 0deg));
+  }
+  25% {
+    transform: translate3d(15px, 40px, 0) rotate(calc(var(--pi-monet-petal-rotate, 0deg) + 60deg));
+  }
+  50% {
+    transform: translate3d(-25px, -60px, 0)
+      rotate(calc(var(--pi-monet-petal-rotate, 0deg) + 120deg));
+  }
+  75% {
+    transform: translate3d(10px, 20px, 0)
+      rotate(calc(var(--pi-monet-petal-rotate, 0deg) + 180deg));
+  }
+  100% {
+    transform: translate3d(0, 0, 0) rotate(var(--pi-monet-petal-rotate, 0deg));
+  }
+}
+
+@keyframes pi-monet-petal-drift-reverse {
+  0% {
+    transform: translate3d(0, 0, 0) rotate(var(--pi-monet-petal-rotate, 0deg));
+  }
+  25% {
+    transform: translate3d(-15px, -40px, 0) rotate(calc(var(--pi-monet-petal-rotate, 0deg) - 60deg));
+  }
+  50% {
+    transform: translate3d(25px, 60px, 0)
+      rotate(calc(var(--pi-monet-petal-rotate, 0deg) - 120deg));
+  }
+  75% {
+    transform: translate3d(-10px, -20px, 0)
+      rotate(calc(var(--pi-monet-petal-rotate, 0deg) - 180deg));
+  }
+  100% {
+    transform: translate3d(0, 0, 0) rotate(var(--pi-monet-petal-rotate, 0deg));
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * 减少动效：入场 / 飘动 / 花瓣全部停掉（rAF 那边也读 usePrefersReducedMotion）
+ * ------------------------------------------------------------------ */
+
+@media (prefers-reduced-motion: reduce) {
+  .pi-lyricmonet__col,
+  .pi-lyricmonet__artist,
+  .pi-lyricmonet__rule,
+  .pi-lyricmonet__title,
+  .pi-lyricmonet__rail,
+  .pi-lyricmonet__portrait,
+  .pi-lyricmonet__audio,
+  .pi-lyricmonet__decor,
+  .pi-lyricmonet__petal,
+  .pi-lyricmonet__portraitframe,
+  .pi-lyricmonet__portraitimg {
+    animation: none !important;
+  }
+
+  .pi-lyricmonet__line {
+    transition: none !important;
+    /* 新进入窗口的行那条淡入也一起停掉（本条是本轮加的，见 `.pi-lyricmonet__line` 上面那段）。 */
+    animation: none !important;
+  }
+}
