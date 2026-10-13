@@ -1,6 +1,21 @@
 import { useEffect } from 'react';
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { Quality, Settings, Song } from '@pi/shared';
+import {
+  useInfiniteQuery,
+  useMutation,
+  useQuery,
+  useQueryClient,
+  type InfiniteData,
+} from '@tanstack/react-query';
+import type {
+  Comment,
+  CommentLikeResult,
+  CommentPage,
+  Lyric,
+  LyricSourceMode,
+  Quality,
+  Settings,
+  Song,
+} from '@pi/shared';
 import { CH, EVT, invoke, subscribeEvent } from '../bridge';
 
 /**
@@ -350,20 +365,243 @@ export function useToggleLike() {
 }
 
 /**
- * 歌词（原文 + 翻译），解析在主进程完成（渲染层不碰网络）。
+ * 发表评论 / 回复评论（用户第五轮第 8 条）。
  *
- * 歌词一整天都不会变，所以缓存 10 分钟；换歌靠 queryKey 里的 songId 区分。
- * 拿不到歌词不是错误（纯音乐、没有翻译、接口没收录），`hasLyric` 会是 false。
+ * 成功后把**这首歌的评论列表**作废重拉：新评论要出现在列表里，而网易云的返回体
+ * 只给一个 id、不给整条评论，所以没法直接往缓存里塞。
  */
-export function useLyric(songId: number | null | undefined) {
+export function usePostComment() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (args: {
+      songId: number;
+      content: string;
+      replyTo?: { commentId: number; nickname?: string };
+    }) => invoke(CH.ncmCommentPost, args),
+    onSuccess: (_result, variables) => {
+      void queryClient.invalidateQueries({ queryKey: ['comments', variables.songId] });
+    },
+  });
+}
+
+/**
+ * 给评论点赞 / 取消点赞（用户第五轮第 8 条）。
+ *
+ * **用户第五轮第 11 条**：「红心点赞显示有延迟，优化一下」。
+ * 优化成**乐观更新**：按下那颗心的同一帧就把数字与高亮改掉，请求在后台跑；
+ * 万一失败（没登录 / 操作频繁）再回滚成原样，并重拉列表校准。
+ *
+ * 为什么不是「等接口回来再改缓存」（上一版就是这么写的）：那条路要等一个
+ * 跨进程 + 跨公网的往返，手感上就是「点了没反应，一秒后才亮」。
+ */
+export function useLikeComment() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (args: {
+      songId: number;
+      commentId: number;
+      like: boolean;
+      likedCount?: number;
+    }) => invoke(CH.ncmCommentLike, args),
+    onMutate: (args) => {
+      const key = ['comments', args.songId] as const;
+      const previous = queryClient.getQueryData<InfiniteData<CommentPage>>(key);
+      // 本地先算：赞数按「点之前那个数字 ±1」，服务端结果回来时再校准。
+      const optimistic: CommentLikeResult = {
+        commentId: args.commentId,
+        liked: args.like,
+        likedCount: Math.max(0, (args.likedCount ?? 0) + (args.like ? 1 : -1)),
+      };
+      if (previous !== undefined) {
+        queryClient.setQueryData(key, patchCommentInPages(previous, optimistic));
+      }
+      return { key, previous };
+    },
+    onError: (_error, _args, context) => {
+      // 回滚：把刚才那一份原样放回去。
+      if (context?.previous !== undefined) {
+        queryClient.setQueryData(context.key, context.previous);
+      }
+    },
+    onSuccess: (result, _args, context) => {
+      // 服务端的权威数字（主进程算好的 ±1）落回缓存，与乐观值一般无二；
+      // 只在两者不一致时写一次，避免多余的重渲染。
+      if (context?.previous === undefined) return;
+      const current = queryClient.getQueryData<InfiniteData<CommentPage>>(context.key);
+      const shown = findComment(current, result.commentId);
+      if (shown?.liked !== result.liked || shown.likedCount !== result.likedCount) {
+        queryClient.setQueryData(context.key, patchCommentInPages(current, result));
+      }
+    },
+  });
+}
+
+/** 在无限查询的每一页（热门 + 最新）里改一条评论。 */
+function patchCommentInPages(
+  data: InfiniteData<CommentPage> | undefined,
+  patch: CommentLikeResult,
+): InfiniteData<CommentPage> | undefined {
+  if (data === undefined) return data;
+  const apply = (rows: Comment[]): Comment[] =>
+    rows.map((row) =>
+      row.id === patch.commentId
+        ? { ...row, liked: patch.liked, likedCount: patch.likedCount }
+        : row,
+    );
+  return {
+    ...data,
+    pages: data.pages.map((page) => ({
+      ...page,
+      hot: apply(page.hot),
+      comments: apply(page.comments),
+    })),
+  };
+}
+
+function findComment(
+  data: InfiniteData<CommentPage> | undefined,
+  commentId: number,
+): Comment | undefined {
+  for (const page of data?.pages ?? []) {
+    const hit = [...page.hot, ...page.comments].find((row) => row.id === commentId);
+    if (hit) return hit;
+  }
+  return undefined;
+}
+/**
+ * 歌词（原文 + 翻译 + 逐字），解析在主进程完成（渲染层不碰网络）。
+ *
+ * 第五轮第 3 条起是**多源**的：入参要带上歌名 / 歌手 / 时长，
+ * 否则 QQ 与酷狗无法跨平台匹配（它们没有网易云的歌曲 id）。
+ * 设源档位也进 queryKey —— 用户在设置里换了源，这一条必须立刻重取，
+ * 而不是沿用 10 分钟内那份「上一个源」的缓存。
+ *
+ * 拿不到歌词不是错误（纯音乐、没有翻译、所有源都没收录），`hasLyric` 会是 false。
+ */
+export function useLyric(song: LyricSongRef | null | undefined) {
+  const songId = song?.id;
   const ready = typeof songId === 'number' && songId > 0;
+  const settings = useSettings().data;
+  const mode = settings?.lyricSource ?? 'auto';
   return useQuery({
-    queryKey: ['lyric', songId],
-    queryFn: () => invoke(CH.ncmLyric, { songId: songId as number }),
+    queryKey: lyricQueryKey(song, mode),
+    queryFn: () => fetchLyric(song as LyricSongRef),
     enabled: ready,
     staleTime: 10 * 60_000,
   });
 }
+
+/**
+ * 歌词的 query key。
+ *
+ * 抽出来给两条路共用：`useLyric`（渲染树内）与 `prefetchLyric`（播放状态机，
+ * 在渲染树外预取）。**口径只有一份**——两边如果各算各的，预取进缓存的那一份
+ * 与界面要读的那一份会撞不上，于是「预取了还是转圈」。
+ */
+export function lyricQueryKey(
+  song: LyricSongRef | null | undefined,
+  mode: LyricSourceMode,
+): readonly unknown[] {
+  return ['lyric', song?.id, mode, song?.name ?? ''];
+}
+
+function fetchLyric(song: LyricSongRef): Promise<Lyric> {
+  return invoke(CH.ncmLyric, {
+    songId: song.id,
+    title: song.name ?? '',
+    artists: (song.artists ?? []).map((artist) => artist.name),
+    ...(song.durationMs !== undefined && song.durationMs > 0
+      ? { durationMs: Math.round(song.durationMs) }
+      : {}),
+  });
+}
+
+/**
+ * 「队列拼贴页要不要画边缘暗角」（用户第五轮第 9 条）。
+ *
+ * 抽成一个 hook 而不是把 `useSettings().data?.edgeVignette` 抄到四个调用方：
+ * 缺省值的口径只有一份（读不到设置时按**开**，与 `DEFAULT_SETTINGS` 一致），
+ * 免得某一路漏写 `?? true` 导致「设置关了它还在」或者反过来。
+ */
+export function useEdgeVignette(): boolean {
+  return useSettings().data?.edgeVignette !== false;
+}
+
+/** `useLyric` 只要这几个字段；`Song` 天然满足，测试里也不必拼一整首。 */
+export interface LyricSongRef {
+  id: number;
+  name: string;
+  artists?: readonly { name: string }[];
+  durationMs?: number;
+}
+
+/** 已导入歌词的歌曲 id 列表。 */
+export function useLyricImports() {
+  return useQuery({
+    queryKey: ['lyric-imports'],
+    queryFn: () => invoke(CH.lyricsImports),
+    staleTime: 30_000,
+  });
+}
+
+/**
+ * 导入 / 删除导入歌词。
+ *
+ * 成功后要做两件事：刷新「已导入」清单，并让**歌词本体**那条查询作废
+ * （换了一份歌词却还显示旧的，是最容易被当成「导入没生效」的 bug）。
+ */
+export function useImportLyric() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (args: {
+      songId: number;
+      fileName: string;
+      content: string;
+      base64?: boolean;
+    }) => invoke(CH.lyricsImport, { base64: false, ...args }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['lyric-imports'] });
+      void queryClient.invalidateQueries({ queryKey: ['lyric'] });
+    },
+  });
+}
+
+export function useRemoveLyric() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (songId: number) => invoke(CH.lyricsRemove, { songId }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['lyric-imports'] });
+      void queryClient.invalidateQueries({ queryKey: ['lyric'] });
+    },
+  });
+}
+
+/**
+ * 本地数据存储与占用（用户第五轮第 2 条）。
+ *
+ * `staleTime` 给 0：目录大小是会变的（刚下载完一首歌、刚清完缓存），
+ * 用户点开设置就想看到**现在**的数，不是 5 分钟前那个。
+ */
+export function useDataStorage() {
+  return useQuery({
+    queryKey: ['data-storage'],
+    queryFn: () => invoke(CH.dataStorage),
+    staleTime: 0,
+  });
+}
+
+export function useClearCache() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (only?: string[]) => invoke(CH.dataClearCache, { ...(only ? { only } : {}) }),
+    onSuccess: (result) => {
+      // 主进程已经把清理后的最新占用算好带回来了，直接写缓存，省一次往返。
+      queryClient.setQueryData(['data-storage'], result.info);
+    },
+  });
+}
+
 
 /* ------------------------------------------------------------------ *
  * M5：下载与本地库（渲染层这一半）

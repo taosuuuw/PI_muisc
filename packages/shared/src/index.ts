@@ -254,11 +254,93 @@ export interface Lyrics {
  *
  * `hasLyric` 是**必填**的：上游对纯音乐/未收录的歌会回一份「合法但没有歌词」的响应，
  * 那不是错误。没有它，界面就只能靠 `lines.length` 猜「是没歌词还是还没加载出来」。
+ *
+ * 第五轮（多歌词源）起 `lines` 里可能带 `words`（逐字时间轴，来自网易云 yrc /
+ * AMLLDB TTML / 酷狗 KRC），所以「有没有逐字」不再是二选一的常量，
+ * 而是**每个源、每首歌都不一样**：界面上的「逐字」标签由 `lines` 现算（见渲染层的
+ * `hasWordTiming()`），不在这里冗余存一份。
  */
 export interface Lyric {
   lines: LyricLine[];
   translated: LyricLine[];
   hasLyric: boolean;
+  /** 音译行（罗马音等，目前只有 AMLLDB 的 TTML 会给）；没有就是空数组。 */
+  roman?: LyricLine[];
+  /** 这份歌词实际来自哪个源。 */
+  source?: LyricSourceId;
+  /** 用户当前的选源档位（`auto` 时是自动挑中的那一个）。 */
+  mode?: LyricSourceMode;
+  /** 匹配率 0~1：这一份与「正在播的那首歌」有多像（歌名 / 歌手 / 时长三路加权）。 */
+  match?: number;
+  /**
+   * 跨平台匹配到的**那一首**的名字（只有和正在播的歌名不完全一样时才带上）。
+   *
+   * 存在的意义是「让人一眼看出是不是撞了别的版本」：搜「晴天」匹配到「晴天 (Live)」
+   * 不算错，但用户有权知道他听到的不是原版那一份。
+   */
+  matchedTitle?: string;
+  /** 「一份都没挑中」时给界面的一句人话（匹配率太低 / 所有源都没有）。 */
+  reason?: string;
+  /**
+   * 这一跑里**每个源**的候选与结果。
+   *
+   * 存在的理由是界面要能回答「为什么现在用的是这个源」：
+   * 每个源各匹配到哪一首、匹配率多少、有没有翻译与逐字、没命中的原因是什么。
+   */
+  candidates?: LyricCandidateInfo[];
+}
+
+/** 歌词来源（图 1 那一排）：网易云音乐 / AMLLDB / QQ 音乐 / 酷狗音乐 / 本地导入。 */
+export type LyricSourceId = 'ncm' | 'amll' | 'qq' | 'kugou' | 'local';
+
+/**
+ * 歌词源的选源档位。
+ *
+ * `auto` = 把每个源都问一遍，按匹配率挑最高的（默认）；
+ * 其余值是用户**钉死**某一个源——钉死时不看别的源，哪怕它匹配率更低，
+ * 这样界面上显示的永远是用户自己选的那一个（可预期比「更聪明」重要）。
+ */
+export type LyricSourceMode = 'auto' | LyricSourceId;
+
+export const LYRIC_SOURCE_IDS: readonly LyricSourceId[] = ['ncm', 'amll', 'qq', 'kugou', 'local'];
+
+export const LYRIC_SOURCE_MODE_LABEL: Readonly<Record<LyricSourceMode, string>> = {
+  auto: '自动匹配',
+  ncm: '网易云音乐',
+  amll: 'AMLLDB',
+  qq: 'QQ 音乐',
+  kugou: '酷狗音乐',
+  local: '本地导入',
+};
+
+/** 界面上给每个源的一行说明（选择器里的副标题）。 */
+export const LYRIC_SOURCE_NOTE: Readonly<Record<LyricSourceId, string>> = {
+  ncm: '官方歌词，多数带逐字与翻译',
+  amll: '社区的 TTML 逐词词库，打轴最准',
+  qq: '按歌名歌手跨平台匹配，多为逐行',
+  kugou: '按歌名歌手跨平台匹配，KRC 逐字',
+  local: '你自己导入的歌词文件，优先级最高',
+};
+
+/** 一个源返回给界面的候选摘要（不含歌词正文，只够画一张候选列表）。 */
+export interface LyricCandidateInfo {
+  source: LyricSourceId;
+  /** 是否被这一跑选中。 */
+  used: boolean;
+  /** 源上匹配到的那一首；没匹配到就没有。 */
+  title?: string;
+  artists?: readonly string[];
+  /** 匹配率 0~1（0 = 没命中）。 */
+  match: number;
+  /** 这份候选有没有翻译 / 逐字。 */
+  hasTranslation: boolean;
+  hasWord: boolean;
+  /** 逐行总行数。 */
+  lineCount: number;
+  /** 没命中/失败的原因（给用户看的一句话）。 */
+  reason?: string;
+  /** 用了多久（毫秒）。 */
+  elapsedMs: number;
 }
 
 /** 评论作者。`avatarUrl` 已经过 CDN 尺寸参数与 https 升级（见 ncm-client 的 `coverUrl`）。 */
@@ -283,6 +365,8 @@ export interface Comment {
   user: CommentUser;
   beReplied?: CommentReply[];
   location?: string;
+  /** 我已经点过赞了吗（接口给了才带；没给就是不知道，界面上按「没点过」画）。 */
+  liked?: boolean;
 }
 
 export interface CommentPage {
@@ -291,6 +375,21 @@ export interface CommentPage {
   /** 热门评论，只有第一页才有 */
   hot: Comment[];
   comments: Comment[];
+}
+
+/** 发表评论 / 回复的结果（用户第五轮第 8 条）。 */
+export interface CommentPostResult {
+  commentId?: number;
+  /** 接口给的原始提示（网易云偶尔会回「操作过于频繁」这一类）。 */
+  notice?: string;
+}
+
+/** 给评论点赞 / 取消点赞的结果。 */
+export interface CommentLikeResult {
+  commentId: number;
+  liked: boolean;
+  /** 点完之后接口报的赞数（拿不到就回原值，界面上自己 ±1 兜底）。 */
+  likedCount: number;
 }
 
 export interface SearchResult {
@@ -356,12 +455,22 @@ export type ThemeMode = 'light' | 'dark' | 'system';
 /**
  * 歌词动效主题（用户 m08768 第 4 条）。
  *
- * 六个键都对齐 folia-major 的目录名/模式名（`src/components/visualizer/<key>/`），
+ * 每个键都对齐 folia-major 的目录名/模式名（`src/components/visualizer/<key>/`），
  * 方便以后对照它们的 `tuning.ts`：
  * `classic` 流光（folia 的默认主题，我们第六轮已复刻）、`fume` 浮名、`cadenza` 心象、
- * `partita` 云阶、`tilt` 倾诉、`pendolo` 时计。**只借鉴设计数值与做法（AGPL），不复制代码**。
+ * `partita` 云阶、`tilt` 倾诉、`pendolo` 时计、`monet` 莫奈（第七批：海报式「左歌词 + 右肖像」）。
+ * **只借鉴设计数值与做法（AGPL），不复制代码**。
  */
-export type LyricTheme = 'classic' | 'fume' | 'cadenza' | 'partita' | 'tilt' | 'pendolo';
+export type LyricTheme =
+  | 'classic'
+  | 'fume'
+  | 'cadenza'
+  | 'partita'
+  | 'tilt'
+  | 'pendolo'
+  | 'monet'
+  | 'tempera'
+  | 'sonnet';
 
 /**
  * 歌词动效的帧率上限档位。
@@ -499,6 +608,37 @@ export interface Settings {
   lyricTheme: LyricTheme;
   /** 歌词动效的细调参数；和 `lyricTheme` 一样只影响歌词怎么画。 */
   lyricTuning: LyricTuning;
+  /**
+   * 歌词来源档位（用户第五轮第 3 条：加歌词选择功能）。
+   *
+   * `auto` = 每个源都问一遍，按匹配率挑最高的；其余值是钉死某一个源。
+   * 默认 `auto`：多数用户不关心歌词从哪来，只关心「有没有、准不准」。
+   */
+  lyricSource: LyricSourceMode;
+  /**
+   * 钉死的源里，哪些允许被自动挑选。
+   *
+   * 与 `lyricSource` 是**两个不同的问题**：前者「用哪个」，这个「自动时允许考虑哪些」。
+   * 关掉的源不会发请求（省流量、也省得用户看到它一次次失败）。
+   */
+  lyricSourceEnabled: Record<LyricSourceId, boolean>;
+  /**
+   * 自动挑选的门槛（0~1）。
+   *
+   * 低于这一档的候选宁可不显示，也不显示「另一首歌的歌词」——错歌词比没歌词更糟。
+   * 默认 0.62：歌名完全对上、歌手对上一位、时长差几秒，大致就是这个量级。
+   */
+  lyricMinMatch: number;
+  /**
+   * 队列拼贴页的「边缘暗角」（用户第五轮第 9 条）。
+   *
+   * 在拼贴页四周压一层淡淡的暗角，让视线落在中间那张海报上；打开时鼠标悬停某一格
+   * 还会给它一圈柔和高光（暗角把四周压暗之后，原来的 `hover` 放大不够显眼）。
+   *
+   * **只在深色档生效**：亮色档把四周压暗会显得像没擦干净的脏污（用户明确要求），
+   * 判定在 CSS 里按 `<html data-theme>` 做，不在这里分叉。
+   */
+  edgeVignette: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -520,6 +660,13 @@ export const DEFAULT_SETTINGS: Settings = {
   // 展开一份副本：`DEFAULT_SETTINGS` 与 `DEFAULT_LYRIC_TUNING` 是两个导出的常量，
   // 直接共享同一个对象会让「改默认值」和「改某次设置」互相串味。
   lyricTuning: { ...DEFAULT_LYRIC_TUNING },
+  // 歌词源默认「自动匹配」，且五个源全开：官方给逐字、AMLLDB 给最准的打轴、
+  // QQ 与酷狗在官方没收录这首歌时兜底；本地导入的如果没有文件就是一个空候选。
+  lyricSource: 'auto',
+  lyricSourceEnabled: { ncm: true, amll: true, qq: true, kugou: true, local: true },
+  lyricMinMatch: 0.62,
+  // 边缘暗角默认开：它只在深色档生效，用户第一次进拼贴页就能看到那个效果。
+  edgeVignette: true,
 };
 
 /**
@@ -630,4 +777,61 @@ export interface RuntimeInfo {
   safeStorage: SafeStorageStatus;
   /** 是否因渲染环境异常而回退到软件渲染。 */
   softwareRendering: boolean;
+  /**
+   * GPU 进程崩溃的累计次数（用户第五轮第 17 条）。
+   *
+   * 连续两次就会自动关掉硬件加速（`bootstrap.json` 的兜底机制），而软件渲染会让**每一页都卡**
+   * —— 设置页把这两个数显示出来，「卡」这件事才一眼能定位到根因。
+   */
+  gpuCrashes: number;
+}
+
+/* ------------------------------------------------------------------ *
+ * 本地数据存储与缓存（用户第五轮第 2 条）
+ * ------------------------------------------------------------------ */
+
+/**
+ * 一项**可清理**的缓存。
+ *
+ * 「可清理」是这个类型的一部分语义：这些目录/文件删掉之后应用能自己重建，
+ * 所以界面上可以把它们放进「一键清理」。用户自己的音乐文件绝不进这个列表。
+ */
+export interface CacheGroup {
+  id: string;
+  label: string;
+  /** 删了会发生什么（界面上的那一行说明）。 */
+  effect: string;
+  bytes: number;
+}
+
+/** 一条**只读**的存储路径（用户自己的东西，只展示、不清理）。 */
+export interface MusicPath {
+  label: string;
+  path: string;
+  hint: string;
+}
+
+/** `data:storage-info` 的返回体：数据存在哪、占了多少。 */
+export interface DataStorageInfo {
+  /** 应用数据根目录（`app.getPath('userData')`）。 */
+  userDataDir: string;
+  /** 听歌数据（曲库缓存 / 播放历史 / 设置 / 账号）的目录。 */
+  dataDir: string;
+  downloadDir: string;
+  /** 本地曲库目录；设置里空着就是空串。 */
+  localLibraryDir: string;
+  /** `dataDir` 占用的字节数。 */
+  musicBytes: number;
+  /** 歌词（含用户导入的那份）占用的字节数。 */
+  lyricsBytes: number;
+  /** 可清理的那几项之和。 */
+  cacheBytes: number;
+  groups: CacheGroup[];
+  musicPaths: MusicPath[];
+}
+
+/** `data:clear-cache` 的返回体。 */
+export interface CacheClearResult {
+  freedBytes: number;
+  info: DataStorageInfo;
 }

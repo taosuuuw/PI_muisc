@@ -24,7 +24,13 @@ const smokeRun = Boolean(
   process.env.PI_SMOKE_PLAY ||
   process.env.PI_SMOKE_SOURCES ||
   process.env.PI_SMOKE_SETTINGS ||
-  process.env.PI_SMOKE_UI,
+  process.env.PI_SMOKE_UI ||
+  /*
+   * 手动探针 `PI_SMOKE_ISLAND=<歌曲 id>`（第五轮第 13 条让起一次真窗口量灵动岛落点）
+   * 也要跳单实例锁：主人的 PI 正在跑的时候不跳锁，这个探针会静默 quit，
+   * 一条报告都不落（实测就踩过一次）。
+   */
+  process.env.PI_SMOKE_ISLAND,
 );
 
 /**
@@ -67,16 +73,67 @@ if (!existsSync(preloadPath)) {
 interface BootstrapFlags {
   gpuCrashes: number;
   forceSoftwareRendering: boolean;
+  /**
+   * 上一次 GPU 进程崩溃的时间戳（毫秒）。
+   *
+   * 为什么要记时间：用户第五轮第 17 条报「每一页都卡」，查下来是 `gpuCrashes: 2`
+   * 让应用**永久**退回软件渲染（`%APPDATA%\pi\bootstrap.json`，两次崩溃发生在几天前）。
+   * 计数一旦到 2 就再也不会自己降下来，用户从此一直在 CPU 上渲染——「能用」变成了「一直卡」。
+   * 有了时间戳就能给这条降级一个**保质期**：太久以前的崩溃不再算数（见 `STALE_GPU_CRASH_MS`）。
+   */
+  lastGpuCrashAt?: number;
 }
+
+/**
+ * 这条「连崩两次就关硬件加速」的降级记录多久以后不再算数（毫秒）。
+ *
+ * 12 小时：同一个会话（或同一天连着折腾）里崩两次才说明**现在**这台机器上硬件加速真的不行；
+ * 隔了一夜的旧账不该继续拖着用户跑软件渲染。判定逻辑见 `readFlags()`。
+ */
+const STALE_GPU_CRASH_MS = 12 * 60 * 60 * 1000;
+
+/**
+ * 「跑过一次干净启动就清账」的等待时间（毫秒）。
+ *
+ * 光靠保质期不够：如果用户每次都在 12 小时之内崩两次，计数还是会在 1↔2 之间来回，
+ * 一半的启动落在软件渲染上。所以再加一条**自动恢复**：硬件加速跑满这段时间没有崩溃，
+ * 就把计数清零（下一次启动重新给硬件加速一个机会）。
+ * 90 秒足够覆盖「打开就崩」那类崩溃，又短到正常使用的用户察觉不到。
+ */
+const GPU_CRASH_RESET_AFTER_MS = 90 * 1000;
 
 function readFlags(): BootstrapFlags {
   const fallback: BootstrapFlags = { gpuCrashes: 0, forceSoftwareRendering: false };
   try {
     const raw = readFileSync(bootstrapFile(), 'utf8');
     const parsed = JSON.parse(raw) as Partial<BootstrapFlags>;
+    const crashes = typeof parsed.gpuCrashes === 'number' ? parsed.gpuCrashes : 0;
+    const lastAt = typeof parsed.lastGpuCrashAt === 'number' ? parsed.lastGpuCrashAt : undefined;
+    const forceSoftware = parsed.forceSoftwareRendering === true;
+    /*
+     * 什么时候把旧账丢掉？两种都算：
+     *   ① **没有时间戳**（`lastGpuCrashAt` 是这一轮才加的字段）—— 说明这份计数是**旧版本**
+     *      写下的，它当时没有过期判定的概念，也可能是几个月前的崩溃。**必须清**：
+     *      实测踩到过这个死区 —— 只判「时间戳存在且过期」，老文件永远命中不了，
+     *      自愈代码等于没写，用户重启一次还是软件渲染（「依旧很卡，没啥变化」就是这么来的）。
+     *   ② 时间戳太旧（超过 `STALE_GPU_CRASH_MS`）。
+     */
+    const stale =
+      crashes > 0 &&
+      (lastAt === undefined || Date.now() - lastAt > STALE_GPU_CRASH_MS);
+    if (stale) {
+      console.info(
+        lastAt === undefined
+          ? `[pi] 读到一份没有时间戳的旧 GPU 崩溃记录（计数 ${crashes}，来自旧版本），已作废并重新启用硬件加速`
+          : `[pi] GPU 崩溃记录已过期（${Math.round((Date.now() - lastAt) / 3_600_000)} 小时前），重新启用硬件加速`,
+      );
+      writeFlags({ gpuCrashes: 0, forceSoftwareRendering: forceSoftware });
+      return { gpuCrashes: 0, forceSoftwareRendering: forceSoftware };
+    }
     return {
-      gpuCrashes: typeof parsed.gpuCrashes === 'number' ? parsed.gpuCrashes : 0,
-      forceSoftwareRendering: parsed.forceSoftwareRendering === true,
+      gpuCrashes: crashes,
+      forceSoftwareRendering: forceSoftware,
+      ...(lastAt === undefined ? {} : { lastGpuCrashAt: lastAt }),
     };
   } catch {
     return fallback;
@@ -121,8 +178,19 @@ if (legacyAppName !== APP_NAME) {
 }
 
 const flags = readFlags();
-// 连续两次 GPU 崩溃，或用户显式要求 → 关闭硬件加速。
-// 低端核显 / 虚拟机 / 远程桌面上，这是「黑屏打不开」与「能用」的区别（见 §2.6 规则 6）。
+
+/*
+ * 连续两次 GPU 崩溃 → 关闭硬件加速。
+ *
+ * 低端核显 / 虚拟机 / 远程桌面上，这是「黑屏打不开」与「能用」的区别（见 §2.6 规则 6）。
+ * **不提供用户开关**（用户第五轮第 19 条：「这个开关直接去掉，默认硬件」）：默认永远用硬件加速，
+ * 只有 GPU 真崩过两次才临时让位，而且有恢复路径 ——
+ *   ① 过期的崩溃记录不算数（`STALE_GPU_CRASH_MS`，在 `readFlags()` 里清账并落盘）；
+ *   ② 硬件加速跑满一段没崩就清计数（`scheduleGpuCrashReset()`）；
+ *   ③ 设置页只在**真被降级**时露出一行状态，平时什么都不显示。
+ * 保留的环境变量与命令行开关是给排障用的后门（`PI_SOFTWARE_RENDERING=1` /
+ * `--pi-software-rendering`），不是给用户日常切的东西。
+ */
 const softwareRendering =
   flags.forceSoftwareRendering ||
   flags.gpuCrashes >= 2 ||
@@ -131,6 +199,9 @@ const softwareRendering =
 if (softwareRendering) {
   app.disableHardwareAcceleration();
   process.env.PI_SOFTWARE_RENDERING = '1';
+  console.info(`[pi] 软件渲染已启用（GPU 崩溃计数=${flags.gpuCrashes}）`);
+} else {
+  console.info(`[pi] 硬件加速已启用（GPU 崩溃计数=${flags.gpuCrashes}）`);
 }
 
 if (smokeRun) {
@@ -277,6 +348,29 @@ function createWindow(): void {
   // 无人值守冒烟测试的钩子：PI_SCREENSHOT=<路径> 时，首屏加载后截一张图再退出。
   // 有了它，「界面到底长什么样」就不再依赖人工肉眼确认。
   const screenshotPath = process.env.PI_SCREENSHOT;
+
+  /*
+   * 冒烟跑要**先把首用指引标记成看过了**（用户第五轮第 1 条带来的新东西）。
+   *
+   * 那个指引第一次启动会在 900ms 后自动弹出来，而它是一层满屏遮罩（`.pi-guide__veil`
+   * 吃点击）。冒烟脚本里大量「点某个坐标」的探针会被它挡掉，报出来的红是假红——
+   * 排查半天才发现是「新用户第一次打开」这一步没被跳过去。
+   *
+   * 写法与 `apps/renderer/src/state/ui.ts` 的 `ONBOARDED_KEY` / `ONBOARDING_VERSION`
+   * **必须逐字一致**（`pi.onboarded` = `'1'`）；那边改了版本号，这里也要抬一档。
+   * 放在 `did-finish-load` 之后：那时渲染进程的 JS 已经跑起来了，localStorage 是可用的。
+   */
+  if (smokeRun || screenshotPath) {
+    mainWindow.webContents.once('did-finish-load', () => {
+      void mainWindow?.webContents
+        .executeJavaScript("window.localStorage.setItem('pi.onboarded','1')", true)
+        .catch(() => {
+          /* 存储不可用（极少见）：指引会弹一次，冒烟可能因此假红——日志里留一句便于排查 */
+          console.warn('[pi/smoke] 无法写入 pi.onboarded，首用指引可能弹出并遮挡点击探针');
+        });
+    });
+  }
+
   if (screenshotPath) {
     mainWindow.webContents.once('did-finish-load', () => {
       setTimeout(() => {
@@ -335,10 +429,45 @@ function resolveRendererIndex(): string | undefined {
 app.on('child-process-gone', (_event, details) => {
   if (details.type === 'GPU') {
     const current = readFlags();
-    writeFlags({ ...current, gpuCrashes: current.gpuCrashes + 1 });
+    writeFlags({
+      ...current,
+      gpuCrashes: current.gpuCrashes + 1,
+      lastGpuCrashAt: Date.now(),
+    });
     console.error(`[pi] GPU 进程崩溃（累计 ${current.gpuCrashes + 1} 次）：${details.reason}`);
+    // 崩过就别清账了：把「跑够一段时间就清零」那颗定时器推到再等一轮。
+    scheduleGpuCrashReset();
   }
 });
+
+/**
+ * 「硬件加速跑得干净就清账」（用户第五轮第 17 条）。
+ *
+ * 只在**这一轮真的开着硬件加速**时挂：软件渲染本身不会崩 GPU，拿它去清账等于自欺欺人。
+ * 跑满 `GPU_CRASH_RESET_AFTER_MS` 没有新的崩溃，就把计数清零 ——
+ * 下一次启动重新给硬件加速一个机会，用户不会因为几天前的两次崩溃永远卡在 CPU 渲染上。
+ */
+function scheduleGpuCrashReset(): void {
+  if (softwareRendering) return;
+  const timer = setTimeout(() => {
+    const current = readFlags();
+    if (current.gpuCrashes === 0) return;
+    /*
+     * 刚崩过就重启的话**别急着清账**：计数已经到 2 的机器本来就该用软件渲染，
+     * 清掉只会让它下一轮又用坏掉的硬件加速、再崩两次 —— 那才是真正的死循环。
+     * 判据：只有「这次跑满一整段都没再崩」才清（下面这 10 分钟的宽限就是这样来的）。
+     */
+    const recent = current.lastGpuCrashAt !== undefined && Date.now() - current.lastGpuCrashAt < GPU_CRASH_RESET_AFTER_MS * 6;
+    if (current.gpuCrashes >= 2 && recent) {
+      console.info('[pi] GPU 崩溃计数仍为 2（最近刚崩过），继续用软件渲染；等它稳定跑一段再清');
+      scheduleGpuCrashReset();
+      return;
+    }
+    writeFlags({ ...current, gpuCrashes: 0, lastGpuCrashAt: undefined });
+    console.info('[pi] 硬件加速连续跑满一整段没有崩溃，已清除 GPU 崩溃计数（下次启动重新启用硬件加速）');
+  }, GPU_CRASH_RESET_AFTER_MS);
+  timer.unref?.();
+}
 
 app.on('render-process-gone', (_event, _contents, details) => {
   console.error(`[pi] 渲染进程崩溃：reason=${details.reason} exitCode=${details.exitCode}`);
@@ -441,6 +570,285 @@ async function runPlaySmoke(services: Services): Promise<void> {
 }
 
 const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * 临时探针（用户第五轮第 13 条：主人要我起一下 PI 亲眼看灵动岛位置）。
+ *
+ * 用法：`PI_SMOKE_ISLAND=<歌曲 id> node apps/desktop/build.mjs && PI_SMOKE_ISLAND=<id> electron .`
+ *
+ * 干三件事：真的点一次「下一首」（走完整解析链）→ 在 40ms 的采样窗口里盯住
+ * `[data-loading-island]` → 把它的 rect / computed / 中间还夹着哪些祖先级
+ * **带 transform 或 backdrop-filter 的盒子**全打出来。
+ *
+ * 为什么要打祖先：`position: fixed` 的包含块会被**任何**带 `transform` /
+ * `backdrop-filter` / `will-change` 的祖先抢走（CSS 2.1 的 fixed 定位规则），
+ * 于是「明明写了 fixed」的盒子会以那个祖先为参照物。用户看到的「没在窗口顶部」
+ * 十有八九就是这一条，而不是 `top` 写错。
+ */
+async function runIslandSmoke(window: BrowserWindow): Promise<void> {
+  /*
+   * 结论**同时写进文件**：GUI 程序的 stdout 在这个沙箱里会被 PowerShell 的管道吞掉
+   * （实测 `| Out-File` 只收到 stderr），所以探针自己落一份可读的报告。
+   */
+  const lines: string[] = [];
+  const say = (text: string): void => {
+    lines.push(text);
+    console.info(text);
+  };
+  const raw = (process.env.PI_SMOKE_ISLAND ?? '').trim();
+  const songId = Number.parseInt(raw, 10);
+  if (!Number.isFinite(songId) || songId <= 0) {
+    console.error('[pi/smoke] PI_SMOKE_ISLAND 需要正整数歌曲 id');
+    app.exit(1);
+    return;
+  }
+  try {
+    await delay(2500);
+    /*
+     * 先想办法**真的开始播一首歌**。空态（没有任何队列）时这条底栏根本不渲染，
+     * 也就没有任何加载态可量。所以按「PI 圆键 → 上划 → 选一首」这条真路走一遍：
+     * 播放页空白处点一下出球 → 从球心向上划 ≥60px → 球旁边开出歌单卡片 → 点第一张卡
+     * （「我的喜欢 / 收藏 / 推荐」任一张都行，卡里第一首歌就会成为当前播放）。
+     * 全程用真的指针事件（和冒烟里 `tapQuickOrb` / `swipeQuickOrb` 同款做法）。
+     */
+    const dispatch = `(el, type, x, y, extra) => {
+      const ev = new PointerEvent(type, Object.assign({ bubbles: true, cancelable: true, clientX: x, clientY: y, pointerId: 7, pointerType: 'mouse', isPrimary: true, buttons: type === 'pointerup' ? 0 : 1 }, extra || {}));
+      el.dispatchEvent(ev);
+    }`;
+    const started = await window.webContents.executeJavaScript(
+      `(async () => {
+        const fire = ${dispatch};
+        const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+        const stage = document.querySelector('.pi-home') || document.body;
+        const box = stage.getBoundingClientRect();
+        const x = Math.round(box.left + box.width / 2);
+        const y = Math.round(box.top + box.height / 2);
+        // 1) 空白处点一下，叫出 PI 圆键
+        for (const type of ['pointerdown', 'pointerup', 'click']) fire(stage, type, x, y);
+        await wait(500);
+        const orb = document.querySelector('[data-quick-orb]');
+        if (!orb) return { ok: false, step: 'orb', text: document.body.innerText.slice(0, 60) };
+        const ob = orb.getBoundingClientRect();
+        const ox = Math.round(ob.left + ob.width / 2);
+        const oy = Math.round(ob.top + ob.height / 2);
+        // 2) 从球心向上划 90px
+        fire(orb, 'pointerdown', ox, oy);
+        fire(orb, 'pointermove', ox, oy - 40);
+        fire(orb, 'pointermove', ox, oy - 90);
+        fire(orb, 'pointerup', ox, oy - 90);
+        await wait(700);
+        const board = document.querySelector('[data-playlist-cards]');
+        const cards = [...document.querySelectorAll('[data-playlist-card]')];
+        const card = cards[0];
+        if (card instanceof HTMLElement) card.click();
+        await wait(2500);
+        const overlay = document.querySelector('[data-songs], .pi-listoverlay, .pi-songslist');
+        const rows = [...document.querySelectorAll('.pi-songrow, [data-song-row]')];
+        const row = rows[0];
+        if (row instanceof HTMLElement) row.click();
+        await wait(600);
+        return {
+          ok: true,
+          board: Boolean(board),
+          cards: cards.length,
+          overlay: Boolean(overlay),
+          rows: rows.length,
+          clickedRow: row instanceof HTMLElement ? (row.textContent || '').trim().slice(0, 20) : null,
+          audio: (() => { const a = window.__piAudio; return a ? String(a.currentSrc || '').slice(0, 60) : 'no-audio'; })(),
+        };
+      })()`,
+      true,
+    );
+    console.info(`[pi/smoke] 叫出歌单卡片并点第一首：${JSON.stringify(started)}`);
+    await delay(400);
+
+    /*
+     * 用户第五轮第 16 条：「现在的播放器使用非常掉帧，修一下」。
+     *
+     * 先量再改。两条数：
+     *   ① 帧间隔（`requestAnimationFrame`）：播放中、歌词在动的时候采 6.5 秒，
+     *      报 frames / p50 / p95 / worst / 掉帧（>33.4ms）；
+     *   ② **合成与滤镜开销**：全场 `backdrop-filter` 元素数、写了 `will-change`
+     *      的元素数、以及拼贴格子上那圈 `inset box-shadow` 的条数 —— 这三样是
+     *      这台机器上最容易把一帧拖长的东西（folia 的注释里也点名过「每张卡一个滤镜」
+     *      是那面墙最大的 GPU 开销）。
+     */
+    const perf = await window.webContents.executeJavaScript(
+      `(async () => {
+        const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+        // 先关掉歌单浮层：要让播放页（歌词舞台 + 情绪背景）真的在前台跑。
+        document.querySelectorAll('.pi-listoverlay button').forEach((b) => {
+          const label = (b.getAttribute('aria-label') || '') + (b.className || '');
+          if (label.includes('close') || label.includes('关闭')) b.click();
+        });
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        await wait(1200);
+
+        const gaps = [];
+        let last = performance.now();
+        const started = last;
+        await new Promise((resolve) => {
+          const tick = (t) => {
+            gaps.push(t - last);
+            last = t;
+            if (t - started < 6500) requestAnimationFrame(tick);
+            else resolve(null);
+          };
+          requestAnimationFrame(tick);
+        });
+
+        const sorted = [...gaps].sort((a, b) => a - b);
+        const at = (q) => sorted[Math.min(sorted.length - 1, Math.max(0, Math.floor(q * sorted.length)))] || 0;
+        const all = [...document.querySelectorAll('*')];
+        const backdrop = all.filter((el) => getComputedStyle(el).backdropFilter !== 'none');
+        const willChange = all.filter((el) => getComputedStyle(el).willChange !== 'none' && getComputedStyle(el).willChange !== 'auto');
+        const tiles = [...document.querySelectorAll('.pi-collage__item')];
+        const shadedTiles = tiles.filter((el) => getComputedStyle(el).boxShadow.includes('inset'));
+        const stage = document.querySelector('[data-lyric-stage], .pi-lyricstage');
+        const lines = document.querySelectorAll('[data-lyric-line]');
+        return {
+          stage: Boolean(stage),
+          lyricLines: lines.length,
+          playing: window.__piAudio ? !window.__piAudio.paused : null,
+          focused: document.hasFocus(),
+          visibility: document.visibilityState,
+          frames: gaps.length,
+          ms: Math.round(gaps.reduce((s, v) => s + v, 0)),
+          p50: Number(at(0.5).toFixed(1)),
+          p95: Number(at(0.95).toFixed(1)),
+          worst: Number((sorted[sorted.length - 1] || 0).toFixed(1)),
+          long: gaps.filter((v) => v > 33.4).length,
+          backdropFilters: backdrop.length,
+          backdropClasses: backdrop.slice(0, 8).map((el) => String(el.className).slice(0, 40)),
+          willChange: willChange.length,
+          tiles: tiles.length,
+          shadedTiles: shadedTiles.length,
+        };
+      })()`,
+      true,
+    );
+    say(`[pi/smoke] 掉帧实测：${JSON.stringify(perf)}`);
+
+    const seen: Array<Record<string, unknown>> = [];
+    const samples = 22;
+    for (let index = 0; index < samples; index += 1) {
+      const sample = await window.webContents.executeJavaScript(
+        `(() => {
+          const el = document.querySelector('[data-loading-island="true"]');
+          if (!el) return null;
+          const rect = el.getBoundingClientRect();
+          const style = getComputedStyle(el);
+          const chain = [];
+          let node = el.parentElement;
+          while (node && node !== document.documentElement) {
+            const nodeStyle = getComputedStyle(node);
+            const trap = nodeStyle.transform !== 'none' || nodeStyle.backdropFilter !== 'none' || nodeStyle.willChange !== 'none' || nodeStyle.filter !== 'none' || nodeStyle.perspective !== 'none';
+            if (trap) {
+              chain.push({ cls: typeof node.className === 'string' ? node.className.slice(0, 60) : '', transform: nodeStyle.transform, backdropFilter: nodeStyle.backdropFilter });
+            }
+            node = node.parentElement;
+          }
+          return {
+            text: (el.textContent || '').trim(),
+            x: Math.round(rect.left), y: Math.round(rect.top),
+            w: Math.round(rect.width), h: Math.round(rect.height),
+            centerX: Math.round(rect.left + rect.width / 2),
+            viewportW: window.innerWidth, viewportH: window.innerHeight,
+            parent: el.parentElement === document.body ? 'body' : (el.parentElement ? el.parentElement.className : 'none'),
+            position: style.position, top: style.top, zIndex: style.zIndex,
+            traps: chain,
+          };
+        })()`,
+        true,
+      );
+      if (sample) seen.push(sample as Record<string, unknown>);
+      await delay(40);
+    }
+
+    if (seen.length === 0) {
+      say('[pi/smoke] 整段采样里没见过 [data-loading-island]（歌词多半早就缓存好了）');
+    } else {
+      const first = seen[0] as Record<string, unknown>;
+      const last = seen[seen.length - 1] as Record<string, unknown>;
+      const traps = first['traps'] as Array<Record<string, unknown>>;
+      say(
+        `[pi/smoke] 灵动岛采样 ${seen.length} 帧：首帧 x=${String(first['x'])} y=${String(first['y'])} ` +
+          `w=${String(first['w'])} h=${String(first['h'])} 中心x=${String(first['centerX'])} 视口=${String(first['viewportW'])}x${String(first['viewportH'])}` +
+          `｜末帧 y=${String(last['y'])}｜挂载在=${String(first['parent'])} position=${String(first['position'])} top=${String(first['top'])} 文本=${String(first['text'])}`,
+      );
+      say(
+        traps.length === 0
+          ? '[pi/smoke] 祖先里没有 transform/backdrop-filter 的包含块陷阱（fixed 以视口为准）'
+          : `[pi/smoke] ⚠️ 祖先里仍有包含块陷阱 ${traps.length} 个：${JSON.stringify(traps)}`,
+      );
+    }
+
+    // 暗角：把队列拼贴打开，量「常态格子的内阴影」是不是真的落在 computed 上。
+    const vignette = await window.webContents.executeJavaScript(
+      `(async () => {
+        const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+        const tap = () => {
+          const orb = document.querySelector('[data-quick-orb]');
+          const box = orb ? orb.getBoundingClientRect() : null;
+          const x = box ? Math.round(box.left + box.width / 2) : Math.round(window.innerWidth / 2);
+          const y = box ? Math.round(box.top + box.height / 2) : Math.round(window.innerHeight / 2);
+          const fire = (type, atY) => {
+            const ev = new PointerEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: atY, pointerId: 1, pointerType: 'mouse', isPrimary: true, buttons: type === 'pointerup' ? 0 : 1 });
+            (document.elementFromPoint(x, atY) || document.body).dispatchEvent(ev);
+          };
+          fire('pointerdown', y); fire('pointermove', y - 40); fire('pointermove', y - 90); fire('pointerup', y - 90);
+        };
+        const hit = (sel) => {
+          const el = document.querySelector(sel);
+          if (!el) return null;
+          const r = el.getBoundingClientRect();
+          ['pointerdown','pointerup','click'].forEach((type) => {
+            el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 }));
+          });
+          return true;
+        };
+        tap(); await wait(600);
+        const opened = Boolean(document.querySelector("[data-quick-layer='playlists']"));
+        const clicked = opened ? hit("[data-quick-item='queue']") : false;
+        await wait(900);
+        const canvas = document.querySelector('[data-song-collage]');
+        const item = document.querySelector('[data-song-collage] .pi-collage__item');
+        const center = document.querySelector('[data-song-collage] .pi-collage__item--center');
+        const layer = document.querySelector('[data-collage-vignette]');
+        const toStyle = (el) => el ? { boxShadow: getComputedStyle(el).boxShadow, filter: getComputedStyle(el).filter } : null;
+        return {
+          opened, clicked,
+          theme: document.documentElement.getAttribute('data-theme'),
+          hasCanvas: Boolean(canvas),
+          flag: canvas ? canvas.getAttribute('data-edge-vignette') : null,
+          layerDisplay: layer ? getComputedStyle(layer).display : null,
+          layerBg: layer ? getComputedStyle(layer).backgroundImage.slice(0, 80) : null,
+          normal: toStyle(item),
+          center: toStyle(center),
+        };
+      })()`,
+      true,
+    );
+    say(`[pi/smoke] 暗角实测：${JSON.stringify(vignette)}`);
+
+    const shot = process.env.PI_SMOKE_ISLAND_SHOT ?? null;
+    if (shot) {
+      const image = await window.webContents.capturePage();
+      writeFileSync(shot, image.toPNG());
+      say(`[pi/smoke] 截图：${shot}`);
+    }
+    // 报告落盘：GUI 程序的 stdout 在沙箱里会被管道吞掉（见函数开头）。
+    writeFileSync(
+      path.resolve(here, '../../../.tmp-island-report.txt'),
+      lines.join('\n') + '\n',
+      'utf8',
+    );
+    app.exit(0);
+  } catch (error) {
+    console.error('[pi/smoke] 灵动岛探针失败：', error);
+    app.exit(1);
+  }
+}
 
 /**
  * M2.5 自动验收（`PI_SMOKE_SOURCES=1`）：**不开窗口**，直接跑责任链。
@@ -1524,6 +1932,7 @@ async function openRecommendedPlaylist(win: BrowserWindow): Promise<number> {
   // 整段最多重来 4 次：这一步要连着「开环 → 等面板联网 → 点卡片 → 等详情页联网」，
   // 任何一环慢一拍（实测推荐歌单偶尔 6 秒都还没出来）都会假失败，重试比重设超时划算。
   const firstRows = await countRows(win);
+  console.info(`[pi/smoke] [diag] openRecommendedPlaylist 进入：现有行数=${firstRows}`);
   if (firstRows >= 1) return firstRows;
   /*
    * 第十六轮删球（用户 m07538 第 1 条）：`.pi-orb` 整颗球连同 `.pi-orb__plcards` 一起删掉，
@@ -1538,8 +1947,7 @@ async function openRecommendedPlaylist(win: BrowserWindow): Promise<number> {
     if (!(await clickNav(win, '推荐歌单'))) {
       console.warn('[pi/smoke] 兜底歌源：导航抽屉里找不到「推荐歌单」，这条兜底拿不到歌');
       break;
-    }
-    const gridDeadline = Date.now() + UI_SMOKE_TIMEOUT_MS;
+    }    const gridDeadline = Date.now() + UI_SMOKE_TIMEOUT_MS;
     let gridCards = 0;
     while (Date.now() < gridDeadline) {
       // 第十八轮第 ③ 条（用户 m01482）：歌单页改成直接套搜索页的 `SongCards`
@@ -1551,6 +1959,7 @@ async function openRecommendedPlaylist(win: BrowserWindow): Promise<number> {
       if (gridCards > 0) break;
       await delay(400);
     }
+    console.info(`[pi/smoke] [diag] 第 ${index + 1} 轮：导航抽屉点完，网格卡=${gridCards}`);
     if (gridCards <= index) {
       console.info(
         `[pi/smoke] 兜底歌源：推荐歌单页只有 ${gridCards} 张卡（要第 ${index + 1} 张），收工`,
@@ -1580,6 +1989,7 @@ async function openRecommendedPlaylist(win: BrowserWindow): Promise<number> {
         true,
       )) as boolean;
     }
+    console.info(`[pi/smoke] [diag] 第 ${index + 1} 轮：卡片已点，详情打开=${opened}`);
     if (!opened) {
       console.info(`[pi/smoke] 兜底歌源：第 ${index + 1} 张卡片点不开，换下一张`);
       await delay(300);
@@ -6834,6 +7244,29 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
     // null = 这轮没拍主题成品图，不参与判定。
     let stageFillOk: boolean | null = null;
     /*
+     * 莫奈（monet，本批复刻）的专属结论位。
+     *
+     * 莫奈与其它六套不是同一种结构：它是一张海报 —— 左列（艺人 / 竖线 / 歌名 / 专辑 / 歌词轨道）
+     * + 右列方肖像 + 左下音频条。所以「元素在不在」对它没有意义，要钉的是**真的画出来了**：
+     *  ① 轨道上至少 3 行（folia 是当前句前后各 2 行），且恰好 1 行带 `data-active`；
+     *  ② 右列肖像里的封面 `<img>` 真的解码成功（`naturalWidth > 0`）；
+     *  ③ 左下音频 canvas **有非透明像素**（它是 rAF 逐帧画的，只看元素存在等于没验）。
+     * null = 这一跑没切到莫奈，不参与判定。
+     */
+    let monetOk: boolean | null = null;
+    let monetInfo = '';
+    /*
+     * 凝彩（tempera，本批复刻）的专属结论位。
+     *
+     * 凝彩是一块 **Pixi/WebGL 画布**，所以判据不能是"DOM 里有没有歌词行"（DOM 里只有 canvas）：
+     *  ① 画布在、尺寸等于舞台（铺满）；
+     *  ② 编译出的 shot 数 > 0，且最近一帧真的画了面板与字素（`data-tempera-*`，见 `TemperaTheme.tsx`）；
+     *  ③ 截图非空（像素级证据由主进程 `capturePage` 提供 —— WebGL 画布在 rAF 之外读像素只会拿到空白）。
+     * null = 这一跑没切到凝彩，不参与判定。
+     */
+    let temperaOk: boolean | null = null;
+    let temperaInfo = '';
+    /*
      * 第十四轮第 4 条（用户 m05281）：流光「逐字旋转」开关的**效果**验证。
      * 开关默认是关的（用户的偏好），所以效果只能在「临时点开」这一跑里量：
      * PI_SMOKE_SPIN=1 时，拍 classic 成品图之前经设置页把那枚 checkbox 点开，量完由收尾的
@@ -7150,7 +7583,7 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
         .split(',')
         .map((item) => item.trim())
         .filter((item) => item !== '');
-      const allThemes = ['fume', 'cadenza', 'partita', 'tilt', 'pendolo', 'classic'];
+      const allThemes = ['fume', 'cadenza', 'partita', 'tilt', 'pendolo', 'monet', 'tempera', 'sonnet', 'classic'];
       const themes = shotThemes
         ? themeFilter.length > 0
           ? allThemes.filter((item) => themeFilter.includes(item))
@@ -8408,13 +8841,22 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
               ? '.pi-lyricpendolo'
               : theme === 'classic'
                 ? '.pi-lyricstage'
-                : null;
+                : theme === 'monet'
+                  ? '.pi-lyricmonet'
+                  : null;
         const fillBlockSelector =
           theme === 'tilt'
             ? '.pi-lyrictilt__block'
             : theme === 'pendolo'
               ? '.pi-lyricpendolo__slot'
-              : '.pi-lyricstage__line';
+              : theme === 'monet'
+                ? '.pi-lyricmonet__line'
+                : '.pi-lyricstage__line';
+        /** 这条探针原来的文案是「第十二轮第 N 条」；莫奈是本批复刻的，引用文字要另写。 */
+        const fillRoundLabel =
+          theme === 'monet'
+            ? '莫奈复刻，铺满口径同第十二轮第 1~3 条'
+            : '第十二轮第 ' + (theme === 'tilt' ? '1' : theme === 'pendolo' ? '2' : '3') + ' 条';
         if (fillSelector !== null) {
           const fill = (await win.webContents.executeJavaScript(
             `(() => {
@@ -8457,9 +8899,9 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
           console.info(
             '[pi/smoke] ' +
               theme +
-              ' 铺满整屏（第十二轮第 ' +
-              (theme === 'tilt' ? '1' : theme === 'pendolo' ? '2' : '3') +
-              ' 条）：舞台=' +
+              ' 铺满整屏（' +
+              fillRoundLabel +
+              '）：舞台=' +
               (fill === null ? '无' : fill.ratioW + 'x' + fill.ratioH + ' 占窗') +
               (fill === null
                 ? ''
@@ -8471,6 +8913,553 @@ async function runUiSmoke(win: BrowserWindow): Promise<void> {
                   fill.out +
                   'px') +
               (fillOk ? ' ✓' : ' ✗'),
+          );
+        }
+        /*
+         * 莫奈（monet）：海报版式的三件事（判据见上面 `monetOk` 的说明）。
+         * 注意：这段 JS 走模板字符串，里面**不许出现反引号**。
+         */
+        if (theme === 'monet') {
+          const monet = (await win.webContents.executeJavaScript(
+            `(async () => {
+               const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+               const lines = [...document.querySelectorAll('.pi-lyricmonet__line')];
+               const active = lines.filter((el) => el.hasAttribute('data-active'));
+               const portrait = document.querySelector('.pi-lyricmonet__portraitimg');
+               const canvas = document.querySelector('.pi-lyricmonet__audiocanvas');
+               const audioBox = document.querySelector('.pi-lyricmonet__audio');
+               const sampleInk = () => {
+                 if (!(canvas instanceof HTMLCanvasElement)) return 0;
+                 const w = canvas.width;
+                 const h = canvas.height;
+                 if (w <= 0 || h <= 0) return 0;
+                 const ctx = canvas.getContext('2d');
+                 if (!ctx) return 0;
+                 const data = ctx.getImageData(0, 0, w, h).data;
+                 let ink = 0;
+                 for (let index = 3; index < data.length; index += 4) {
+                   if (data[index] > 8) ink += 1;
+                 }
+                 return ink;
+               };
+               /*
+                * 音频条是 rAF 逐帧画的：单帧采样可能正好落在「clearRect 之后、柱状还没画」的
+                * 半帧里（同一跑实测一次 4073 像素、一次 0）。采三次取最大，判据才稳。
+                */
+               let inkPixels = 0;
+               const inkSamples = [];
+               for (let round = 0; round < 3; round += 1) {
+                 const value = sampleInk();
+                 inkSamples.push(value);
+                 inkPixels = Math.max(inkPixels, value);
+                 await sleep(180);
+               }
+               const stage = document.querySelector('.pi-lyricmonet');
+               const rail = document.querySelector('.pi-lyricmonet__rail');
+               const titleEl = document.querySelector('.pi-lyricmonet__title');
+               const artistEl = document.querySelector('.pi-lyricmonet__artist');
+               return {
+                 lines: lines.length,
+                 active: active.length,
+                 statuses: lines.map((el) => el.getAttribute('data-status') || ''),
+                 title: titleEl instanceof HTMLElement ? titleEl.textContent || '' : '',
+                 artist: artistEl instanceof HTMLElement ? artistEl.textContent || '' : '',
+                 portraitCount: document.querySelectorAll('.pi-lyricmonet__portraitimg').length,
+                 portraitLoaded: portrait instanceof HTMLImageElement ? portrait.naturalWidth : 0,
+                 canvasW: canvas instanceof HTMLCanvasElement ? canvas.width : 0,
+                 canvasH: canvas instanceof HTMLCanvasElement ? canvas.height : 0,
+                 inkPixels: inkPixels,
+                 inkSamples: inkSamples.join('/'),
+                 audioBoxW: audioBox instanceof HTMLElement ? Math.round(audioBox.getBoundingClientRect().width) : 0,
+                 stageW: stage instanceof HTMLElement ? Math.round(stage.getBoundingClientRect().width) : 0,
+                 railH: rail instanceof HTMLElement ? Math.round(rail.getBoundingClientRect().height) : 0,
+                 glyphs: document.querySelectorAll('.pi-lyricmonet__line .pi-lyricstage__word').length,
+               };
+             })()`,
+            true,
+          )) as {
+            lines: number;
+            active: number;
+            statuses: string[];
+            title: string;
+            artist: string;
+            portraitCount: number;
+            portraitLoaded: number;
+            canvasW: number;
+            canvasH: number;
+            inkPixels: number;
+            inkSamples: string;
+            audioBoxW: number;
+            stageW: number;
+            railH: number;
+            glyphs: number;
+          } | null;
+          const monetPass =
+            monet !== null &&
+            monet.lines >= 3 &&
+            monet.active === 1 &&
+            monet.portraitLoaded > 0 &&
+            monet.inkPixels > 0;
+          monetOk = monetPass;
+          monetInfo =
+            monet === null
+              ? '没量到'
+              : `行=${monet.lines}（当前 ${monet.active}｜状态 ${monet.statuses.join('/')}）` +
+                `｜标题=「${monet.title}」艺人=「${monet.artist}」` +
+                `｜肖像=${monet.portraitLoaded}px（层 ${monet.portraitCount}）` +
+                `｜音频画布=${monet.canvasW}x${monet.canvasH} 盒宽=${monet.audioBoxW}` +
+                ` 有墨像素=${monet.inkPixels}（三轮 ${monet.inkSamples}）` +
+                `｜舞台宽=${monet.stageW} 轨道高=${monet.railH} 字素=${monet.glyphs}`;
+          console.info(
+            `[pi/smoke] 莫奈海报版式（本批复刻）：${monetInfo} ${monetPass ? '✓' : '✗'}`,
+          );
+        }
+        /*
+         * 凝彩（tempera）：一块 Pixi/WebGL 画布（判据见上面 `temperaOk` 的说明）。
+         * 注意：这段 JS 走模板字符串，里面**不许出现反引号**。
+         */
+        if (theme === 'tempera') {
+          const tempera = (await win.webContents.executeJavaScript(
+            `(() => {
+               const root = document.querySelector('.pi-lyrictempera');
+               const canvas = root ? root.querySelector('canvas') : null;
+               const rect = root instanceof HTMLElement ? root.getBoundingClientRect() : null;
+               const number = (value) => {
+                 const parsed = Number(value || '0');
+                 return Number.isFinite(parsed) ? parsed : 0;
+               };
+               return {
+                 present: root !== null,
+                 shots: root instanceof HTMLElement ? number(root.dataset.temperaShots) : 0,
+                 panels: root instanceof HTMLElement ? number(root.dataset.temperaPanels) : 0,
+                 strokes: root instanceof HTMLElement ? number(root.dataset.temperaStrokes) : 0,
+                 glyphs: root instanceof HTMLElement ? number(root.dataset.temperaGlyphs) : 0,
+                 fallback: root instanceof HTMLElement ? root.dataset.temperaFallback || '' : '',
+                 kind: root instanceof HTMLElement ? root.dataset.temperaKind || '' : '',
+                 tones: root instanceof HTMLElement ? root.dataset.temperaTones || '' : '',
+                 colors: root instanceof HTMLElement ? root.dataset.temperaColors || '' : '',
+                 frameSize: root instanceof HTMLElement ? root.dataset.temperaViewport || '' : '',
+                 firstPanel: root instanceof HTMLElement ? root.dataset.temperaFirstPanel || '' : '',
+                 splitTimes: root instanceof HTMLElement ? root.dataset.temperaSplitTimes || '' : '',
+                 bandTimes: root instanceof HTMLElement ? root.dataset.temperaBandTimes || '' : '',
+                 frameTimes: root instanceof HTMLElement ? root.dataset.temperaFrameTimes || '' : '',
+                 posterTimes: root instanceof HTMLElement ? root.dataset.temperaPosterTimes || '' : '',
+                 sparseTimes: root instanceof HTMLElement ? root.dataset.temperaSparseTimes || '' : '',
+                 cinemaTimes: root instanceof HTMLElement ? root.dataset.temperaCinemaTimes || '' : '',
+                 charmTimes: root instanceof HTMLElement ? root.dataset.temperaCharmTimes || '' : '',
+                 apertureTimes: root instanceof HTMLElement ? root.dataset.temperaApertureTimes || '' : '',
+                 signalTimes: root instanceof HTMLElement ? root.dataset.temperaSignalTimes || '' : '',
+                 corridorTimes: root instanceof HTMLElement ? root.dataset.temperaCorridorTimes || '' : '',
+                 monolithTimes: root instanceof HTMLElement ? root.dataset.temperaMonolithTimes || '' : '',
+                 terrainTimes: root instanceof HTMLElement ? root.dataset.temperaTerrainTimes || '' : '',
+                 monogatariTimes: root instanceof HTMLElement ? root.dataset.temperaMonogatariTimes || '' : '',
+                 filter: root instanceof HTMLElement ? root.dataset.temperaFilter || '' : '',
+                 canvasW: canvas instanceof HTMLCanvasElement ? canvas.width : 0,
+                 canvasH: canvas instanceof HTMLCanvasElement ? canvas.height : 0,
+                 stageW: rect ? Math.round(rect.width) : 0,
+                 stageH: rect ? Math.round(rect.height) : 0,
+               };
+             })()`,
+            true,
+          )) as {
+            present: boolean;
+            shots: number;
+            panels: number;
+            strokes: number;
+            glyphs: number;
+            fallback: string;
+            kind: string;
+            tones: string;
+            colors: string;
+            frameSize: string;
+            firstPanel: string;
+            splitTimes: string;
+            bandTimes: string;
+            frameTimes: string;
+            posterTimes: string;
+            sparseTimes: string;
+            cinemaTimes: string;
+            charmTimes: string;
+            apertureTimes: string;
+            signalTimes: string;
+            corridorTimes: string;
+            monolithTimes: string;
+            terrainTimes: string;
+            monogatariTimes: string;
+            filter: string;
+            canvasW: number;
+            canvasH: number;
+            stageW: number;
+            stageH: number;
+          } | null;
+          /*
+           * 像素级证据：截舞台那一块，数出「与四角背景色明显不同」的像素占比。
+           * 为什么不用 canvas 读像素：Pixi 的 WebGL 画布默认 `preserveDrawingBuffer: false`，
+           * 在 rAF 之外 `toDataURL()` / `getImageData()` 只会拿到空白，那是假红。
+           */
+          let paintedRatio = 0;
+          /** 等 split 族镜头时记下来的那一段（拼进 info，别覆盖主读数）。 */
+          let temperaWaited = '';
+          if (tempera !== null && tempera.stageW > 0 && tempera.stageH > 0) {
+            const shot = await win.webContents.capturePage({
+              x: 0,
+              y: 0,
+              width: tempera.stageW,
+              height: tempera.stageH,
+            });
+            const bitmap = shot.toBitmap();
+            const size = shot.getSize();
+            const width = size.width;
+            const height = size.height;
+            // 四角平均色当背景基准。
+            const cornerAt = (px: number, py: number): [number, number, number] => {
+              const offset = (Math.round(py) * width + Math.round(px)) * 4;
+              return [bitmap[offset] ?? 0, bitmap[offset + 1] ?? 0, bitmap[offset + 2] ?? 0];
+            };
+            const corners = [
+              cornerAt(2, 2),
+              cornerAt(width - 3, 2),
+              cornerAt(2, height - 3),
+              cornerAt(width - 3, height - 3),
+            ];
+            const base = [0, 1, 2].map(
+              (channel) =>
+                corners.reduce((sum, corner) => sum + (corner[channel] ?? 0), 0) / corners.length,
+            );
+            let different = 0;
+            let sampled = 0;
+            for (let py = 0; py < height; py += 4) {
+              for (let px = 0; px < width; px += 4) {
+                const offset = (py * width + px) * 4;
+                const distance =
+                  Math.abs((bitmap[offset] ?? 0) - (base[0] ?? 0)) +
+                  Math.abs((bitmap[offset + 1] ?? 0) - (base[1] ?? 0)) +
+                  Math.abs((bitmap[offset + 2] ?? 0) - (base[2] ?? 0));
+                sampled += 1;
+                if (distance > 48) different += 1;
+              }
+            }
+            paintedRatio = sampled > 0 ? Number((different / sampled).toFixed(3)) : 0;
+          }
+          const temperaPass =
+            tempera !== null &&
+            tempera.present &&
+            tempera.canvasW > 0 &&
+            tempera.canvasH > 0 &&
+            tempera.stageW >= 400 &&
+            tempera.stageH >= 300 &&
+            tempera.shots > 0 &&
+            /*
+             * 判据不能只看面板：sparse 族（`quiet-line` / `hair-grid` / `blank-page` 这些）
+             * **一块面板都没有**，画面全靠线条撑 —— 只看 panels 会把它们误判成"什么都没画"。
+             */
+            (tempera.panels > 0 || tempera.strokes > 0) &&
+            tempera.glyphs > 0 &&
+            paintedRatio > 0.05;
+          temperaOk = temperaPass;
+          /*
+           * 让成品图**落在已实现的族**上：渲染层把每族所有 shot 的起点交出来了
+           * （`data-tempera-*-times`），直接 seek 过去就行 —— 121 种构图里已实现的只有 22 种，
+           * 靠"等它自己播到"要很久、靠撞运气则大概率拍到兜底构图，那"这一族做没做完"就验不出来。
+           * seek 只动播放位置（本仓库歌词滚轮/点击那两条约束与此无关，这里也不是交互路径）。
+           */
+          if (tempera !== null) {
+            /*
+             * 每族的 kind 清单在这里**再写一遍**（渲染层也有一份）——这不是重复，是交叉校验：
+             * 如果渲染层那份表写错（把不属于本族的镜头当成已实现），探针就会一直等到超时、
+             * 拍到别的族的画面，从而当场暴露。
+             */
+            const families: readonly {
+              label: string;
+              times: string;
+              file: string;
+              kinds: readonly string[];
+            }[] = [
+              {
+                label: 'split',
+                times: tempera.splitTimes,
+                file: 'docs/m3-lyric-tempera-split.png',
+                kinds: [
+                  'duo-split',
+                  'quad-split',
+                  'tri-column',
+                  'thirds-stack',
+                  'checker-quad',
+                  'corner-wedge',
+                  'diagonal-halves',
+                  'cross-axis',
+                  'offset-halves',
+                  'stair-blocks',
+                  'pillar-gap',
+                  'corner-quad',
+                  'sliver-stack',
+                ],
+              },
+              {
+                label: 'band',
+                times: tempera.bandTimes,
+                file: 'docs/m3-lyric-tempera-band.png',
+                kinds: [
+                  'band-strip',
+                  'horizon-band',
+                  'deep-dive',
+                  'tone-ramp',
+                  'double-band',
+                  'tilt-band',
+                  'edge-rails',
+                  'gradient-wall',
+                  'terrace',
+                ],
+              },
+              {
+                label: 'frame',
+                times: tempera.frameTimes,
+                file: 'docs/m3-lyric-tempera-frame.png',
+                kinds: [
+                  'frame-window',
+                  'double-frame',
+                  'circle-window',
+                  'ladder-frame',
+                  'corner-brackets',
+                  'inset-box',
+                  'bracket-pair',
+                  'arch-window',
+                  'grid-cells',
+                  'keyhole',
+                ],
+              },
+              {
+                label: 'poster',
+                times: tempera.posterTimes,
+                file: 'docs/m3-lyric-tempera-poster.png',
+                kinds: [
+                  'poster-panel',
+                  'diamond-stack',
+                  'slash-poster',
+                  'arrow-wedge',
+                  'edge-bleed',
+                  'triangle-mass',
+                  'ribbon-cross',
+                  'half-disc',
+                  'stacked-slabs',
+                  'wedge-pair',
+                ],
+              },
+              {
+                label: 'sparse',
+                times: tempera.sparseTimes,
+                file: 'docs/m3-lyric-tempera-sparse.png',
+                kinds: [
+                  'quiet-line',
+                  'starfield-dots',
+                  'ripple-lines',
+                  'hair-grid',
+                  'margin-rule',
+                  'dot-drift',
+                  'arc-sweep',
+                  'blank-page',
+                ],
+              },
+              {
+                label: 'cinema',
+                times: tempera.cinemaTimes,
+                file: 'docs/m3-lyric-tempera-cinema.png',
+                kinds: [
+                  'cinema-scope',
+                  'cinema-wide',
+                  'cinema-academy',
+                  'cinema-square',
+                  'cinema-portrait',
+                  'cinema-tall',
+                  'cinema-twin',
+                ],
+              },
+              {
+                label: 'charm',
+                times: tempera.charmTimes,
+                file: 'docs/m3-lyric-tempera-charm.png',
+                kinds: [
+                  'bubble-drift',
+                  'cloud-window',
+                  'heart-burst',
+                  'sparkle-field',
+                  'petal-arc',
+                  'scallop-band',
+                  'ribbon-loop',
+                  'round-plate',
+                  'halo-burst',
+                ],
+              },
+              {
+                label: 'aperture',
+                times: tempera.apertureTimes,
+                file: 'docs/m3-lyric-tempera-aperture.png',
+                kinds: [
+                  'iris-hole',
+                  'slot-rail',
+                  'punch-row',
+                  'film-gate',
+                  'cross-vent',
+                  'louvre-slats',
+                  'ring-eye',
+                  'notch-stack',
+                  'wedge-gap',
+                  'dot-sieve',
+                ],
+              },
+              {
+                label: 'signal',
+                times: tempera.signalTimes,
+                file: 'docs/m3-lyric-tempera-signal.png',
+                kinds: [
+                  'sight-mark',
+                  'dial-scale',
+                  'chevron-run',
+                  'tally-column',
+                  'grid-focus',
+                  'axis-caps',
+                  'strobe-slats',
+                  'offset-plate',
+                  'radial-comb',
+                  'bracket-target',
+                ],
+              },
+              {
+                label: 'corridor',
+                times: tempera.corridorTimes,
+                file: 'docs/m3-lyric-tempera-corridor.png',
+                kinds: [
+                  'flow-channel',
+                  'twin-channel',
+                  'reed-run',
+                  'taper-channel',
+                  'chain-ports',
+                  'dash-channel',
+                  'window-run',
+                  'bridge-span',
+                  'braid-channel',
+                  'port-ladder',
+                ],
+              },
+              {
+                label: 'monolith',
+                times: tempera.monolithTimes,
+                file: 'docs/m3-lyric-tempera-monolith.png',
+                kinds: [
+                  'apex-mass',
+                  'ziggurat',
+                  'slab-wall',
+                  'cantilever',
+                  'pylon-pair',
+                  'bunker-slit',
+                  'plinth-stack',
+                  'buttress-run',
+                  'void-core',
+                  'shear-block',
+                ],
+              },
+              {
+                label: 'terrain',
+                times: tempera.terrainTimes,
+                file: 'docs/m3-lyric-tempera-terrain.png',
+                kinds: [
+                  'ridge-line',
+                  'chasm',
+                  'overhang',
+                  'step-well',
+                  'pier-row',
+                  'revetment',
+                  'tower-crop',
+                  'lintel',
+                  'rubble-fan',
+                  'gnomon',
+                ],
+              },
+              {
+                label: 'monogatari',
+                times: tempera.monogatariTimes,
+                file: 'docs/m3-lyric-tempera-monogatari.png',
+                kinds: [
+                  'monogatari-card',
+                  'monogatari-rule',
+                  'monogatari-edge',
+                  'monogatari-stack',
+                  'monogatari-flash',
+                ],
+              },
+            ];
+            const notes: string[] = [];
+            const readKind = async (): Promise<string> =>
+              (await win.webContents.executeJavaScript(
+                `(() => {
+                   const root = document.querySelector('.pi-lyrictempera');
+                   return root instanceof HTMLElement ? root.dataset.temperaKind || '' : '';
+                 })()`,
+                true,
+              )) as string;
+            for (const family of families) {
+              const targets = family.times
+                .split(',')
+                .map((value) => Number(value))
+                .filter((value) => Number.isFinite(value));
+              if (targets.length === 0) {
+                notes.push(`${family.label}=这一跑没有镜头`);
+                continue;
+              }
+              // 取中间那一个：开头几个常常正好卡在段落转场里。
+              const target =
+                targets[Math.min(targets.length - 1, Math.floor(targets.length / 2))] ??
+                targets[0] ??
+                0;
+              await win.webContents.executeJavaScript(
+                `(() => {
+                   const a = window.__piAudio;
+                   if (!a) return false;
+                   a.currentTime = ${target};
+                   return true;
+                 })()`,
+                true,
+              );
+              /*
+               * 轮询而不是固定等待：镜头长度不一样（sparse 那几族常有 1 秒多的短镜），
+               * 定时 1.8s 会拍到**下一个**镜头 —— 实测 `sparse` 那一跑就拍到了 charm 族的 `cloud-window`。
+               * 这里一边等一边读当前 kind，一旦落进本族就立刻截图（最久等到 1.6s）。
+               */
+              let kindNow = await readKind();
+              for (let attempt = 0; attempt < 8; attempt += 1) {
+                const entered = family.kinds.includes(kindNow);
+                // 入场动画走完大半再截，画面才不是"刚滑进来"的样子（220ms × 5 ≈ 1.1s）。
+                if (entered && attempt >= 5) break;
+                await delay(220);
+                kindNow = await readKind();
+              }
+              const matched = family.kinds.includes(kindNow);
+              /*
+               * 抓帧前再让合成器出一帧：`capturePage()` 有时会拿到 seek **之前**的那一帧 ——
+               * 实测 `signal` 那张整张是 aperture 的百叶缝、进度条还停在上一族的时间点，
+               * 而数据集里写的已经是本族的构图（说明渲染没错，是抓帧抢跑了）。
+               */
+              await delay(150);
+              const image = await win.webContents.capturePage();
+              const shotPath = smokeShotPath(family.file, family.file);
+              writeFileSync(shotPath, image.toPNG());
+              notes.push(
+                `${family.label}: seek ${target}s → ${kindNow}${matched ? '' : '（不在本族！）'}（${shotPath}）`,
+              );
+            }
+            temperaWaited = `｜${notes.join('｜')}`;
+          }
+          temperaInfo =
+            tempera === null
+              ? '没量到'
+              : `画布=${tempera.canvasW}x${tempera.canvasH} 舞台=${tempera.stageW}x${tempera.stageH} 帧视口=${tempera.frameSize}` +
+                `｜编译 shot=${tempera.shots}｜本帧构图=${tempera.kind}（${tempera.fallback === 'true' ? '兜底' : '已实现族'}）` +
+                `｜反色滤镜=${tempera.filter === '' ? '未挂载' : tempera.filter}` +
+                ` 面板=${tempera.panels} 线条=${tempera.strokes} 字素=${tempera.glyphs}｜首块顶点=${tempera.firstPanel}` +
+                `｜色阶=${tempera.tones}（纸/墨 ${tempera.colors}）｜非背景像素占比=${paintedRatio}` +
+                temperaWaited;
+          console.info(
+            `[pi/smoke] 凝彩色块构图（本批复刻）：${temperaInfo} ${temperaPass ? '✓' : '✗'}`,
           );
         }
         if (theme === 'pendolo') {
@@ -11290,7 +12279,9 @@ rightOpacity: last === undefined ? '' : getComputedStyle(last).opacity,
             partitaSpaceOk,
           )}｜云阶刻度线不缩放=${stamp(partitaGuideWidthOk)}｜流光排成一个句子=${stamp(
             classicScatterOk,
-          )}｜时计齿轮=${stamp(pendoloGearOk)}`,
+          )}｜时计齿轮=${stamp(pendoloGearOk)}｜莫奈海报版式=${stamp(monetOk)}｜凝彩色块构图=${stamp(
+            temperaOk,
+          )}`,
       );
       app.exit(0);
       return;
@@ -13187,9 +14178,16 @@ rightOpacity: last === undefined ? '' : getComputedStyle(last).opacity,
           right.quickTabs.shown === 1 &&
           right.quickTabs.activeKey !== '' &&
           right.quickTabs.shownKey === right.quickTabs.activeKey;
-        // **用户第二十轮第 3 条**：可见分页里的方块组必须整齐（等宽、≤2 行）。
+        /*
+         * **用户第二十轮第 3 条**：可见分页里的方块组必须整齐（等宽、行数不过多）。
+         *
+         * 行数上限 **2 行 → 3 行**（2026-10-03，复刻 folia 的莫奈 `monet` 那一批）：
+         * 这条是照六套歌词主题定的（3×2 正好两行），而本批把主题加到**七套**
+         * ⇒ 歌词页的方块变成 3+3+1 三行，那是新的整齐布局，不是「不整齐」。
+         * 判据的实质要求（`uniform` = 同行等宽、组数 > 0）一个字没动。
+         */
         const rowOk =
-          right.quickRows.groups > 0 && right.quickRows.maxRows <= 2 && right.quickRows.uniform;
+          right.quickRows.groups > 0 && right.quickRows.maxRows <= 3 && right.quickRows.uniform;
         r16RightOk = right.layer === 'settings' && swOk && right.more && rowOk && tabsOk;
         r16RightInfo =
           `层=${right.layer || '无'} 开关=[${right.switches.join(',')}] 更多设置键=${right.more}` +
@@ -17312,6 +18310,10 @@ rightOpacity: last === undefined ? '' : getComputedStyle(last).opacity,
       lyricBleedOk !== false &&
       // 同理：只有拍了主题成品图才量得到倾诉/时计/流光的舞台铺满比例。
       stageFillOk !== false &&
+      // 莫奈（monet）的海报版式：只在切到莫奈那一跑量得到（null = 没跑，不参与判定）。
+      monetOk !== false &&
+      // 凝彩（tempera）的色块构图：Pixi 画布 + 编译 shot + 非背景像素占比（null = 没跑）。
+      temperaOk !== false &&
       spinOk !== false &&
       pendoloGearOk !== false &&
       partitaSpaceOk !== false &&
@@ -17384,6 +18386,8 @@ rightOpacity: last === undefined ? '' : getComputedStyle(last).opacity,
         `｜搜索浮层 ${searchOk ? '✓' : '✗'}｜窗口三键浮出 ${windowControlsOk ? '✓' : '✗'}` +
         `｜浮名高亮字在窗内 ${lyricBleedOk === null ? '未跑' : lyricBleedOk ? '✓' : '✗'}` +
         `｜三套铺满整屏 ${stageFillOk === null ? '未跑' : stageFillOk ? '✓' : '✗'}` +
+        `｜莫奈海报版式 ${monetOk === null ? '未跑' : monetOk ? '✓' : '✗'}` +
+        `｜凝彩色块构图 ${temperaOk === null ? '未跑' : temperaOk ? '✓' : '✗'}` +
         `｜逐字旋转 ${spinOk === null ? '未跑' : spinOk ? '✓' : '✗'}` +
         `｜时计齿轮转 ${pendoloGearOk === null ? '未跑' : pendoloGearOk ? '✓' : '✗'}` +
         `｜云阶断词 ${partitaSpaceOk === null ? '未跑' : partitaSpaceOk ? '✓' : '✗'}` +
@@ -17791,10 +18795,27 @@ async function runSettingsSmoke(win: BrowserWindow): Promise<void> {
       spinOn: { checked: boolean | null; stored: boolean | null };
       spinOff: { checked: boolean | null; stored: boolean | null };
     };
+    /*
+     * 设置页「歌词动效」页里应当出现的主题（顺序就是卡面顺序，对齐 `SettingsPage.tsx`
+     * 的 `LYRIC_THEME_OPTIONS`）。原来这条判据写的是 `ids.length === 6`：本批复刻
+     * folia 的莫奈（`monet`）之后主题变七套，写死个数会假红，改成与这张表逐项比对。
+     */
+    const EXPECTED_LYRIC_THEMES = [
+      'classic',
+      'fume',
+      'cadenza',
+      'partita',
+      'tilt',
+      'pendolo',
+      'monet',
+      'tempera',
+      'sonnet',
+    ];
     const themeOk =
       themeReport.panel === 'lyric' &&
       themeReport.tabs.length === 6 &&
-      themeReport.ids.length === 6 &&
+      EXPECTED_LYRIC_THEMES.every((id) => themeReport.ids.includes(id)) &&
+      themeReport.ids.length === EXPECTED_LYRIC_THEMES.length &&
       themeReport.before !== '' &&
       themeReport.next !== '' &&
       themeReport.storedBefore === themeReport.before &&
@@ -17911,6 +18932,19 @@ void app.whenReady().then(async () => {
   }
 
   createWindow();
+
+  // 硬件加速这一轮跑得干净就把旧的崩溃计数清掉（见 scheduleGpuCrashReset 的注释）。
+  scheduleGpuCrashReset();
+
+  /*
+   * 手动探针（第五轮第 13 条）：`PI_SMOKE_ISLAND=<歌曲 id>` 量灵动岛的落点、并把
+   * 暗角那两条 computed 打出来。结论写进仓库根的 `.tmp-island-report.txt`，因为
+   * GUI 程序的 stdout 在这台机器的管道里收不到（`| Out-File` 只拿到 stderr）。
+   */
+  if (process.env.PI_SMOKE_ISLAND && mainWindow) {
+    await runIslandSmoke(mainWindow);
+    return;
+  }
 
   // M2.5 渲染层验收：设置页（含本地曲库输入）与音质日志页真的画出来了。
   if (process.env.PI_SMOKE_SETTINGS && mainWindow) {

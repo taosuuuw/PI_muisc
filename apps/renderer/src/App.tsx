@@ -7,6 +7,7 @@ import { AudioEngine } from './components/AudioEngine';
 import { LoginDialog } from './components/LoginDialog';
 import { SearchOverlay } from './components/SearchOverlay';
 import { SettingsOverlay } from './components/SettingsOverlay';
+import { GuideOverlay } from './components/GuideOverlay';
 import { SongListOverlay } from './components/SongListOverlay';
 import { SongPageOverlay } from './components/SongPageOverlay';
 import { PlaylistCoverflowOverlay, type PlaylistNav } from './components/PlaylistCoverflowOverlay';
@@ -365,6 +366,9 @@ export function App(): ReactNode {
       <SongPageOverlay />
       {/* 第八轮第 7 条：设置不再是整页，而是一个从屏幕中心流出来的框。 */}
       <SettingsOverlay />
+      {/* 用户第五轮第 1 条：首次使用指引（第一次打开自动弹一次，之后可在设置里重看）。
+          z-index 最高，且能盖在任何页面/浮层之上——指着界面讲东西的前提是它不被挡。 */}
+      <GuideOverlay />
       {/* 第十四轮第 8 条（用户 m05281）那张「切歌小名片」在第十六轮第 3 条里删掉了：
           用户 m07538 要求「去掉切换歌曲的小名片，替代为显示播放页左下角的歌曲名片」
           —— 所以现在是播放页左下角那张名片自己在切歌时浮出来（见 HomePage 的 `revealCard`）。 */}

@@ -396,12 +396,21 @@
  * 观感与中心块放大（808 正方形 + 主色内描边 + 大落影）一致：悬停是那件事的**轻量预演**——
  * 封面推近 1.055、文字序号抬起 2–3px、一圈主色描边 + 落影、再加一道斜向扫光。
  */
+/*
+ * 悬停高光：**只提亮这一格的内描边，不给整张卡加滤镜与外发光**。
+ *
+ * 用户第五轮第 12 条：「暗色模式下进入歌曲队列拼贴，**没被点击放大的常态拼贴应该封面不发光**，
+ * 被放大的拼贴光影如图 2」。原来这里是 `filter: saturate(1.08) brightness(1.05)` +
+ * 一圈 40px 的黑色落影 + 2px 主色外描边 —— 在暗底上读起来就是「整张封面在发光」，
+ * 而且 `brightness` 会把封面本身洗白，破坏「拼贴就是一张张图」的观感。
+ *
+ * 改后：常态格子悬停只把「一圈 2px 主色内描边」点亮（`::after` 那层扫光不变，
+ * 它是一次性的掠过，不是常亮的光晕），封面的明暗与色彩**一个字节都不动**；
+ * 「光」这件事只留给放大块（`.pi-collage__item--center`）与正在播放那一格。
+ */
 .pi-collage__item:hover {
   z-index: 5;
-  filter: saturate(1.08) brightness(1.05);
-  box-shadow:
-    0 18px 40px rgb(0 0 0 / 26%),
-    0 0 0 2px color-mix(in srgb, var(--pi-primary) 78%, transparent);
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--pi-primary) 78%, transparent);
 }
 
 /* 封面推近：`overflow: hidden` 之内放大，读起来是「镜头凑近了一点」。 */
@@ -450,6 +459,96 @@
     rgb(255 255 255 / 0%) 62%
   );
   animation: pi-collage-sheen 620ms cubic-bezier(0.22, 0.9, 0.24, 1) both;
+}
+
+/* ------------------------------------------------------------------ *
+ * 边缘暗角（用户第五轮第 9 条）
+ * ------------------------------------------------------------------ */
+
+/**
+ * 那一层暗角本身 —— **整套暗角只有这一层**。
+ *
+ * - `z-index: 2`：压在背景与颗粒之上、压在所有**常态**格子之上（它们没写 `z-index`，
+ *   在世界层里按文档顺序排在后面 → 数值 0），于是四周的封面被压暗；而悬停那一格
+ *   （`z-index: 5`）、正在播放那一格、放大块（`z-index: 20`）都在它**之上**，
+ *   所以「被关注的那一张」始终是亮的 —— 这正是「让视线落在中间那张海报上」的做法。
+ * - `pointer-events: none`：它只是滤镜，绝不能吃掉拖拽与点击。
+ *
+ * ⚠️ **绝不要在格子上再加 `inset box-shadow` / `filter` 来「加强暗角」**
+ * （用户第五轮第 16 条「非常掉帧」的真凶，实测数据在下面）。
+ *
+ * 这一条是量出来的，不是猜的：在真窗口里铺 64 格、用同一段正弦驱动 `transform`，
+ * 逐方案测帧间隔（同一个会话里 A/B/C/D 各 3.5 秒）：
+ *
+ *   A 无暗角                      p50 = 6.9ms
+ *   B 只有这一层覆盖层            p50 = 6.9ms   ← 零成本
+ *   C 只在每格上加内阴影          p50 = 20.8ms  ← 三倍
+ *   D 每格内阴影 + 覆盖层         p50 = 14.0ms
+ *
+ * 原因：格子上只要有 `inset box-shadow`，它就从「合成层里搬一张已画好的图」退化成
+ * **每帧重新光栅化那张卡**（trace 里 Paint/RasterTask 直接翻倍）。而这一层覆盖层是
+ * 一张静态渐变图，跟着根盒子一起合成，几乎不要钱。
+ *
+ * 所以「发暗」的量全部由这里的色标给足（比第一版深得多：第一版 0.22@72% 在满屏封面上
+ * 等于没加），而不是靠每格自己那圈内阴影。
+ */
+.pi-collage__vignette {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  display: none;
+  background: radial-gradient(
+    118% 92% at 50% 46%,
+    rgb(0 0 0 / 0%) 30%,
+    rgb(0 0 0 / 34%) 62%,
+    rgb(0 0 0 / 58%) 82%,
+    rgb(0 0 0 / 80%) 100%
+  );
+}
+
+/*
+ * **只在深色档生效**（用户原话「记住这个功能在亮色模式下不生效」）。
+ *
+ * 判定放在 CSS 而不是 JS：`<html data-theme>` 是主题的唯一真相（`App.tsx` 写它，
+ * 跟随系统时媒体查询也会改它），如果在这个组件里读设置再算一遍，就会出现
+ * 「系统切到亮色、但拼贴页还挂着暗角」这种两套真相不一致的状态。
+ */
+:root[data-theme='dark'] .pi-collage[data-edge-vignette='on'] .pi-collage__vignette {
+  display: block;
+}
+
+/*
+ * ~~上一条只管「画出来」，这一条负责「常态那几格自己也暗一档」~~
+ *
+ * **这里原来有一条 `.pi-collage__item { box-shadow: inset 0 0 34px 8px … }`，
+ * 已删除（用户第五轮第 16 条「非常掉帧」的真凶）。**
+ *
+ * 删它的依据是量出来的，不是审美取舍：见上面 `.pi-collage__vignette` 头部的 A/B/C/D 表
+ * —— 格子上挂 `inset box-shadow` 会让那一格**每帧都要重新光栅化**（p50 6.9ms → 20.8ms）。
+ * 「发暗」这件事全部改由那一层静态覆盖层给足，一格一格的暗度不再单独画。
+ */
+
+/*
+ * 放大块那层内描边：暗角开着的时候让掉。
+ * 另起一条、并带上 `::before`，是为了**赢过**下面 `.pi-collage__item--center::before`
+ * 那条（0-2-0 + 伪元素）——`content: none` 一落，边框与内发光就都不画了，
+ * 于是「中心那张」只剩它自己的大落影（用户第五轮第 12 条要的「光影如图 2」）。
+ */
+:root[data-theme='dark'] .pi-collage[data-edge-vignette='on'] .pi-collage__item--center::before {
+  content: none;
+}
+
+/*
+ * 悬停高光：暗角把四周压暗之后，原来那圈主色内描边在边角处仍然够看；
+ * 这里**只把描边加亮到实色**，绝不再叠 `filter` 或外发光 ——
+ * 用户第五轮第 12 条要的是「常态拼贴封面不发光」，加暗角不等于允许它发光。
+ *
+ * 只在暗角开着的时候加成实色：关掉暗角时页面本来就是原来的亮度，
+ * 再加深描边反而会显得过冲。
+ */
+:root[data-theme='dark'] .pi-collage[data-edge-vignette='on'] .pi-collage__item:hover {
+  box-shadow: inset 0 0 0 2px var(--pi-primary);
 }
 
 @keyframes pi-collage-sheen {
@@ -506,12 +605,11 @@
 
 /**
  * 上面那条 `[data-playing]` 选择器的特权重（0,3,0），会盖掉 `.pi-collage__item:hover`（0,2,0）
- * 的落影，所以「正在播放但没放大」的那一张要单独补一条悬停态，否则它悬停时没有描边变化。
+ * 的描边，所以「正在播放但没放大」的那一张要单独补一条悬停态，否则它悬停时没有描边变化。
+ * 这里同样**不加滤镜、不加外发光**（同行 12 条的规矩：常态格子不发光）。
  */
 .pi-collage__item[data-playing='true']:not(.pi-collage__item--center):hover {
-  box-shadow:
-    0 18px 40px rgb(0 0 0 / 26%),
-    0 0 0 2px color-mix(in srgb, var(--pi-primary) 78%, transparent);
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--pi-primary) 78%, transparent);
 }
 
 /* 放大块悬停：它本来就有内描边 + 大落影，这里只把内描边加亮一档，不再叠第二层外描边。 */

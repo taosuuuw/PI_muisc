@@ -1,6 +1,7 @@
 import type {
   Comment,
   CommentPage,
+  CommentPostResult,
   Lyric,
   LyricLine,
   LyricWord,
@@ -317,6 +318,72 @@ export class NcmClient {
     const legacy = asArray(raw?.['hotComments']);
     const rows = legacy.length > 0 ? legacy : asArray(raw?.['comments']);
     return rows.map(mapComment).filter(isPresent);
+  }
+
+  /**
+   * 发表评论 / 回复某条评论（用户第五轮第 8 条：「可以打字评论，回复评论」）。
+   *
+   * 内嵌 API 的 `/comment` 用一个路由干三件事，靠 `t` 区分：`0` 删除、`1` 发表、`2` 回复；
+   * `type: 0` 是「歌曲」这一种资源（`threadId` 由 `type + id` 拼成）。
+   *
+   * 回复的写法**必须**是「`commentId` + 正文里带 `回复@某某:`」两件事一起做：
+   * 只传 `commentId` 网易云会把回复当成一条顶层评论，只在正文里写 `回复@` 又不会挂到
+   * 那条评论下面。这也正是它客户端自己的做法。
+   */
+  async postComment(
+    songId: number,
+    content: string,
+    reply?: { commentId: number; nickname?: string },
+  ): Promise<CommentPostResult> {
+    const text =
+      reply === undefined
+        ? content
+        : `回复@${reply.nickname === undefined || reply.nickname === '' ? '某人' : reply.nickname}:${content}`;
+    const raw = asRecord(
+      await this.call('/comment', {
+        type: 0,
+        id: songId,
+        t: reply === undefined ? 1 : 2,
+        content: text,
+        ...(reply === undefined ? {} : { commentId: reply.commentId }),
+      }),
+    );
+    const code = asNumber(raw?.['code']);
+    if (code !== 200) {
+      throw new NcmApiError(
+        extractMessage(raw) ?? '评论发表失败（可能是未登录，或者操作过于频繁）',
+        '/comment',
+        code,
+      );
+    }
+    const comment = asRecord(raw?.['comment']) ?? asRecord(raw?.['data']);
+    return {
+      ...(asNumber(comment?.['commentId']) !== undefined
+        ? { commentId: asNumber(comment?.['commentId']) }
+        : {}),
+      ...(extractMessage(raw) !== undefined ? { notice: extractMessage(raw) } : {}),
+    };
+  }
+
+  /**
+   * 给评论点赞 / 取消点赞（`/comment/like`）。
+   *
+   * `t` 传 `1` 点赞、`0` 取消；`cid` 是评论 id、`id` 是歌曲 id。返回里**没有**权威的
+   * 最新赞数，所以上层要自己把本地那一份 ±1（`Services.likeComment` 就是这么做的）。
+   */
+  async likeComment(songId: number, commentId: number, like: boolean): Promise<boolean> {
+    const raw = asRecord(
+      await this.call('/comment/like', { type: 0, id: songId, cid: commentId, t: like ? 1 : 0 }),
+    );
+    const code = asNumber(raw?.['code']);
+    if (code !== 200) {
+      throw new NcmApiError(
+        extractMessage(raw) ?? '评论点赞失败（可能是未登录）',
+        '/comment/like',
+        code,
+      );
+    }
+    return true;
   }
 
   /**
@@ -681,6 +748,8 @@ export function mapComment(value: unknown): Comment | undefined {
     })
     .filter(isPresent);
   const location = asString(record?.['ipLocation']);
+  // 「我点过赞没有」在响应里叫 `liked`（布尔）；老版本里可能是 `liked: true` 才带。
+  const liked = record?.['liked'];
 
   return {
     id,
@@ -694,6 +763,7 @@ export function mapComment(value: unknown): Comment | undefined {
     },
     ...(beReplied.length > 0 ? { beReplied } : {}),
     ...(location ? { location } : {}),
+    ...(liked === true || liked === 1 ? { liked: true } : {}),
   };
 }
 

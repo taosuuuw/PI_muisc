@@ -196,6 +196,16 @@ export interface SongCollageProps {
    * 后台一批批长大，直到宿主说没有下一页。默认 `false` 保持第十六轮第 4 条(c) 的老手感。
    */
   autoMore?: boolean;
+  /**
+   * 用户第五轮第 9 条「边缘暗角」：四周压一层淡淡暗角，让视线落在中间那张海报上。
+   *
+   * **只在深色档真的画出来**（判定在 `styles/song-collage.css` 按 `data-theme` 做）——
+   * 亮色档把四周压暗会像没擦干净。开着时鼠标悬停某一格还会多一圈柔和高光。
+   *
+   * 只在**队列拼贴**那一档传：`MinePage` 的「我的喜欢」与队列浮层会把它接上设置，
+   * 别的调用方（歌手 / 专辑页）不传就是默认开。
+   */
+  edgeVignette?: boolean;
 }
 
 /**
@@ -259,7 +269,16 @@ const NEED_MORE_RETRY_MAX_MS = 32_000;
  * （`ref` 只在 `useImperativeHandle` 里读一次）。组件自己的状态/手势/render 全部照旧。
  */
 export const SongCollage = forwardRef<SongCollageHandle, SongCollageProps>(function SongCollage(
-  { songs, onSelect, disablePlay, onEnterPlaying, hasMore, onNeedMore, autoMore }: SongCollageProps,
+  {
+    songs,
+    onSelect,
+    disablePlay,
+    onEnterPlaying,
+    hasMore,
+    onNeedMore,
+    autoMore,
+    edgeVignette,
+  }: SongCollageProps,
   ref,
 ): ReactNode {
   const play = usePlayer((s) => s.play);
@@ -1140,6 +1159,11 @@ export const SongCollage = forwardRef<SongCollageHandle, SongCollageProps>(funct
       data-collage-preroll={`${preroll.cols}x${preroll.rows}`}
       data-collage-fill-ms={COLLAGE_FILL_MS}
       data-collage-exiting={exitingKey === null ? 'false' : 'true'}
+      /*
+       * 用户第五轮第 9 条「边缘暗角」：开关挂在根上，**是否真的画出来由 CSS 按明暗分档**
+       * （`:root[data-theme='dark']` 才显示，亮色档一律不画）。
+       */
+      data-edge-vignette={edgeVignette === false ? 'off' : 'on'}
       style={
         {
           '--pi-collage-lift': `${ENTRANCE_LIFT}px`,
@@ -1159,6 +1183,15 @@ export const SongCollage = forwardRef<SongCollageHandle, SongCollageProps>(funct
       onClickCapture={handleClickCapture}
       onKeyDown={handleKeyDown}
     >
+      {/**
+       * 用户第五轮第 9 条：边缘暗角那一层。
+       *
+       * 放在根节点里、**在 3D 姿态层之外**：它要覆盖整个视口而不是跟着世界一起平移缩放；
+       * 不脱流（`position: absolute; inset: 0`）所以能跟着宿主的正文格一起被裁剪，
+       * 不会溢出到浮层外面。`pointer-events: none` —— 它只是一层滤镜，绝不能挡住拖拽。
+       */}
+      <div className="pi-collage__vignette" data-collage-vignette="true" aria-hidden="true" />
+
       {/**
        * 3D 姿态层：它自己不滚动、不裁剪，只把整面墙绕**视口中心**转过一个小角度。
        * 世界层仍然是原来的 `translate3d(...) scale(...)`（探针读的就是它），

@@ -15,6 +15,7 @@
     "@pi/player-core": "workspace:*",
     "@pi/shared": "workspace:*",
     "@tanstack/react-query": "^5.103.2",
+    "pixi.js": "^8.22.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "zustand": "^5.0.15"

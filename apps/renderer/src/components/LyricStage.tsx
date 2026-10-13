@@ -93,6 +93,15 @@ export interface LyricStageProps {
    * 判定完再落回锚点值 —— 那几步就是这么来的。
    */
   playing?: boolean;
+  /**
+   * 歌曲元信息（莫奈 `monet` 的海报头版：艺人 / 歌名 / 专辑）。
+   *
+   * 不传时主题自己兜底（`MonetTheme` 三项都退到 `'Monet'`），其余六套主题**一个都不读**，
+   * 所以老调用点（详情页、设置页预览、UI 冒烟）不传这三个 prop 时行为与改造前完全一致。
+   */
+  songTitle?: string;
+  songArtist?: string;
+  songAlbum?: string;
 }
 
 type Hint = 'normal' | 'short' | 'micro';
@@ -1448,6 +1457,9 @@ export function LyricStage({
   coverUrl,
   playing = true,
   onSeek,
+  songTitle,
+  songArtist,
+  songAlbum,
 }: LyricStageProps): ReactNode {
   /**
    * 主题分发（用户 m08768 第 4 条）。
@@ -1889,6 +1901,9 @@ export function LyricStage({
             playing={playing}
             theme={palette ?? DEFAULT_PALETTE}
             coverUrl={coverUrl}
+            {...(songTitle === undefined ? {} : { songTitle })}
+            {...(songArtist === undefined ? {} : { songArtist })}
+            {...(songAlbum === undefined ? {} : { songAlbum })}
           />
         )}
       </div>

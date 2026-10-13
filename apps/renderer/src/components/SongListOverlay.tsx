@@ -3,7 +3,7 @@ import { MODE_LABEL } from '@pi/player-core';
 import type { Song } from '@pi/shared';
 import { errorMessage } from '../bridge';
 import { coverAt, dailyCoverUrls } from '../lib/cover';
-import { useAlbumSongs, useArtistSongs, useRecommend } from '../lib/queries';
+import { useAlbumSongs, useArtistSongs, useEdgeVignette, useRecommend } from '../lib/queries';
 import { usePlayer } from '../state/player';
 import { useUi, type SongListTarget } from '../state/ui';
 // 第十八轮第 5/8/10 条：歌单浮层底部那条药丸（与播放页同款 + 点它回播放页）。
@@ -192,6 +192,8 @@ function SongsListOverlay({ target, onClose, closing }: SongsListProps): ReactNo
   const failure = kind === 'queue' ? null : query.error;
   /** 第十七轮第 ②③ 条：同一个浮层，平凡给竖排列表、先锋给队列拼贴。 */
   const collage = useUi((s) => s.uiStyle) === 'avant';
+  // 用户第五轮第 9 条：边缘暗角（只在深色档真的画，见 song-collage.css）。
+  const edgeVignette = useEdgeVignette();
 
   const onSelect = (song: Song): void => {
     if (kind === 'queue') {
@@ -346,7 +348,7 @@ function SongsListOverlay({ target, onClose, closing }: SongsListProps): ReactNo
               {kind === 'queue' ? '队列还是空的。在列表里点一首歌就会进来。' : '这里还没有歌。'}
             </p>
           ) : collage ? (
-            <SongCollage songs={list} onSelect={onSelect} />
+            <SongCollage songs={list} onSelect={onSelect} edgeVignette={edgeVignette} />
           ) : (
             <SongList songs={list} onSelect={onSelect} emptyText="这里还没有歌。" />
           )}

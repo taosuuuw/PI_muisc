@@ -1,4 +1,4 @@
-/**
+﻿/**
  * @pi/ipc —— 渲染进程与主进程之间的**唯一**通道契约。
  *
  * 设计要点（见 docs/PLAN.md §2.3）：
@@ -12,8 +12,12 @@ import { z } from 'zod';
 import type {
   AccountCapability,
   AudioProbe,
+  CacheClearResult,
   Comment,
+  CommentLikeResult,
   CommentPage,
+  CommentPostResult,
+  DataStorageInfo,
   LxPluginSummary,
   Lyric,
   LyricLine,
@@ -164,6 +168,8 @@ export const CommentSchema = z.object({
   user: CommentUserSchema,
   beReplied: z.array(CommentReplySchema).optional(),
   location: z.string().optional(),
+  /** 我点过赞没有（接口给了才带；见 @pi/shared 的 `Comment.liked`）。 */
+  liked: z.boolean().optional(),
 });
 
 /** 热门评论只有第一页才非空（见 @pi/shared 的 `CommentPage`）。 */
@@ -199,13 +205,68 @@ export const LikeStateSchema = z.object({ liked: z.array(z.number().int()) });
 export type LikeState = z.infer<typeof LikeStateSchema>;
 
 /* ------------------------------------------------------------------ *
+ * 评论的写操作（用户第五轮第 8 条：点赞 / 打字评论 / 回复评论）
+ * ------------------------------------------------------------------ */
+
+/**
+ * 发表评论的入参。
+ *
+ * `replyTo` 存在就是**回复**：网易云要求「`commentId` + 正文里带 `回复@某某:`」
+ * 两件事一起做（见 `ncm-client` 的 `postComment`），所以这里把被回复者的昵称
+ * 一起带上，而不是让渲染层自己拼那串前缀。
+ */
+export const CommentPostRequestSchema = z.object({
+  songId: z.number().int().positive(),
+  /** 正文；限长 140（网易云自己的上限），空串直接拒绝。 */
+  content: z.string().trim().min(1).max(140),
+  replyTo: z
+    .object({
+      commentId: z.number().int().positive(),
+      nickname: z.string().max(60).optional(),
+    })
+    .optional(),
+});
+export type CommentPostRequest = z.input<typeof CommentPostRequestSchema>;
+
+/** 评论点赞 / 取消点赞。 */
+export const CommentLikeRequestSchema = z.object({
+  songId: z.number().int().positive(),
+  commentId: z.number().int().positive(),
+  like: z.boolean(),
+  /** 客户端现在显示的赞数：上游不回权威值时由它 ±1，避免界面「点了没反应」。 */
+  likedCount: z.number().int().min(0).max(1_000_000).optional(),
+});
+export type CommentLikeRequest = z.input<typeof CommentLikeRequestSchema>;
+
+export const CommentPostResultSchema = z.object({
+  commentId: z.number().int().positive().optional(),
+  notice: z.string().optional(),
+});
+
+export const CommentLikeResultSchema = z.object({
+  commentId: z.number().int().positive(),
+  liked: z.boolean(),
+  likedCount: z.number().int().min(0),
+});
+
+/* ------------------------------------------------------------------ *
  * M4：歌词（ncm:lyric）
  * ------------------------------------------------------------------ */
 
-/** 一行歌词：相对歌曲开头的毫秒数 + 文本。 */
+/** 一行歌词：相对歌曲开头的毫秒数 + 文本（+ 可选的行时长与逐字时间轴）。 */
 export const LyricLineSchema = z.object({
   timeMs: z.number(),
   text: z.string(),
+  durationMs: z.number().optional(),
+  words: z
+    .array(
+      z.object({
+        timeMs: z.number(),
+        durationMs: z.number().optional(),
+        text: z.string(),
+      }),
+    )
+    .optional(),
 });
 
 /**
@@ -214,16 +275,137 @@ export const LyricLineSchema = z.object({
  * `translated` 与 `hasLyric` 都是**必填**字段（没有翻译时给空数组，而不是省略）：
  * 渲染进程要靠 `hasLyric` 区分「这首歌就是没有歌词」与「歌词还没加载出来」，
  * 靠省略字段是分不出来的。
+ *
+ * 第五轮（多歌词源）起多了 `source` / `match` / `candidates` 这几项：
+ * 歌词不再只有一个来源，界面要能说清「现在用的是哪个源、匹配到多少、
+ * 别的源各是什么情况」。
  */
 export const LyricSchema = z.object({
   lines: z.array(LyricLineSchema),
   translated: z.array(LyricLineSchema),
   hasLyric: z.boolean(),
+  roman: z.array(LyricLineSchema).optional(),
+  source: z.enum(['ncm', 'amll', 'qq', 'kugou', 'local']).optional(),
+  mode: z.enum(['auto', 'ncm', 'amll', 'qq', 'kugou', 'local']).optional(),
+  match: z.number().min(0).max(1).optional(),
+  matchedTitle: z.string().optional(),
+  reason: z.string().optional(),
+  candidates: z
+    .array(
+      z.object({
+        source: z.enum(['ncm', 'amll', 'qq', 'kugou', 'local']),
+        used: z.boolean(),
+        title: z.string().optional(),
+        artists: z.array(z.string()).optional(),
+        match: z.number().min(0).max(1),
+        hasTranslation: z.boolean(),
+        hasWord: z.boolean(),
+        lineCount: z.number(),
+        reason: z.string().optional(),
+        elapsedMs: z.number(),
+      }),
+    )
+    .optional(),
 });
 
-/** 歌词入参：只要歌曲 id（不需要登录）。 */
-export const LyricRequestSchema = z.object({ songId: z.number().int().positive() });
-export type LyricRequest = z.infer<typeof LyricRequestSchema>;
+/** `lines[].words` 也要进契约：逐字时间轴是「这份歌词有多好」的主要判据。 */
+export const LyricWordSchema = z.object({
+  timeMs: z.number(),
+  durationMs: z.number().optional(),
+  text: z.string(),
+});
+
+/**
+ * 歌词请求。
+ *
+ * 与旧版只传 `songId` 相比，多出来的歌名 / 歌手 / 时长不是「顺便带上的」：
+ * QQ 与酷狗没有网易云的歌曲 id，只能按这三样去它们的搜索接口里匹配。
+ * 只给 id 的话，这两个源必然落空（界面上的表现就是「非官方源永远是 0%」）。
+ */
+export const LyricRequestSchema = z.object({
+  songId: z.number().int().positive(),
+  /** 歌名。跨平台匹配的第一判据。 */
+  title: z.string().default(''),
+  artists: z.array(z.string()).max(8).default([]),
+  /** 时长（毫秒）。跨平台匹配的第三判据。 */
+  durationMs: z.number().int().positive().optional(),
+});
+export type LyricRequest = z.input<typeof LyricRequestSchema>;
+
+/** 歌词来源的展示名与说明（设置页选择器与快捷设置页共用一份）。 */
+export const LYRIC_SOURCE_INFO = [
+  { id: 'ncm', label: '网易云音乐', note: '官方歌词，多数带逐字与翻译' },
+  { id: 'amll', label: 'AMLLDB', note: '社区的 TTML 逐词词库，打轴最准' },
+  { id: 'qq', label: 'QQ 音乐', note: '按歌名歌手跨平台匹配，多为逐行' },
+  { id: 'kugou', label: '酷狗音乐', note: '按歌名歌手跨平台匹配，KRC 逐字' },
+  { id: 'local', label: '本地导入', note: '你自己导入的歌词文件，优先级最高' },
+] as const;
+
+/** 导入歌词：只收**文本**（和自定义源插件同一个理由，不收 URL）。 */
+export const LyricImportRequestSchema = z.object({
+  songId: z.number().int().positive(),
+  fileName: z.string().min(1).max(200),
+  /** 歌词文件正文；KRC 这类二进制格式由渲染进程转成 base64 后再传。 */
+  content: z.string().min(1),
+  /** 内容是不是 base64（二进制格式）。 */
+  base64: z.boolean().default(false),
+});
+
+export const LyricRemoveRequestSchema = z.object({ songId: z.number().int().positive() });
+export type LyricImportRequest = z.input<typeof LyricImportRequestSchema>;
+export type LyricRemoveRequest = z.input<typeof LyricRemoveRequestSchema>;
+
+export const LyricImportsSchema = z.object({ songIds: z.array(z.number()) });
+
+/* ------------------------------------------------------------------ *
+ * 本地数据存储与缓存（用户第五轮第 2 条）
+ * ------------------------------------------------------------------ */
+
+export const CacheGroupSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  effect: z.string(),
+  bytes: z.number(),
+});
+
+export const DataStorageInfoSchema = z.object({
+  /** 应用数据根目录（`app.getPath('userData')`）。 */
+  userDataDir: z.string(),
+  /** 听歌数据（歌单缓存 / 播放历史 / 设置 / 账号）的目录。 */
+  dataDir: z.string(),
+  downloadDir: z.string(),
+  /** 本地曲库目录；设置里空着就是空串。 */
+  localLibraryDir: z.string(),
+  musicBytes: z.number(),
+  lyricsBytes: z.number(),
+  /** 可清理的那几项加起来。 */
+  cacheBytes: z.number(),
+  groups: z.array(CacheGroupSchema),
+  /** 只读展示的路径（用户自己的东西，不参与清理）。 */
+  musicPaths: z.array(z.object({ label: z.string(), path: z.string(), hint: z.string() })),
+});
+
+export const CacheClearRequestSchema = z.object({
+  /** 只清哪几组；不传表示清「可清理」的全部。 */
+  only: z.array(z.string()).max(8).optional(),
+});
+export type CacheClearRequest = z.input<typeof CacheClearRequestSchema>;
+
+export const CacheClearResultSchema = z.object({
+  freedBytes: z.number(),
+  info: DataStorageInfoSchema,
+});
+
+/** 编译期对齐检查：线上形状必须与领域模型一致。 */
+export type _DataStorageOk = AssertAssignable<
+  z.infer<typeof DataStorageInfoSchema>,
+  DataStorageInfo
+>;
+export type _CacheClearOk = AssertAssignable<
+  z.infer<typeof CacheClearResultSchema>,
+  CacheClearResult
+>;
+
 
 /* ------------------------------------------------------------------ *
  * 推荐页（M2.6）：私人雷达 / 推荐歌单 / 推荐新音乐
@@ -523,7 +705,13 @@ export const RuntimeInfoSchema = z.object({
   chromeVersion: z.string(),
   userDataDir: z.string(),
   safeStorage: z.enum(['available', 'unavailable', 'error']),
+  /** 当前**实际**是不是软件渲染（用户设置 + 自动降级 + 命令行开关，三者合起来的结果）。 */
   softwareRendering: z.boolean(),
+  /**
+   * GPU 进程崩溃的累计次数（用户第五轮第 17 条：要能一眼看出「卡是因为被自动降级了」）。
+   * 连续两次就会自动关掉硬件加速；跑满 90 秒没崩会清零，过期记录也不再算数。
+   */
+  gpuCrashes: z.number().int().min(0),
 });
 
 export const AccountCapabilitySchema = z.object({
@@ -597,11 +785,25 @@ export const SettingsSchema = z.object({
   /**
    * 歌词主题（用户 m08768 第 4 条）。键名与 folia-major 的目录名对齐：
    * `classic` 流光（我们的默认，也是最先复刻的那套）/ `fume` 浮名 / `cadenza` 心象 /
-   * `partita` 云阶 / `tilt` 倾诉 / `pendolo` 时计。
+   * `partita` 云阶 / `tilt` 倾诉 / `pendolo` 时计 / `monet` 莫奈（海报式：左歌词 + 右肖像）。
    */
-  lyricTheme: z.enum(['classic', 'fume', 'cadenza', 'partita', 'tilt', 'pendolo']),
+  lyricTheme: z.enum(['classic', 'fume', 'cadenza', 'partita', 'tilt', 'pendolo', 'monet', 'tempera', 'sonnet']),
   /** 歌词动效细调（字号 / 幅度 / 辉光 / 帧率上限……）；每个字段都真的改变画面。 */
   lyricTuning: LyricTuningSchema,
+  /** 歌词来源档位（第五轮第 3 条）：`auto` = 按匹配率自动挑，其余值钉死某一个源。 */
+  lyricSource: z.enum(['auto', 'ncm', 'amll', 'qq', 'kugou', 'local']),
+  /** 自动挑选时允许参与哪些源；关掉的源不发请求。 */
+  lyricSourceEnabled: z.object({
+    ncm: z.boolean(),
+    amll: z.boolean(),
+    qq: z.boolean(),
+    kugou: z.boolean(),
+    local: z.boolean(),
+  }),
+  /** 自动挑选的匹配率门槛 0~1：低于它宁可不显示，也不显示另一首歌的歌词。 */
+  lyricMinMatch: z.number().min(0).max(1),
+  /** 队列拼贴页的边缘暗角（用户第五轮第 9 条）；只在深色档生效。 */
+  edgeVignette: z.boolean(),
 });
 
 export const SettingsPatchSchema = SettingsSchema.partial();
@@ -710,6 +912,14 @@ export type _QualityLogOk = AssertAssignable<
 >;
 export type _CommentOk = AssertAssignable<z.infer<typeof CommentSchema>, Comment>;
 export type _CommentPageOk = AssertAssignable<z.infer<typeof CommentPageSchema>, CommentPage>;
+export type _CommentPostOk = AssertAssignable<
+  z.infer<typeof CommentPostResultSchema>,
+  CommentPostResult
+>;
+export type _CommentLikeOk = AssertAssignable<
+  z.infer<typeof CommentLikeResultSchema>,
+  CommentLikeResult
+>;
 export type _LyricLineOk = AssertAssignable<z.infer<typeof LyricLineSchema>, LyricLine>;
 export type _LyricOk = AssertAssignable<z.infer<typeof LyricSchema>, Lyric>;
 
@@ -742,7 +952,17 @@ export const CH = {
   ncmHealth: 'ncm:health',
   ncmSearch: 'ncm:search',
   ncmComments: 'ncm:comments',
+  /** 评论的写操作（用户第五轮第 8 条）：发表/回复、点赞。都要登录。 */
+  ncmCommentPost: 'ncm:comment-post',
+  ncmCommentLike: 'ncm:comment-like',
   ncmLyric: 'ncm:lyric',
+  /** 歌词多源（用户第五轮第 3 条）：列出「已导入的歌词」与导入/删除。 */
+  lyricsImports: 'lyrics:imports',
+  lyricsImport: 'lyrics:import',
+  lyricsRemove: 'lyrics:remove',
+  /** 本地数据存储与缓存（用户第五轮第 2 条）：算大小 / 一键清理。 */
+  dataStorage: 'data:storage-info',
+  dataClearCache: 'data:clear-cache',
   ncmLike: 'ncm:like',
   ncmLikeCheck: 'ncm:like-check',
   authQrKey: 'auth:qr-key',
@@ -818,8 +1038,37 @@ export interface RouteMap {
   [CH.ncmSearch]: { input: SearchRequest; output: SearchResult };
   /** 歌曲评论分页；第一页额外带热门评论。不需要登录。 */
   [CH.ncmComments]: { input: CommentsRequest; output: CommentPage };
-  /** 歌词（原文 + 翻译）。和评论一样**不需要登录**。 */
+  /** 歌词（原文 + 翻译 + 逐字）。和评论一样**不需要登录**；出参带上来源与匹配率。 */
   [CH.ncmLyric]: { input: LyricRequest; output: Lyric };
+  /** 发表评论 / 回复评论（需要登录）。 */
+  [CH.ncmCommentPost]: {
+    input: CommentPostRequest;
+    output: { commentId?: number; notice?: string };
+  };
+  /** 给评论点赞 / 取消点赞（需要登录）。 */
+  [CH.ncmCommentLike]: {
+    input: CommentLikeRequest;
+    output: { commentId: number; liked: boolean; likedCount: number };
+  };
+  /** 已导入歌词的歌曲 id 列表（「歌词」页显示条数、以及判断「这首歌有本地歌词吗」）。 */
+  [CH.lyricsImports]: { input: void; output: { songIds: number[] } };
+  /** 导入一份歌词文件（LRC / TTML / KRC / 纯文本）。同一首歌再导入就是覆盖。 */
+  [CH.lyricsImport]: {
+    input: z.input<typeof LyricImportRequestSchema>;
+    output: { songIds: number[] };
+  };
+  /** 删掉某一首歌的导入歌词。 */
+  [CH.lyricsRemove]: {
+    input: z.input<typeof LyricRemoveRequestSchema>;
+    output: { songIds: number[] };
+  };
+  /** 本地数据存储位置与占用（听歌数据 / 缓存 / 下载目录）。 */
+  [CH.dataStorage]: { input: void; output: DataStorageInfo };
+  /** 一键清理可清理的缓存；返回释放了多少与清理后的最新占用。 */
+  [CH.dataClearCache]: {
+    input: z.input<typeof CacheClearRequestSchema>;
+    output: CacheClearResult;
+  };
   /** 喜欢/取消喜欢，返回这首歌**最新**的状态（内部就是再查一次 like-check）。 */
   [CH.ncmLike]: { input: LikeRequest; output: LikeState };
   /** 批量查「这些歌里哪些已喜欢」。靠 cookie 认人，所以需要登录。 */
@@ -934,6 +1183,11 @@ export const INPUT_SCHEMAS: Record<string, z.ZodType> = {
   [CH.ncmSearch]: SearchRequestSchema,
   [CH.ncmComments]: CommentsRequestSchema,
   [CH.ncmLyric]: LyricRequestSchema,
+  [CH.ncmCommentPost]: CommentPostRequestSchema,
+  [CH.ncmCommentLike]: CommentLikeRequestSchema,
+  [CH.lyricsImport]: LyricImportRequestSchema,
+  [CH.lyricsRemove]: LyricRemoveRequestSchema,
+  [CH.dataClearCache]: CacheClearRequestSchema,
   [CH.ncmLike]: LikeRequestSchema,
   [CH.ncmLikeCheck]: LikeCheckRequestSchema,
   [CH.authQrCheck]: QrCheckRequestSchema,
@@ -968,6 +1222,13 @@ export const OUTPUT_SCHEMAS: Record<string, z.ZodType> = {
   [CH.ncmSearch]: SearchResultSchema,
   [CH.ncmComments]: CommentPageSchema,
   [CH.ncmLyric]: LyricSchema,
+  [CH.ncmCommentPost]: CommentPostResultSchema,
+  [CH.ncmCommentLike]: CommentLikeResultSchema,
+  [CH.lyricsImports]: LyricImportsSchema,
+  [CH.lyricsImport]: LyricImportsSchema,
+  [CH.lyricsRemove]: LyricImportsSchema,
+  [CH.dataStorage]: DataStorageInfoSchema,
+  [CH.dataClearCache]: CacheClearResultSchema,
   [CH.ncmLike]: LikeStateSchema,
   [CH.ncmLikeCheck]: LikeStateSchema,
   [CH.authQrKey]: QrLoginTicketSchema,

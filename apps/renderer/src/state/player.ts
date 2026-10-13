@@ -11,9 +11,19 @@ import {
   type AdvanceOrigin,
   type QueueState,
 } from '@pi/player-core';
-import type { PlayMode, ResolvedAudio, ResolveAttempt, Settings, Song } from '@pi/shared';
+import type {
+  PlayMode,
+  ResolvedAudio,
+  ResolveAttempt,
+  Settings,
+  Song,
+} from '@pi/shared';
+
+/** 设置里那一档歌词源（`Settings['lyricSource']`），避免为一处类型再引一个名字。 */
+type LyricSourceMode = Settings['lyricSource'];
 import { CH, errorMessage, invoke } from '../bridge';
 import { applyVolume, getAudio } from '../lib/audio-engine';
+import { LYRIC_GATE_MS, prefetchLyric } from '../lib/lyric-prefetch';
 import { useNowPlaying } from './nowPlaying';
 
 /**
@@ -48,6 +58,15 @@ interface PlayerState {
   error: string | null;
   /** 一次性提示（例如「已跳过无法播放的《X》」），播放成功后自动清空。 */
   notice: string | null;
+  /**
+   * 正在等歌词（用户第五轮第 10 条）。
+   *
+   * 音源已经拿到了，但为了让歌词和第一句同时出现，这里先不出声；
+   * 界面按它显示顶部灵动岛「少女祈祷中⭐」。`true` 的时间不会超过 `LYRIC_GATE_MS`。
+   */
+  loadingGate: boolean;
+  /** 当前生效的歌词源档位（`hydrate` 时从设置里抄一份）：预取歌词要用它拼缓存键。 */
+  lyricMode: LyricSourceMode;
   /** 本轮被判过「不可播」的歌曲 id，避免反复重试同一首。 */
   unplayable: number[];
   positionMs: number;
@@ -112,6 +131,38 @@ function persistVolume(volume: number): void {
   }, 400);
 }
 
+/**
+ * 「等歌词」这道闸（用户第五轮第 10 条）。
+ *
+ * 返回 `{ done, settled }`：`done` 可以反复 `await`（同一份 promise），
+ * `settled` 让调用方在音源已经解析完之后知道「歌词是不是早就到了」——
+ * 早就到了就不必亮灵动岛，也就不会有一下「闪一下又不闪」的白光。
+ */
+function waitForLyric(
+  song: Song,
+  mode: LyricSourceMode,
+): { done: Promise<void>; get settled(): boolean } {
+  let settled = false;
+  const lyric = prefetchLyric(song, mode).then(() => {
+    settled = true;
+  });
+  const done = Promise.race([
+    lyric,
+    new Promise<void>((resolve) => {
+      setTimeout(resolve, LYRIC_GATE_MS);
+    }),
+  ]);
+  void done.then(() => {
+    settled = true;
+  });
+  return {
+    done,
+    get settled() {
+      return settled;
+    },
+  };
+}
+
 async function playElement(): Promise<void> {
   try {
     await getAudio().play();
@@ -149,6 +200,21 @@ export const usePlayer = create<PlayerState>((set, get) => {
     });
 
     try {
+      /*
+       * 用户第五轮第 10 条：**歌先别唱，等歌词**。
+       *
+       * 原来音源一解析完就 `play()`，于是「前奏已经过去两句、歌词才刚画出来」——
+       * 用户听到的正是「一开始就唱、词没加载好」。改法是把两件事**并行**跑：
+       *   ① 音源解析（`playerResolve`，原来就有）；
+       *   ② 歌词预取（`prefetchLyric`，写进 `useLyric` 同一个缓存键）。
+       * 音源拿到之后**先不播**，等 ② 有个结果（或超过 `LYRIC_GATE_MS` 的闸门）再出声；
+       * 界面这一段时间显示顶部灵动岛「少女祈祷中⭐」（`loadingGate`）。
+       *
+       * 并行而不是串行很重要：歌词最慢的那条路（五个镜像全超时）本来就要好几秒，
+       * 串起来等于把这笔时间叠加到「点了歌到听见声」上。
+       */
+      const lyricGate = waitForLyric(song, get().lyricMode);
+
       const result = await invoke(CH.playerResolve, { song });
       // 解析期间用户可能已经点了别的歌，此时这一轮结果必须丢弃。
       if (currentId(get().queue) !== song.id) return;
@@ -164,16 +230,24 @@ export const usePlayer = create<PlayerState>((set, get) => {
         return;
       }
 
+      if (!lyricGate.settled) set({ loadingGate: true });
+      await lyricGate.done;
+      // 等歌词期间用户可能又点了别的歌 —— 同样丢弃这一轮。
+      if (currentId(get().queue) !== song.id) {
+        set({ loadingGate: false });
+        return;
+      }
+
       const element = getAudio();
       element.src = result.src;
       // 元素从这一刻起指的是这一首，之后的 timeupdate 才属于它。
       clockArmed = true;
       applyVolume(get().volume, get().muted);
-      set({ src: result.src, audio: result.audio, status: 'playing', notice: null });
+      set({ src: result.src, audio: result.audio, status: 'playing', notice: null, loadingGate: false });
       skipGuard = 0;
       await playElement();
     } catch (error) {
-      set({ status: 'error', error: errorMessage(error) });
+      set({ status: 'error', error: errorMessage(error), loadingGate: false });
     }
   }
 
@@ -203,6 +277,8 @@ export const usePlayer = create<PlayerState>((set, get) => {
     src: null,
     error: null,
     notice: null,
+    loadingGate: false,
+    lyricMode: 'auto',
     unplayable: [],
     positionMs: 0,
     durationMs: 0,
@@ -212,7 +288,8 @@ export const usePlayer = create<PlayerState>((set, get) => {
 
     hydrate: (settings) => {
       applyVolume(settings.volume, get().muted);
-      set({ volume: settings.volume, mode: settings.playMode });
+      // 顺带记下歌词源档位：等歌词时用它拼缓存键（必须和 `useLyric` 同一份，否则白等）。
+      set({ volume: settings.volume, mode: settings.playMode, lyricMode: settings.lyricSource });
     },
 
     restoreLast(song, songs) {

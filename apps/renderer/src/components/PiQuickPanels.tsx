@@ -1,13 +1,16 @@
-import { useEffect, useState } from 'react';
+﻿import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { QUALITY_LABEL, QUALITY_REQUIRES_VIP } from '@pi/shared';
 import type { LyricTheme, Quality, ThemeMode } from '@pi/shared';
+import { LYRIC_SOURCE_INFO } from '@pi/ipc';
 import { AccentPicker } from './AccentPicker';
 import { Icon } from './Icons';
 import type { IconName } from './Icons';
+import { LyricSourcePicker } from './LyricSourcePicker';
 import type { AccentMode } from '../lib/accent';
 import { coverAt } from '../lib/cover';
-import { useAccount, usePatchSettings, useSettings } from '../lib/queries';
+import { useAccount, useLyric, usePatchSettings, useSettings } from '../lib/queries';
+import { usePlayer } from '../state/player';
 import { useUi } from '../state/ui';
 import '../styles/quick-panels.css';
 // 账号行的皮肤单独一张表（用户 m02213 第 7 条重做）：放在 quick-panels.css **之后**导入，
@@ -220,6 +223,12 @@ const QUICK_LYRIC_THEMES: readonly { key: LyricTheme; short: string; icon: IconN
   { key: 'partita', short: '云阶', icon: 'bars' },
   { key: 'tilt', short: '倾诉', icon: 'artist' },
   { key: 'pendolo', short: '时计', icon: 'clock' },
+  // 复刻 folia 的 `monet`（莫奈，海报式：左列歌词轨道 + 右列肖像 + 左下音频波形）。
+  // 键仍来自 `@pi/shared` 的 `LyricTheme`：以后再加主题，这里忘写会类型报错。
+  { key: 'monet', short: '莫奈', icon: 'album' },
+  // 复刻 folia 的 `tempera`（凝彩，Pixi 色块构图 PV）。
+  { key: 'tempera', short: '凝彩', icon: 'bars' },
+  { key: 'sonnet', short: '商籁', icon: 'bars' },
 ];
 
 /**
@@ -305,6 +314,13 @@ export function PiQuickSettingsCard({
   const settings = useSettings();
   const patch = usePatchSettings();
   const account = useAccount();
+  /**
+   * 当前这首歌实际用的是哪一个歌词源（用户第五轮第 4 条把「歌词来源」併进这一页之后
+   * 顶部那行要能说清「自动匹配挑中了谁」）。`useLyric` 与播放页共用同一个
+   * react-query 缓存键，所以这里不会多打一次接口。
+   */
+  const currentSong = usePlayer((state) => state.currentSong);
+  const usedSource = useLyric(currentSong).data?.source;
   // 「去登录」直接用全应用那个登录浮层（`components/LoginDialog.tsx`，同一份 `useUi`），
   // 不在卡片里另开一套登录入口——`AccountCard` 也是这么做的。
   const openLogin = useUi((state) => state.openLogin);
@@ -463,6 +479,28 @@ export function PiQuickSettingsCard({
                 </button>
               ))}
             </div>
+
+            {/*
+              歌词来源（用户第五轮第 4 条：「歌词来源这一栏移到音质选择下面去」）。
+              它原来占的是自己一整页，现在併进「音质」页、紧跟在六颗音质按键下面：
+              这两件事在界面上本来就是同一类 ——「这首歌用什么听、歌词从哪来」。
+              平时只占一行图标（见 `LyricSourcePicker` 的紧凑形态），点图标才展开源列表。
+            */}
+            <div className="pi-quick-head" data-quick-switch="lyric-source">
+              <span className="pi-quick-head__label">歌词来源</span>
+              <span
+                className="pi-quick-head__value"
+                data-quick-lyric-source={usedSource ?? value.lyricSource}
+              >
+                {value.lyricSource === 'auto'
+                  ? usedSource === undefined
+                    ? '自动匹配'
+                    : `自动 · 现用 ${LYRIC_SOURCE_INFO.find((entry) => entry.id === usedSource)?.label ?? usedSource}`
+                  : (LYRIC_SOURCE_INFO.find((entry) => entry.id === value.lyricSource)?.label ??
+                    value.lyricSource)}
+              </span>
+            </div>
+            <LyricSourcePicker variant="compact" />
           </section>
 
           <section

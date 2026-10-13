@@ -77,14 +77,22 @@ export function BottomBar(): ReactNode {
       if (start === null) return;
       const target = event.target;
       /*
-       * 播放 / 上下首 / 音量 / 进度条自己有事要做，点到它们就不抢。
-       * 第二十二轮第 3 条之后音量条是**自己接指针的 div**（`components/VolumeSlider.tsx`，
-       * 不再是 `<input type=range>`），所以除了控件标签还要显式认 `[data-home-volrange]`：
-       * 原地按一下音量条是「设音量」，不该顺带被当成「点空白回播放页」。
+       * **只有两个控件不抢这一下**（用户第五轮第 15 条）。
+       *
+       * 用户原话：「在歌单选择页或者歌曲选择页点击底部进度条的暂停键，不会回到歌曲播放页，
+       * 点击其他地方会回到」——所以暂停/播放、上一首/下一首这些**按键**也要回播放页。
+       * 这条底栏只挂在「我的喜欢」页与歌曲浮层上（`MinePage` / `SongListOverlay`），
+       * 播放页用的是另一条 `HomeBar`，所以这里让按键回播放页不会把「点播放键变成跳页」带过去。
+       *
+       * 仍然让开的是**拖拽类控件**：
+       *   - `input[type=range]`（进度条）：拖进度条 / 原地按一下设位置，都不该被拽回播放页；
+       *   - `[data-home-volrange]`：音量条是自接指针的 div（`components/VolumeSlider.tsx`），
+       *     同上。
+       * 原来的判定是 `button, input, select, a, …` 一把全让，于是暂停键永远回不去。
        */
       if (
         target instanceof HTMLElement &&
-        target.closest('button, input, select, a, [data-home-volrange], [role="slider"]') !== null
+        target.closest('input, [data-home-volrange], [role="slider"]') !== null
       ) {
         return;
       }

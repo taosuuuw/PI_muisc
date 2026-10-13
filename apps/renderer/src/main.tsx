@@ -1,8 +1,9 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClientProvider } from '@tanstack/react-query';
 import { App } from './App';
 import { getBridge } from './bridge';
+import { queryClient } from './lib/query-client';
 import './styles/tokens.css';
 import './styles/global.css';
 import './styles/search-overlay.css';
@@ -19,6 +20,12 @@ import './styles/immersive-background.css';
 // 用户 m08768 第 4 条：歌词舞台的另外五套主题（云阶/倾诉/时计 与 浮名/心象）。
 import './styles/lyric-themes.css';
 import './styles/lyric-moods.css';
+// 复刻 folia 的 `monet`（莫奈）：左列标题 + 歌词轨道、右列肖像、左下音频条的样式。
+import './styles/lyric-monet.css';
+// 复刻 folia 的 `tempera`（凝彩）：Pixi 色块构图 PV 的舞台承载样式。
+import './styles/lyric-tempera.css';
+// 复刻 folia 的 `sonnet`（商籁）：Pixi 日式 MG 分镜 PV 的舞台承载样式。
+import './styles/lyric-sonnet.css';
 // 用户第八轮第 1/6/7 条：无操作自动隐藏、设置框浮层、歌曲卡片列表浮层、悬浮球塌缩。
 // 必须放在最后：它要盖过 global.css 里名片/进度条/悬浮球/歌单详情的既有取值。
 import './styles/overlays.css';
@@ -38,16 +45,6 @@ import './styles/download-list.css';
 // 同样是新 class 前缀（`.pi-picker*`），没有历史取值要覆盖；放末尾只为顺序稳定——
 // 那条要压 `.pi-home__toast` 的规则自带两个类名（`.pi-home__toast.pi-picker-toast`），不吃顺序。
 import './styles/playlist-picker.css';
-
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      retry: 1,
-      refetchOnWindowFocus: false,
-      staleTime: 30_000,
-    },
-  },
-});
 
 const container = document.getElementById('root');
 if (!container) {

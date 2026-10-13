@@ -2858,6 +2858,49 @@ input {
 .pi-home__status--error {
   color: #e5484d;
 }
+/*
+ * 「少女祈祷中⭐」的加载灵动岛（用户第五轮第 5 / 6 / 10 条）。
+ *
+ * 观感与 `styles/style-toast.css` 那条切风格提示**刻意一致**（近黑玻璃、四角全圆、
+ * 一道内高光、柔和落影），文案由 `HomePage` 的 `LoadingIsland` 给。
+ *
+ * 它总是**浮在窗口顶部居中**（`position: fixed`），并且由 `createPortal` 挂到
+ * `document.body` 上 —— 这不是随意选的落点：用户第五轮第 13 条看到的「灵动岛跑到
+ * 歌曲卡片里」，根因就是原来的落点 `.pi-home__card` 带着 `transform: translateY(46px)`，
+ * 而**带 transform 的祖先会成为 fixed 的包含块**，于是 `top: 14px` 变成「贴着名片顶 14px」。
+ * 挂到 body 之后视口里再没有这样的祖先，`fixed` 就真的是视口。
+ *
+ * 不吃指针事件：它只是「有活儿在干」的信号。
+ */
+.pi-loading-island {
+  pointer-events: none;
+  position: fixed;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 60;
+  display: inline-flex;
+  align-items: center;
+  padding: 7px 16px;
+  border-radius: 999px;
+  background: color-mix(in srgb, #05070a 86%, transparent);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, #ffffff 14%, transparent),
+    0 10px 26px rgb(0 0 0 / 0.36);
+  color: #f4f6f8;
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  animation: pi-loading-island-in 0.24s cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+
+@keyframes pi-loading-island-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -8px) scale(0.94);
+  }
+}
 .pi-home__status-dim {
   color: var(--pi-text-tertiary);
 }

@@ -36,6 +36,8 @@ import {
   type AccountCapability,
   type AudioProbe,
   type CommentPage,
+  type CommentLikeResult,
+  type CommentPostResult,
   type LxPluginSummary,
   type Lyric,
   type QrCheckCode,
@@ -53,6 +55,18 @@ import {
 import { MediaServer } from './media-server.js';
 import { DownloadsManager, findPlayableDownload } from './downloads.js';
 import { listLocalLibrary } from './library.js';
+import { LyricResolver } from './lyrics/resolver.js';
+import { LocalLyricStore } from './lyrics/store.js';
+import { createNetworkProviders } from './lyrics/sources.js';
+import { splitPlainText } from './lyrics/parsers.js';
+import { decryptKrc } from './lyrics/kugou-krc.js';
+import {
+  detectLyricFormat,
+  parseLrcOrKrcLike,
+  parseTtmlFile,
+} from './lyrics/file-formats.js';
+import { DataStorage } from './data-store.js';
+import type { LyricQuery } from './lyrics/types.js';
 
 /** 存储 key 集中在此，避免字符串散落各处拼错。 */
 export const KEYS = {
@@ -172,6 +186,17 @@ export class Services {
   /** 本地曲库的内存副本；扫描只读文件名，不含音频标签。 */
   private localLibrary = new LocalLibrary([]);
 
+  /**
+   * 歌词多源（用户第五轮第 3 条）。
+   *
+   * 五个源（网易云 / AMLLDB / QQ / 酷狗 / 本地导入）在这里合成一条责任链：
+   * 并行问、按匹配率挑、把每个源的结果如实报给界面。`store` 是用户导入的那一份的落盘位置。
+   */
+  private readonly lyrics: LyricResolver;
+  readonly lyricStore: LocalLyricStore;
+  /** 本地数据存储与缓存（用户第五轮第 2 条）：算占用、清缓存。 */
+  readonly data: DataStorage;
+
   private settingsCache: Settings | undefined;
   private session: StoredSession | undefined;
   private profile: StoredProfile | undefined;
@@ -201,6 +226,18 @@ export class Services {
       getBaseUrl: () => this.ncmHost.baseUrl,
       getCookie: () => this.session?.cookie,
     });
+
+    this.lyricStore = new LocalLyricStore(userDataDir);
+    this.lyrics = new LyricResolver(createNetworkProviders(this.ncm), this.lyricStore);
+    this.data = new DataStorage(
+      {
+        lyrics: this.lyricStore,
+        downloadDir: () => this.downloadDir(),
+        localLibraryDir: async () => (await this.getSettings()).localLibraryDir,
+        dataDir: () => path.join(userDataDir, 'data'),
+      },
+      userDataDir,
+    );
 
     this.media = new MediaServer({
       lookup: (key) => this.lookupMedia(key),
@@ -768,13 +805,134 @@ export class Services {
   }
 
   /**
-   * 歌曲歌词（`/lyric/new`）。
+   * 发表评论 / 回复评论（用户第五轮第 8 条）。
+   *
+   * 必须先登录：网易云的写接口靠 cookie 认人，未登录会回 301/250。
+   * 这里在发请求**之前**就 `requireUserId()`，好让界面拿到的是「请先登录」这句人话，
+   * 而不是一个 250 状态码。
+   */
+  async postComment(args: {
+    songId: number;
+    content: string;
+    replyTo?: { commentId: number; nickname?: string };
+  }): Promise<CommentPostResult> {
+    await this.requireUserId();
+    return this.ncm.postComment(args.songId, args.content, args.replyTo);
+  }
+
+  /**
+   * 给评论点赞 / 取消点赞（用户第五轮第 8 条）。
+   *
+   * 上游**不回权威赞数**，所以这里把客户端显示的那一份 ±1 当成结果交回去：
+   * 界面立刻能看到数字动了，不必等一次列表重拉（重拉还会把用户滚动的位置冲掉）。
+   * 客户端没给 `likedCount` 时按 0 起算，界面上至少不会变成负数。
+   */
+  async likeComment(args: {
+    songId: number;
+    commentId: number;
+    like: boolean;
+    likedCount?: number;
+  }): Promise<CommentLikeResult> {
+    await this.requireUserId();
+    await this.ncm.likeComment(args.songId, args.commentId, args.like);
+    const base = args.likedCount ?? 0;
+    return {
+      commentId: args.commentId,
+      liked: args.like,
+      likedCount: Math.max(0, base + (args.like ? 1 : -1)),
+    };
+  }
+
+  /**
+   * 歌曲歌词（多源解析，用户第五轮第 3 条）。
    *
    * **不需要登录**——和看评论是同一个理由：未登录也该能看歌词。
-   * 这里如实转发上游的 `hasLyric`，不把「这首歌本来就没歌词」包装成错误。
+   *
+   * 与旧版的区别：不再只问网易云。`title` / `artists` / `durationMs` 是给跨平台匹配用的
+   * （QQ 与酷狗没有网易云的 id，只能按这三样找同一首歌），选源档位与门槛来自设置。
+   * 出参除了歌词本身，还带**每个源的结果**：界面上要能说清「现在这份是谁给的、匹配到多少」。
    */
-  async songLyric(songId: number): Promise<Lyric> {
-    return this.ncm.lyric(songId);
+  async songLyric(query: LyricQuery): Promise<Lyric> {
+    const settings = await this.getSettings();
+    return this.lyrics.resolve(query, {
+      mode: settings.lyricSource,
+      enabled: settings.lyricSourceEnabled,
+      minMatch: settings.lyricMinMatch,
+    });
+  }
+
+  /**
+   * 导入一份歌词文件（LRC / TTML / KRC / 纯文本）。
+   *
+   * 文件解析留在主进程：一是渲染进程拿不到 Node 的 zlib（KRC 要解压），
+   * 二是解析结果本来就要落到 userData 里，何必先穿过一次 IPC 再走回来。
+   * 格式**先看内容再看扩展名**：用户把 TTML 存成 `.txt` 很常见，
+   * 而 KRC 有明确的魔数 `krc1`，认错了会解出一屏乱码。
+   */
+  async importLyric(args: {
+    songId: number;
+    fileName: string;
+    content: string;
+    base64: boolean;
+  }): Promise<number[]> {
+    const buffer = args.base64 ? Buffer.from(args.content, 'base64') : undefined;
+    const text = buffer === undefined ? args.content : buffer.toString('utf8');
+    const format = detectLyricFormat(args.fileName, text, buffer);
+
+    let lines: Lyric['lines'] = [];
+    let translated: Lyric['translated'] = [];
+    let roman: Lyric['roman'] = [];
+    let raw = text;
+
+    if (format === 'krc' && buffer !== undefined) {
+      const xml = decryptKrc(buffer);
+      if (xml === undefined) throw new Error('这个 .krc 文件解不开（可能不是酷狗的 KRC）。');
+      raw = xml;
+      const parsed = parseLrcOrKrcLike(xml);
+      lines = parsed.lines;
+      translated = parsed.translated;
+      roman = parsed.roman;
+    } else if (format === 'ttml') {
+      const parsed = parseTtmlFile(text);
+      lines = parsed.lines;
+      translated = parsed.translated;
+      roman = parsed.roman;
+    } else {
+      const parsed = parseLrcOrKrcLike(text);
+      lines = parsed.lines;
+      translated = parsed.translated;
+      roman = parsed.roman;
+    }
+
+    // 连时间标签都没有：当纯文本收下（按行铺开），至少让用户看得见自己导入的字。
+    if (lines.length === 0) {
+      lines = splitPlainText(raw);
+      if (lines.length === 0) throw new Error('这份文件里没有可用的歌词内容。');
+    }
+
+    await this.lyricStore.save({
+      songId: args.songId,
+      fileName: args.fileName,
+      format,
+      lines,
+      translated,
+      roman,
+      importedAt: Date.now(),
+      raw: raw.slice(0, 200_000),
+    });
+    // 导入之后必须让缓存作废：否则刚刚导进来的这一份要等 30 分钟才生效。
+    this.lyrics.clearCache();
+    return this.lyricStore.list();
+  }
+
+  async removeLyric(songId: number): Promise<number[]> {
+    await this.lyricStore.remove(songId);
+    this.lyrics.clearCache();
+    return this.lyricStore.list();
+  }
+
+  async listLyricImports(): Promise<number[]> {
+    return this.lyricStore.list();
   }
 
   /**

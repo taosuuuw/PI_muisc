@@ -13,8 +13,11 @@ import type { ComponentType } from 'react';
 import type { LyricTheme } from '@pi/shared';
 import { CadenzaTheme } from './CadenzaTheme';
 import { FumeTheme } from './FumeTheme';
+import { MonetTheme } from './MonetTheme';
 import { PendoloTheme } from './PendoloTheme';
 import { PartitaTheme } from './PartitaTheme';
+import { TemperaTheme } from './TemperaTheme';
+import { SonnetTheme } from './SonnetTheme';
 import { TiltTheme } from './TiltTheme';
 import type { LyricThemeProps } from './types';
 
@@ -25,6 +28,9 @@ export const IMPLEMENTED_LYRIC_THEMES: readonly LyricTheme[] = [
   'pendolo',
   'fume',
   'cadenza',
+  'monet',
+  'tempera',
+  'sonnet',
 ];
 
 export const LYRIC_THEME_COMPONENTS: Readonly<
@@ -37,6 +43,14 @@ export const LYRIC_THEME_COMPONENTS: Readonly<
   // `styles/lyric-themes.css` 管前三套，`styles/lyric-moods.css` 管这两套）。
   fume: FumeTheme,
   cadenza: CadenzaTheme,
+  // 复刻 folia 的 `monet`（海报式：左列标题 + 歌词轨道，右列肖像，左下音频条）：
+  // 样式另开一份 `styles/lyric-monet.css`。
+  monet: MonetTheme,
+  // 复刻 folia 的 `tempera`（凝彩：Pixi 色块构图 PV）。本批只画 split 族 13 种构图，
+  // 其余十二族走兜底构图（`temperaFrame.ts` 的 `fallback` 标记），样式见 `styles/lyric-tempera.css`。
+  tempera: TemperaTheme,
+  // 复刻 folia 的 `sonnet`（商籁：Pixi 日式 MG 分镜 PV）。
+  sonnet: SonnetTheme,
 };
 
 export function getLyricThemeComponent(
@@ -45,5 +59,5 @@ export function getLyricThemeComponent(
   return LYRIC_THEME_COMPONENTS[theme];
 }
 
-export { CadenzaTheme, FumeTheme, PartitaTheme, PendoloTheme, TiltTheme };
+export { CadenzaTheme, FumeTheme, MonetTheme, PartitaTheme, PendoloTheme, SonnetTheme, TemperaTheme, TiltTheme };
 export * from './types';

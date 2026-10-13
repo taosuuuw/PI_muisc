@@ -110,6 +110,35 @@ function persistUiStyle(style: UiStyle): void {
 }
 
 /**
+ * 首次使用指引的 localStorage 键（用户第五轮第 1 条）。
+ *
+ * 存的是**版本号**而不是布尔：以后指引内容大改时把版本号抬一档，
+ * 老用户会再看到一次新的介绍，而不是永远错过。
+ */
+const ONBOARDED_KEY = 'pi.onboarded';
+const ONBOARDING_VERSION = '1';
+
+/** 这个用户看过指引了吗（首次启动时若不是这个版本就自动弹一次）。 */
+export function hasSeenGuide(): boolean {
+  if (typeof window === 'undefined') return true;
+  try {
+    return window.localStorage.getItem(ONBOARDED_KEY) === ONBOARDING_VERSION;
+  } catch {
+    return true;
+  }
+}
+
+/** 记下「看过了」。 */
+export function markOnboarded(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(ONBOARDED_KEY, ONBOARDING_VERSION);
+  } catch {
+    /* 存储不可用时每次启动都会再弹一次；比起直接不弹，这个失败方向更安全 */
+  }
+}
+
+/**
  * 应用主题色（用户第二十一轮第 5 条）也存本机：`pi.accent`，内容是
  * `{"mode":"sky|mono|custom","color":"#rrggbb"}`。
  *
@@ -289,6 +318,20 @@ interface UiState {
   settingsOpen: boolean;
   openSettings: () => void;
   closeSettings: () => void;
+
+  /**
+   * 首次使用指引（用户第五轮第 1 条）。
+   *
+   * 为什么状态放在这里、而不是组件自己的 `useState`：入口有三个 ——
+   * 首次启动自动弹、设置页「重新看一遍」、以及 Esc 关掉；
+   * 而且它必须能**盖在任何页面之上**（用户在歌单页摸不着头脑时也该叫得出来）。
+   * 「看过没有」记在 localStorage（`pi.onboarded`），与 `uiStyle` 同一套路。
+   */
+  guideOpen: boolean;
+  guideStep: number;
+  openGuide: (step?: number) => void;
+  setGuideStep: (step: number) => void;
+  closeGuide: () => void;
 
   /** 完整导航抽屉（设置子菜单里的「账号」进这里，那里是全应用唯一的登录入口）。 */
   navOpen: boolean;
@@ -515,6 +558,18 @@ export const useUi = create<UiState>((set) => ({
   // 注意：`openSettings` 只负责「框流出来」这一段；调用方（抽屉项 / 悬浮 PI 键的快捷设置卡）自己决定要不要先收起自己。
   openSettings: () => set({ settingsOpen: true }),
   closeSettings: () => set({ settingsOpen: false }),
+
+  // 首次使用指引（用户第五轮第 1 条）。初值 false：**要不要自动弹**由组件按
+  // localStorage 决定（首次才弹），这样「想再看一遍」和「第一次自动弹」走同一条路。
+  guideOpen: false,
+  guideStep: 0,
+  openGuide: (step = 0) =>
+    set({ guideOpen: true, guideStep: step, settingsOpen: false, navOpen: false }),
+  setGuideStep: (guideStep) => set({ guideStep }),
+  closeGuide: () => {
+    markOnboarded();
+    set({ guideOpen: false });
+  },
 
   folds: {},
   setFold: (id, open) => set((state) => ({ folds: { ...state.folds, [id]: open } })),

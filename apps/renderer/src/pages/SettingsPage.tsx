@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQueryClient, useQuery } from '@tanstack/react-query';
 import { MODE_LABEL, PLAYLIST_MODES } from '@pi/player-core';
 import {
   DEFAULT_LYRIC_TUNING,
@@ -16,7 +16,9 @@ import { AccentPicker } from '../components/AccentPicker';
 import { AccountCard } from '../components/AccountCard';
 import { SettingsFrame, type SettingsTabId } from '../components/SettingsFrame';
 import { QualityLogPanel } from '../components/QualityLogPanel';
-import { errorMessage } from '../bridge';
+import { LyricSourcePicker } from '../components/LyricSourcePicker';
+import { DataStorageSection } from '../components/DataStorageSection';
+import { CH, errorMessage, invoke } from '../bridge';
 import { SHORTCUT_DEFINITIONS, findConflict, formatBinding, shortcutLabel } from '../lib/shortcuts';
 import {
   useImportPlugin,
@@ -407,6 +409,11 @@ function PlaybackTab(): ReactNode {
       </section>
 
       <DownloadDirSection />
+
+      {/* 用户第五轮第 2 条：「在详情设置页里加上本地数据存储位置（这个是关于听歌和使用缓存的），
+          并且加上应用缓存大小和一键清理按键」。挂在「播放」页底部：
+          它讲的就是「听歌留下的东西」，和音量 / 播放模式 / 下载目录是同一类。 */}
+      <DataStorageSection />
     </div>
   );
 }
@@ -506,6 +513,16 @@ function UiTab(): ReactNode {
   const settings = useSettings();
   const patch = usePatchSettings();
   /*
+   * 当前**实际**渲染方式（用户第五轮第 17 条）：`appInfo` 里那两个数就是
+   * 「卡是因为被自动降级成软件渲染了」的直接证据，所以这一行要显示出来。
+   * 与 `WindowControls` 用的是同一个 query key，不会多打一次 IPC。
+   */
+  const appInfo = useQuery({
+    queryKey: ['appInfo'],
+    queryFn: () => invoke(CH.appInfo),
+    staleTime: 60_000,
+  });
+  /*
    * 应用主题色（用户第二十一轮第 5 条）：它和 `uiStyle` 一样只存本机
    * （`state/ui.ts` 的 `pi.accent`），所以不走 `patch.mutate`，直接读 zustand。
    * 真正把它变成 CSS 变量的是 `App.tsx` 的 `useAccent`。
@@ -536,6 +553,56 @@ function UiTab(): ReactNode {
             onChange={(next) => patch.mutate({ theme: next })}
           />
         </div>
+
+        {/*
+          用户第五轮第 9 条（参考图给的就是这一条的样子，文案逐字照抄）：
+          「边缘暗角 / 在队列拼贴页面四周加一层淡淡的暗角，让视线落在中间的海报上。」
+          **只在深色档生效**（用户明确要求），判定在 `styles/song-collage.css` 里按
+          `<html data-theme>` 做——这里不做分叉，免得出现「系统切亮色了、暗角还挂着」。
+        */}
+        <div className="pi-setting" data-edge-vignette-setting="true">
+          <span>
+            <span
+              className="pi-setting__title"
+              title="只在深色模式下生效（亮色档压暗四周会显得脏）。打开后鼠标悬停在某一格上，那一格还会亮起来。"
+            >
+              边缘暗角
+            </span>
+            <span className="pi-setting__hint">
+              在队列拼贴页面四周加一层淡淡的暗角，让视线落在中间的海报上（仅深色模式）。
+            </span>
+          </span>
+          <input
+            className="pi-check"
+            type="checkbox"
+            data-edge-vignette="true"
+            aria-label="边缘暗角"
+            checked={value.edgeVignette !== false}
+            disabled={patch.isPending}
+            onChange={(event) => patch.mutate({ edgeVignette: event.target.checked })}
+          />
+        </div>
+
+        {/*
+          用户第五轮第 19 条：「这个开关直接去掉，默认硬件」。
+          所以这里**没有开关**了，只留一行**状态**：平时是一句很轻的「当前用硬件加速」，
+          真被自动降级成软件渲染时才变红——那种情况下用户得知道「卡」是因为什么。
+          判定与自愈都在主进程（`bootstrap.json` + `index.ts` 的 readFlags/scheduleGpuCrashReset）。
+        */}
+        {appInfo.data?.softwareRendering ? (
+          <div className="pi-setting" data-hwaccel-setting="true">
+            <span>
+              <span className="pi-setting__title">渲染方式</span>
+              <span
+                className="pi-setting__hint"
+                data-hwaccel-state="software"
+                style={{ color: '#e5484d' }}
+              >
+                {`当前用软件渲染（会卡）· GPU 累计崩溃 ${appInfo.data.gpuCrashes} 次 · 重启会自动重试硬件加速`}
+              </span>
+            </span>
+          </div>
+        ) : null}
 
         <div className="pi-setting" data-accent-setting="true">
           <span>
@@ -621,7 +688,38 @@ function UiTab(): ReactNode {
       </section>
 
       <ShortcutSettingsCard />
+
+      <GuideSettingsCard />
     </div>
+  );
+}
+
+/**
+ * 「再看一遍使用指引」（用户第五轮第 1 条）。
+ *
+ * 指引本身第一次启动会自动弹一次；这里给的是**回头再找得到**的入口——
+ * 隔了几天想确认一下某个手势怎么划、或者换个人用这台机器时不用去翻文档。
+ */
+function GuideSettingsCard(): ReactNode {
+  const openGuide = useUi((state) => state.openGuide);
+
+  return (
+    <section className="pi-card" data-guide-entry="true">
+      <div className="pi-sectionhead">
+        <span className="pi-setting__title">使用指引</span>
+        <button
+          type="button"
+          className="pi-btn pi-btn--ghost"
+          data-guide-replay="true"
+          onClick={() => openGuide(0)}
+        >
+          <Icon name="info" size={13} /> 再看一遍
+        </button>
+      </div>
+      <p className="pi-setting__hint" style={{ marginTop: 0 }}>
+        五步讲清界面几个部件与圆球的四个手势；第一次打开应用时会自动弹一次。
+      </p>
+    </section>
   );
 }
 
@@ -758,6 +856,24 @@ const LYRIC_THEME_OPTIONS: readonly LyricThemeOption[] = [
     tag: '封面作钟面，歌词贴外圈推',
     desc: '封面嵌进一面钟表盘，歌词贴着外圈弧线一格一格推过去，整首歌像在走时。',
   },
+  {
+    key: 'monet',
+    name: '莫奈',
+    tag: '左列歌词轨道，右列肖像',
+    desc: '左边一列排着艺人、歌名与一条歌词轨道（唱到哪个字哪个字亮），右边一张方形肖像，左下一条音频波形。',
+  },
+  {
+    key: 'tempera',
+    name: '凝彩',
+    tag: '色块把画面切开，歌词拼上去',
+    desc: '整幅画面被大色块切成几块（直边、错落、带镜头的推与斜），歌词按词一颗颗拼上来，句与句之间被色块交接带过去。',
+  },
+  {
+    key: 'sonnet',
+    name: '商籁',
+    tag: '日式 MV 分镜，一段一镜',
+    desc: '整首歌被切成段落、每段配一种镜头（社论栏、重字冲击、碎片拼贴、遮罩揭示、海报方块、静场…），装饰按几何变体生长，字一颗颗落下。',
+  },
 ];
 
 /** 帧率上限的展示顺序；值就是设置里存的字符串，别另造一套 id。 */
@@ -868,6 +984,25 @@ function LyricTab(): ReactNode {
 
   return (
     <div className="pi-settings" data-settings-tab-panel="lyric">
+      {/*
+        用户第五轮第 3 条：「歌词来源参考图 1，歌词选择在快捷设置页和详细设置页都加上。
+        不同来源的歌词加上是否含翻译，逐字，符合百分率的标签」。
+        所以这一节放在「歌词动效」**之前**：来源是「有没有歌词、歌词准不准」，
+        动效是「画成什么样」，前者是更前提的问题。
+      */}
+      <section className="pi-card" data-lyric-sources="true">
+        <div className="pi-sectionhead">
+          <span className="pi-setting__title">歌词来源</span>
+        </div>
+        <p
+          className="pi-setting__hint"
+          title="默认「自动匹配」：同时问所有开启的源，按歌名 / 歌手 / 时长算出的匹配率挑最合适的一份；也可以钉死某一个源。标签里的「翻译 / 逐字 / 符合率」都是这一跑的真实结果，不是配置里的声称。"
+        >
+          自动按匹配率挑；也可以钉死某一个源
+        </p>
+        <LyricSourcePicker variant="full" />
+      </section>
+
       <section className="pi-card">
         <div className="pi-sectionhead">
           <span className="pi-setting__title">歌词动效</span>

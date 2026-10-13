@@ -106,6 +106,15 @@ export interface LyricThemeProps {
    * 退回「整首歌词已经唱完」的旧判据，所以老调用点行为一字不改。
    */
   readonly durationMs?: number;
+  /**
+   * 歌曲元信息（莫奈 `monet` 的海报头版要用：艺人 / 歌名 / 专辑）。
+   *
+   * 拿不到时主题自己兜底（`MonetTheme` 三项都退到 `'Monet'`，与 folia 的同名兜底一致），
+   * 所以老调用点不传这些 prop 时行为不变。
+   */
+  readonly songTitle?: string;
+  readonly songArtist?: string;
+  readonly songAlbum?: string;
   readonly theme: LyricPalette;
   /** 时计主题可选：封面 URL（拿不到就只画线框表盘）。 */
   readonly coverUrl?: string;

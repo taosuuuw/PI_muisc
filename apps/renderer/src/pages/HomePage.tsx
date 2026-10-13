@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+﻿import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { MODE_LABEL } from '@pi/player-core';
 import type { LyricTheme, PlayMode, Song } from '@pi/shared';
 import { errorMessage } from '../bridge';
@@ -204,7 +205,7 @@ export function HomePage(): ReactNode {
                 （重启后停在详情页，`src === null`）写 currentTime 会抛 InvalidStateError，
                 所以和底部进度条一样，那种情况下只切「看哪一句」、不下发给播放器。 */}
             <Lyrics
-              songId={song.id}
+              song={song}
               palette={palette}
               onSeek={(timeMs) => {
                 if (src) seek(timeMs);
@@ -1031,7 +1032,7 @@ function Backdrop({ song }: { song: Song }): ReactNode {
  * 把 `LyricStage` 的内部状态提到页面上来。
  */
 function StageMood({ song }: { song: Song }): ReactNode {
-  const query = useLyric(song.id);
+  const query = useLyric(song);
   const positionMs = usePlayer((s) => s.positionMs);
   const lines = useMemo(() => query.data?.lines ?? [], [query.data]);
 
@@ -1047,20 +1048,90 @@ function StageMood({ song }: { song: Song }): ReactNode {
   return <ImmersiveBackground song={song} lines={lines} activeIndex={activeIndex} />;
 }
 
-/** 播放状态那一行：解析中/报错/一次性提示，都得有地方说。 */ function StatusLine({
-  song,
-}: {
-  song: Song;
-}): ReactNode {
+/**
+ * 播放状态那一行：解析中/报错/一次性提示，都得有地方说。
+ *
+ * 用户第五轮第 5 条：「『歌曲正在加载』这样的过渡词，改成在顶部的灵动岛提示『少女祈祷中⭐』」。
+ * 所以「解析中」这一态不再在名片那一行里写《歌名》的音源，而是**同时**把整行变成一个
+ * 浮在窗口顶部居中的灵动岛药丸（`.pi-home__status[data-loading]`，与切风格那条提示同一套观感），
+ * 文案固定为 `LOADING_TEXT`。其余几态（错误 / 一次性提示 / 实测音质）原样留在名片里。
+ *
+ * `data-loading` 是给冒烟与调试用的抓手：它存在就说明「现在正在解析音源」。
+ */
+/**
+ * 播放与歌词的**加载态**统一成一颗顶部灵动岛（用户第五轮第 5 / 6 / 10 条）。
+ *
+ * 用户原话：「『歌曲正在加载』这样的过渡词，改成在顶部的灵动岛提示『少女祈祷中⭐』」。
+ * 音源解析中、等歌词、歌词还在取，这三段都亮着它；都不在跑时整块不渲染。
+ *
+ * ⚠️ **必须 `createPortal` 到 `document.body`**（用户第五轮第 13 条亲眼看出来的坑）：
+ * 它原来挂在 `.pi-home__status` 里，而名片 `.pi-home__card` 带着
+ * `transform: translateY(46px)`（第十七轮第 7 条「从底部冒出」的基态）——
+ * **带 `transform` 的祖先会成为 `position: fixed` 的包含块**（CSS 2.1 定位规则），
+ * 于是「fixed + top: 14px」变成了「贴着名片顶 14px」，用户看到的就是
+ * 「灵动岛跑到歌曲卡片里去了」。挂到 `body` 上，视口里再没有这样的祖先。
+ */
+const LOADING_TEXT = '少女祈祷中⭐';
+
+export function LoadingIsland(): ReactNode {
+  const [host, setHost] = useState<HTMLElement | null>(null);
+  useEffect(() => {
+    setHost(document.body);
+  }, []);
+  if (host === null) return null;
+  return createPortal(
+    <span
+      className="pi-loading-island"
+      data-loading-island="true"
+      role="status"
+      aria-live="polite"
+    >
+      {LOADING_TEXT}
+    </span>,
+    host,
+  );
+}
+
+/**
+ * 播放状态那一行：解析中/报错/一次性提示，都得有地方说。
+ *
+ * 用户第五轮第 5 条：「『歌曲正在加载』这样的过渡词，改成在顶部的灵动岛提示『少女祈祷中⭐』」。
+ * 所以「解析中」这一态不再在名片那一行里写《歌名》的音源，而是换成灵动岛
+ * （见上面的 `LoadingIsland`；名片里这一颗是 `inline` 形态，浮在窗口顶部的那颗在歌词区）。
+ * 其余几态（错误 / 一次性提示 / 实测音质）原样留在名片里。
+ *
+ * `data-loading` 是给冒烟与调试用的抓手：它存在就说明「现在正在解析音源」。
+ */
+function StatusLine({ song }: { song: Song }): ReactNode {
   const status = usePlayer((s) => s.status);
   const notice = usePlayer((s) => s.notice);
   const error = usePlayer((s) => s.error);
   const audio = usePlayer((s) => s.audio);
+  /** 音源还没解析出来。 */
+  const resolving = status === 'resolving';
+  /** 音源拿到了、正在等歌词（用户第五轮第 10 条：等词期间故意不出声）。 */
+  const gate = usePlayer((s) => s.loadingGate);
+  /**
+   * 歌词还在路上（用户第五轮第 10 条）。
+   *
+   * 三种时候都要亮着，缺一个就会回到老问题「歌在唱、词没画出来，界面一个字都不说」：
+   * - `gate`：音源已到手、正在等词 —— 这一段**故意不出声**，不亮就是「什么都没发生」；
+   * - `resolving`：从点歌到出声的那一整段（含音源解析）；
+   * - `lyric.isFetching`：那道闸最多等 5 秒，超时后照常出声、词还在取；播放中换源、
+   *   缓存过期重取也都落在这一态。
+   */
+  const lyric = useLyric(song);
+  const loading = resolving || gate || lyric.isFetching;
 
   return (
-    <p className="pi-home__status" data-status={status}>
-      {status === 'resolving' ? (
-        <>正在解析《{song.name}》的音源…</>
+    <p
+      className="pi-home__status"
+      data-status={status}
+      {...(loading ? { 'data-loading': 'true' } : {})}
+      title={loading ? `正在准备《${song.name}》的歌词与音源` : undefined}
+    >
+      {loading ? (
+        <LoadingIsland />
       ) : error ? (
         <span className="pi-home__status--error">{error}</span>
       ) : notice ? (
@@ -1089,6 +1160,11 @@ const RANDOM_THEME_POOL: readonly LyricTheme[] = [
   'partita',
   'tilt',
   'pendolo',
+  // 复刻 folia 的 `monet`（莫奈）：随机池跟设置页那份展示顺序一一对应。
+  'monet',
+  // 复刻 folia 的 `tempera`（凝彩）。
+  'tempera',
+  'sonnet',
 ];
 
 /**
@@ -1116,17 +1192,19 @@ function stableThemeIndex(songId: number, count: number): number {
  * 跟怎么画无关；空态文案与 `.pi-lyrics` 容器也留着（冒烟脚本会数 `.pi-lyrics__line`）。
  */
 function Lyrics({
-  songId,
+  song,
   palette,
   onSeek,
 }: {
-  songId: number;
+  song: Song;
   /** 当前歌曲的封面配色（第八轮第 4 条）；`null` = 还没算出来，主题就用它自己的默认配色。 */
   palette: ThemeColors | null;
   /** 点某一句歌词：跳到这一句播放（第八轮第 3 条）。 */
   onSeek: (timeMs: number) => void;
 }): ReactNode {
-  const query = useLyric(songId);
+  // 多源歌词要按「歌名 + 歌手 + 时长」跨平台匹配，所以整首歌都递给主进程（第五轮第 3 条）。
+  const songId = song.id;
+  const query = useLyric(song);
   const positionMs = usePlayer((s) => s.positionMs);
   /**
    * **用户第 5 轮第 2 条**：把「播放器是不是在出声」交给舞台 —— 两条平滑时钟（classic 自己的
@@ -1171,6 +1249,14 @@ function Lyrics({
   );
 
   if (!query.isPending && !query.isError && query.data?.hasLyric && lines.length > 0) {
+    /*
+     * 封面与元信息：**莫奈**（`monet`）的右列肖像、**时计**（`pendolo`）的表盘封面都吃 `coverUrl`，
+     * 海报头版的艺人 / 歌名 / 专辑吃那三个字符串 prop。这一处原先一个都没传 ——
+     * 时计第 7 轮要的「表盘显示封面」因此一直画不出来（`PendoloTheme.tsx:734` 明确只认这个 prop）。
+     * 取 640 是因为它要铺在肖像框 / 表盘圆心那么大的一块，不是列表里的缩略图。
+     */
+    const coverUrl = coverAt(song.album?.coverUrl, 640);
+    const songArtist = song.artists.map((artist) => artist.name).join(' / ');
     return (
       <LyricStage
         lines={lines}
@@ -1182,6 +1268,10 @@ function Lyrics({
         // `animationIntensity` 是配色契约的一部分（folia 用它调动效密度）。这里固定
         // `chaotic`，与改造前 `LyricStage` 的 `DEFAULT_PALETTE` 一致：本次只换颜色，动画强弱不动。
         {...(stagePalette === null ? {} : { palette: stagePalette })}
+        {...(coverUrl === undefined ? {} : { coverUrl })}
+        songTitle={song.name}
+        {...(songArtist === '' ? {} : { songArtist })}
+        {...(song.album === undefined ? {} : { songAlbum: song.album.name })}
         onSeek={onSeek}
       />
     );
@@ -1189,7 +1279,12 @@ function Lyrics({
 
   let body: ReactNode;
   if (query.isPending) {
-    body = <p className="pi-lyrics__hint">正在读取歌词…</p>;
+    /*
+     * 用户第五轮第 6 / 10 条：这一态**不再**在这里写「正在读取歌词…」。
+     * 那句话改由顶部灵动岛说（`LoadingIsland`，见下面 `<Stage>` 里那一颗），
+     * 这里只留一块占位，免得歌词区在等待期间整块塌掉、第一句歌词进来时又跳一下。
+     */
+    body = <p className="pi-lyrics__hint" aria-hidden="true" />;
   } else if (query.isError) {
     body = (
       <p className="pi-lyrics__hint pi-lyrics__hint--error">

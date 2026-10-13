@@ -1,22 +1,38 @@
 import { app, ipcMain } from 'electron';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import {
   CH,
   EVT,
   INPUT_SCHEMAS,
   OUTPUT_SCHEMAS,
+  type CacheClearRequest,
+  type CommentLikeRequest,
+  type CommentPostRequest,
   type CommentsRequest,
   type DownloadTask,
   type LikeCheckRequest,
   type LikeRequest,
   type LikeState,
   type LocalLibraryList,
+  type LyricImportRequest,
+  type LyricRemoveRequest,
   type LyricRequest,
+  /*
+   * `RuntimeInfo` 保持从 `@pi/shared` 引（类型定义在那边）。
+   * ⚠️ 别把它挪去 `@pi/ipc`：那条测试按**文本**抓「相对路径 + .js」的 import，
+   * `@pi/ipc` 会被它规范化成 `./ipc.js` 而报出一个假自环（真踩过）。
+   */
   type RouteMap,
   type SearchRequest,
 } from '@pi/ipc';
 import {
   type AccountCapability,
+  type CacheClearResult,
+  type CommentLikeResult,
   type CommentPage,
+  type CommentPostResult,
+  type DataStorageInfo,
   type Lyric,
   type PlayedTrack,
   type Playlist,
@@ -43,6 +59,29 @@ const DEV = Boolean(process.env.PI_DEV);
  * 「preload 桥断了」和「后端没数据」——两者都是空白界面（这个坑真踩过）。
  */
 const IPC_LOG = process.env.PI_IPC_LOG === '1';
+
+/**
+ * `bootstrap.json` 里记着的 GPU 崩溃累计次数（用户第五轮第 17 条）。
+ *
+ * 为什么在这里自己读一遍而不是从 `index.ts` 引 `readFlags()`：`index.ts` 会
+ * `registerIpc` 从这里引 `./ipc.js`，反过来引就成环了 —— 而
+ * `tests/main-module-graph.test.ts` 明确禁止主进程出现循环 import（第五轮那次
+ * 启动崩溃就是环形 import 造成的，`Object.values(undefined)`）。
+ * 那条测试是**按文本抓**相对 import 的，所以这段注释里也不要写出
+ * 「from 加引号加 ./ipc.js」那种字面量 —— 它会把注释当成一条 import，报一个假的自环。
+ *
+ * 这里读的是**原始计数**（不做过期判定）：设置页只是把它显示给用户看，
+ * 「过期了就重来」那套逻辑归 `index.ts` 的 `readFlags()` 单点负责。
+ */
+function readGpuCrashes(): number {
+  try {
+    const raw = readFileSync(path.join(app.getPath('userData'), 'bootstrap.json'), 'utf8');
+    const parsed = JSON.parse(raw) as { gpuCrashes?: unknown };
+    return typeof parsed.gpuCrashes === 'number' ? parsed.gpuCrashes : 0;
+  } catch {
+    return 0;
+  }
+}
 
 /**
  * 统一的通道注册器。
@@ -92,6 +131,7 @@ export function registerIpc(services: Services, getWindow: () => Electron.Browse
     userDataDir: app.getPath('userData'),
     safeStorage: services.getSafeStorageStatus(),
     softwareRendering: Boolean(process.env.PI_SOFTWARE_RENDERING),
+    gpuCrashes: readGpuCrashes(),
   }));
 
   register<void, AccountCapability>(CH.accountCapability, () => services.getCapability());
@@ -124,11 +164,73 @@ export function registerIpc(services: Services, getWindow: () => Electron.Browse
     return services.songComments(payload.songId, payload.offset ?? 0, payload.limit ?? 20);
   });
 
-  // 看歌词同样不需要登录（和看评论一致）；`hasLyric: false` 是正常结果，不是错误。
+  /*
+   * 评论的写操作（用户第五轮第 8 条：点赞 / 打字评论 / 回复评论）。
+   *
+   * 三条都要登录 —— `Services` 会在发请求**之前**先 `requireUserId()`，
+   * 于是界面拿到的是「请先登录」这句人话，而不是网易云的 301/250 状态码。
+   */
+  register<CommentPostRequest, CommentPostResult>(CH.ncmCommentPost, async (payload) => {
+    await requireNcm();
+    return services.postComment({
+      songId: payload.songId,
+      content: payload.content,
+      ...(payload.replyTo === undefined ? {} : { replyTo: payload.replyTo }),
+    });
+  });
+
+  register<CommentLikeRequest, CommentLikeResult>(CH.ncmCommentLike, async (payload) => {
+    await requireNcm();
+    return services.likeComment({
+      songId: payload.songId,
+      commentId: payload.commentId,
+      like: payload.like,
+      ...(payload.likedCount === undefined ? {} : { likedCount: payload.likedCount }),
+    });
+  });
+
+  /*
+   * 看歌词同样不需要登录（和看评论一致）；`hasLyric: false` 是正常结果，不是错误。
+   *
+   * 第五轮第 3 条起这条通道是**多源**的：入参带上了歌名 / 歌手 / 时长，
+   * 好让 QQ 与酷狗能按「歌名 + 歌手 + 时长」去找同一首歌（它们没有网易云的 id）。
+   */
   register<LyricRequest, Lyric>(CH.ncmLyric, async (payload) => {
     await requireNcm();
-    return services.songLyric(payload.songId);
+    return services.songLyric({
+      songId: payload.songId,
+      title: payload.title ?? '',
+      artists: payload.artists ?? [],
+      ...(payload.durationMs === undefined ? {} : { durationMs: payload.durationMs }),
+    });
   });
+
+  /* ---------------- 歌词：导入 / 删除 / 清单（第五轮第 3 条） ---------------- */
+
+  register<void, { songIds: number[] }>(CH.lyricsImports, async () => ({
+    songIds: await services.listLyricImports(),
+  }));
+
+  register<LyricImportRequest, { songIds: number[] }>(CH.lyricsImport, async (payload) => ({
+    songIds: await services.importLyric({
+      songId: payload.songId,
+      fileName: payload.fileName,
+      content: payload.content,
+      base64: payload.base64 ?? false,
+    }),
+  }));
+
+  register<LyricRemoveRequest, { songIds: number[] }>(CH.lyricsRemove, async (payload) => ({
+    songIds: await services.removeLyric(payload.songId),
+  }));
+
+  /* ---------------- 本地数据存储与缓存（第五轮第 2 条） ---------------- */
+
+  register<void, DataStorageInfo>(CH.dataStorage, () => services.data.info());
+
+  register<CacheClearRequest, CacheClearResult>(CH.dataClearCache, (payload) =>
+    services.data.clear(payload?.only),
+  );
 
   register<LikeRequest, LikeState>(CH.ncmLike, async (payload) => {
     await requireNcm();

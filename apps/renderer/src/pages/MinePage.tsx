@@ -25,7 +25,13 @@ import { COLLAGE_FILL_MS } from '../components/song-collage-geometry';
 // 第十七轮第 ④ 条：`specialType=5` 的「我喜欢的音乐」以前是从歌单列表里被**过滤掉**的，
 // 现在改成置首（判断口径收在 `lib/playlists.ts` 里，先锋风格的轮播也用同一份）。
 import { isLikedPlaylist, withLikedFirst } from '../lib/playlists';
-import { useLikedTracksPaged, useMyPlaylists, useRecentTracks, useAccount } from '../lib/queries';
+import {
+  useAccount,
+  useEdgeVignette,
+  useLikedTracksPaged,
+  useMyPlaylists,
+  useRecentTracks,
+} from '../lib/queries';
 // 用户 m03805 第 1 条：平凡列表的「加载更多」按钮换成下滑自动加载。
 import { useAutoLoadMore } from '../lib/useAutoLoadMore';
 import { useNowPlaying } from '../state/nowPlaying';
@@ -95,6 +101,8 @@ export function MinePage({ tab }: MinePageProps): ReactNode {
    */
   const liked = useLikedTracksPaged(loggedIn && tab === 'like', LIKED_PRELOAD_PAGE_SIZE);
   const playlists = useMyPlaylists(loggedIn && tab === 'playlists');
+  // 用户第五轮第 9 条：拼贴页的边缘暗角（只在深色档真的画出来，判定在 CSS 里）。
+  const edgeVignette = useEdgeVignette();
 
   const collageRef = useRef<CollageSearchHandle | null>(null);
   const [entering, setEntering] = useState(false);
@@ -381,6 +389,8 @@ export function MinePage({ tab }: MinePageProps): ReactNode {
                       onNeedMore={needMore}
                       /* 第十八轮第 6 条：这面墙自己在后台一批批长大，不用等用户拖到边上。 */
                       autoMore
+                      /* 用户第五轮第 9 条：边缘暗角。 */
+                      edgeVignette={edgeVignette}
                     />
                   ) : (
                     <div className="pi-collage-skeleton" data-collage-loading="true">
@@ -501,8 +511,10 @@ function RecentList({
 }): ReactNode {
   const byId = new Map(rows.map((row) => [row.song.id, row]));
   const songs = rows.map((row) => row.song);
+  // 用户第五轮第 9 条：拼贴页的边缘暗角（只在深色档真的画）。
+  const edgeVignette = useEdgeVignette();
   if (uiStyle === 'avant') {
-    return <SongCollage songs={songs} onSelect={onSelect} />;
+    return <SongCollage songs={songs} onSelect={onSelect} edgeVignette={edgeVignette} />;
   }
   return (
     <SongList
