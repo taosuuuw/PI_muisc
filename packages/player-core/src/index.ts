@@ -5,6 +5,8 @@ export {
   currentId,
   cycleMode,
   jumpTo,
+  moveInQueue,
+  removeFromQueue,
   retreat,
   EMPTY_QUEUE,
   MODE_LABEL,

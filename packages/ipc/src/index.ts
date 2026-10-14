@@ -285,15 +285,15 @@ export const LyricSchema = z.object({
   translated: z.array(LyricLineSchema),
   hasLyric: z.boolean(),
   roman: z.array(LyricLineSchema).optional(),
-  source: z.enum(['ncm', 'amll', 'qq', 'kugou', 'local']).optional(),
-  mode: z.enum(['auto', 'ncm', 'amll', 'qq', 'kugou', 'local']).optional(),
+  source: z.enum(['ncm', 'amll', 'qq', 'kugou', 'lrclib', 'local']).optional(),
+  mode: z.enum(['auto', 'ncm', 'amll', 'qq', 'kugou', 'lrclib', 'local']).optional(),
   match: z.number().min(0).max(1).optional(),
   matchedTitle: z.string().optional(),
   reason: z.string().optional(),
   candidates: z
     .array(
       z.object({
-        source: z.enum(['ncm', 'amll', 'qq', 'kugou', 'local']),
+        source: z.enum(['ncm', 'amll', 'qq', 'kugou', 'lrclib', 'local']),
         used: z.boolean(),
         title: z.string().optional(),
         artists: z.array(z.string()).optional(),
@@ -336,8 +336,9 @@ export type LyricRequest = z.input<typeof LyricRequestSchema>;
 export const LYRIC_SOURCE_INFO = [
   { id: 'ncm', label: '网易云音乐', note: '官方歌词，多数带逐字与翻译' },
   { id: 'amll', label: 'AMLLDB', note: '社区的 TTML 逐词词库，打轴最准' },
-  { id: 'qq', label: 'QQ 音乐', note: '按歌名歌手跨平台匹配，多为逐行' },
+  { id: 'qq', label: 'QQ 音乐', note: '按歌名歌手跨平台匹配，QQ 的逐字（QRC）也在这里' },
   { id: 'kugou', label: '酷狗音乐', note: '按歌名歌手跨平台匹配，KRC 逐字' },
+  { id: 'lrclib', label: 'Lrclib', note: '社区公共词库，前四个都没词时才兜底（逐行）' },
   { id: 'local', label: '本地导入', note: '你自己导入的歌词文件，优先级最高' },
 ] as const;
 
@@ -853,13 +854,14 @@ export const SettingsSchema = z.object({
   /** 歌词动效细调（字号 / 幅度 / 辉光 / 帧率上限……）；每个字段都真的改变画面。 */
   lyricTuning: LyricTuningSchema,
   /** 歌词来源档位（第五轮第 3 条）：`auto` = 按匹配率自动挑，其余值钉死某一个源。 */
-  lyricSource: z.enum(['auto', 'ncm', 'amll', 'qq', 'kugou', 'local']),
+  lyricSource: z.enum(['auto', 'ncm', 'amll', 'qq', 'kugou', 'lrclib', 'local']),
   /** 自动挑选时允许参与哪些源；关掉的源不发请求。 */
   lyricSourceEnabled: z.object({
     ncm: z.boolean(),
     amll: z.boolean(),
     qq: z.boolean(),
     kugou: z.boolean(),
+    lrclib: z.boolean(),
     local: z.boolean(),
   }),
   /** 自动挑选的匹配率门槛 0~1：低于它宁可不显示，也不显示另一首歌的歌词。 */
@@ -1015,6 +1017,30 @@ export const SearchRequestSchema = z.object({
 export type SearchRequest = z.input<typeof SearchRequestSchema>;
 
 /* ------------------------------------------------------------------ *
+ * 任务栏缩略图工具栏（主人本轮第 3 条）
+ * ------------------------------------------------------------------ */
+
+/**
+ * 那三枚键的动作。顺序就是按钮顺序（上一首 / 播放暂停 / 下一首）。
+ *
+ * 为什么只有三个：Windows 的缩略图工具栏最多 7 枚，而播放器只需要这三个；
+ * 多加的键（比如音量、喜欢）在这个 16px 的字形里也说不清是什么。
+ */
+export type MediaCommand = 'prev' | 'toggle' | 'next';
+
+/**
+ * 渲染层回报的播放状态。
+ *
+ * 只留三种：主进程拿它做的事只有一件 —— 决定中间那枚键画「播放」还是「暂停」、
+ * 以及没有在听的歌时要不要把三枚键一起置灰。`resolving` / `error` / `unplayable`
+ * 这些细分状态都归到 `idle`，主进程不需要知道它们。
+ */
+export const MediaStateReportSchema = z.object({
+  status: z.enum(['playing', 'paused', 'idle']),
+});
+export type MediaStateReport = z.input<typeof MediaStateReportSchema>;
+
+/* ------------------------------------------------------------------ *
  * 通道表
  * ------------------------------------------------------------------ */
 
@@ -1074,6 +1100,14 @@ export const CH = {
   windowMinimize: 'window:minimize',
   windowToggleMaximize: 'window:toggle-maximize',
   windowClose: 'window:close',
+  /**
+   * 任务栏缩略图工具栏（主人本轮第 3 条）：渲染层把播放状态报给主进程。
+   *
+   * 方向是**渲染层 → 主进程**（所以走 CH 而不是 EVT）：play/pause 那个字形必须由
+   * 真正在播的那个进程说了算 —— 主进程自己猜「刚才发的 toggle 是不是生效了」，
+   * 遇到解析失败自动跳下一首这种情况就会画错。
+   */
+  mediaState: 'media:state',
   /* 播放页自定义背景（主人本轮第 1 条）：挑图 / 存图 / 取图 / 清掉，四件事四个通道。 */
   backgroundPick: 'background:pick',
   backgroundCommit: 'background:commit',
@@ -1092,6 +1126,13 @@ export const EVT = {
   ncmHealthChanged: 'ncm:health-changed',
   /** 下载队列有任何变化（新增/进度/状态）就推一份完整列表；主进程侧节流到约 4 次/秒。 */
   downloadsChanged: 'downloads:changed',
+  /**
+   * 任务栏缩略图工具栏被点了一下（主人本轮第 3 条）：主进程 → 渲染层。
+   *
+   * 为什么不让主进程直接控制播放：`<audio>` 元素与队列状态机都在渲染层，
+   * 主进程只负责把「第几枚键被点了」原样送进来，落到哪个 action 由渲染层决定。
+   */
+  mediaCommand: 'media:command',
 } as const;
 
 export type Channel = (typeof CH)[keyof typeof CH];
@@ -1102,6 +1143,7 @@ export interface EventMap {
   [EVT.accountChanged]: AccountCapability;
   [EVT.ncmHealthChanged]: NcmHealth;
   [EVT.downloadsChanged]: DownloadTask[];
+  [EVT.mediaCommand]: MediaCommand;
 }
 
 /** 通道 → { 入参, 出参 }。主进程与 preload 都以此表为准。 */
@@ -1250,6 +1292,8 @@ export interface RouteMap {
   [CH.windowMinimize]: { input: void; output: void };
   [CH.windowToggleMaximize]: { input: void; output: void };
   [CH.windowClose]: { input: void; output: void };
+  /** 渲染层 → 主进程：播放状态变了（只影响缩略图工具栏中间那枚键的字形与是否置灰）。 */
+  [CH.mediaState]: { input: z.input<typeof MediaStateReportSchema>; output: void };
   /** 打开系统文件对话框挑一张背景图；成功时把字节一并用 data: 地址带回渲染层。 */
   [CH.backgroundPick]: { input: void; output: BackgroundPickResult };
   /** 把裁好的图存进 userData（会覆盖上一张），返回存下来的文件名。 */
@@ -1273,6 +1317,7 @@ export interface RouteMap {
  */
 export const INPUT_SCHEMAS: Record<string, z.ZodType> = {
   [CH.settingsPatch]: SettingsPatchSchema,
+  [CH.mediaState]: MediaStateReportSchema,
   [CH.backgroundCommit]: BackgroundCommitRequestSchema,
   [CH.backgroundRead]: BackgroundRefSchema,
   [CH.ncmSearch]: SearchRequestSchema,

@@ -159,22 +159,14 @@
 }
 
 /**
- * ③ 3D 姿态层（第十五轮第 1 条）。`perspective: 1400px` 挂在 `.pi-collage` 上，
- *    这一层只负责 `rotateX(3.4deg) rotateY(-2.6deg)`（内联写在组件里，数值理由见
- *    `song-collage-geometry.ts` 顶部说明④），旋转原点与透视原点都是**视口中心**（`50% 50%`）。
- *    为什么不绕世界原点转：世界有几十万分之几千米，绕原点转会把远端甩到屏幕外，
- *    剔除边界也得跟着重算；绕视口中心转，屏幕上的姿态完全一样，代价只是「离中心越远、
- *    透视缩放越明显」。
- *    它铺满 `.pi-collage`，世界层仍然在它内部按 `left/top + translate3d/scale` 定位——
- *    也就是说**相机语义没有被 3D 改动**（冒烟探针读的 `.pi-collage__world` transform 不变）。
- *    层级：世界层本来就带 `will-change: transform`（自成层叠上下文），所以这层加进来
- *    不会改变「暗角/颗粒压在卡片之上」的既有关系。
+ * ③ 3D 姿态层**已删除**（第十五轮第 1 条加上，主人本轮第 3 条要求撤掉）。
+ *    原来这里有一条 `.pi-collage__tilt { position: absolute; inset: 0; transform-origin: 50% 50% }`，
+ *    配合根节点上的 `perspective: 1400px` 与内联的 `rotateX(3.4deg) rotateY(-2.6deg)`，
+ *    把整面墙转出一个小角度。主人拿 folia 的实录一比就说我们「有点倾斜」——
+ *    而那套姿态本来就是我们自己加的（folia 的 Lattice 相机只有 `translate3d + scale`）。
+ *    现在世界层 `.pi-collage__world` 直接是 `.pi-collage` 的子节点，整面墙是平的，
+ *    层级关系（暗角/颗粒压在卡片之上）不受影响。
  */
-.pi-collage__tilt {
-  position: absolute;
-  inset: 0;
-  transform-origin: 50% 50%;
-}
 
 /**
  * 世界层。相机（平移 + 定档缩放）就是这一个 `translate3d(...) scale(...)`，
@@ -736,4 +728,86 @@
   opacity: 0;
   transition: opacity 340ms ease-out;
   pointer-events: none;
+}
+
+/* ------------------------------------------------------------------ *
+ * 拼贴格子右上角的删除键（主人本轮第 3 条：先锋风格歌单页）
+ *
+ * 原话：「对于先锋风格，如图4 任意比例的卡片右上角在鼠标悬停在其上时浮现一个删除键，
+ * 点击即从歌单中删去歌曲」。所以它**平时不在**（`opacity: 0` + 缩到 0.86），
+ * 悬停/键盘聚焦时才浮出来；触屏设备没有 hover，一律常显。
+ *
+ * 落点用格子自己的 `--pi-collage-inset`（和序号徽章同一套内缩），两种尺寸的格子看起来一致。
+ * `z-index` 压过封面与序号：它得能被点到。
+ * ------------------------------------------------------------------ */
+.pi-collage__remove {
+  position: absolute;
+  top: var(--pi-collage-inset, 12px);
+  right: var(--pi-collage-inset, 12px);
+  z-index: 3;
+  display: grid;
+  place-items: center;
+  /* 主人第 10 轮第 4 条：「队列拼贴的卡片右上角的取消键应该适应卡片的大小变化而不是统一一个大小」
+     —— 直径由 `SongCollage` 按格子尺寸算好写进 `--pi-collage-remove`（18~44px），
+     图标按按钮的百分比跟着缩放，小卡与放大块上观感一致。
+     主人第 11 轮第 3 条：「删除键不应该自生发光」—— 原来那版用了 0.42 的白 + 上缘高光 +
+     `saturate(1.7)` 的模糊，压在封面上就是一颗发亮的小灯泡；现在改成**哑光玻璃**：
+     白只剩一点点（0.16/0.06/0.10），不要上缘高光，模糊不加饱和，只留一道发丝边和一层落影。 */
+  width: var(--pi-collage-remove, 32px);
+  height: var(--pi-collage-remove, 32px);
+  border-radius: 50%;
+  background: linear-gradient(
+    160deg,
+    rgba(255, 255, 255, 0.16),
+    rgba(255, 255, 255, 0.06) 52%,
+    rgba(255, 255, 255, 0.1)
+  );
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.18),
+    0 2px 8px rgba(6, 10, 16, 0.28);
+  color: #fff;
+  cursor: pointer;
+  opacity: 0;
+  transform: scale(0.86);
+  transition:
+    opacity 0.16s ease,
+    transform 0.16s cubic-bezier(0.22, 1, 0.36, 1),
+    background 0.16s ease,
+    box-shadow 0.16s ease;
+  -webkit-app-region: no-drag;
+}
+
+.pi-collage__item:hover .pi-collage__remove,
+.pi-collage__remove:focus-visible {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.pi-collage__remove:hover {
+  background: linear-gradient(160deg, rgba(229, 72, 77, 0.72), rgba(200, 44, 50, 0.64));
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.22),
+    0 3px 12px rgba(90, 14, 18, 0.4);
+}
+
+.pi-collage__remove:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 2px;
+}
+
+/* 里面的 × 跟着按钮缩放（`Icon` 是固定 px 的 SVG，这里用百分比盖掉）。
+   主人第 11 轮第 3 条「不应该自生发光」：那层 `drop-shadow` 也一并去掉，
+   只留一笔干净的白色描线（压在亮封面上靠下面那道按钮底衬，不靠自己发亮）。 */
+.pi-collage__remove svg {
+  width: 46%;
+  height: 46%;
+}
+
+@media (hover: none) {
+  .pi-collage__remove {
+    opacity: 1;
+    transform: none;
+  }
 }

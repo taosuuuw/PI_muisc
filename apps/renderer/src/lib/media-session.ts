@@ -16,9 +16,11 @@
  * 注意：这是**只读**接线——它只订阅 `usePlayer`、只调用现成的 action，不改播放器的任何状态机
  * 逻辑（`state/player.ts` 同时有别的改动在飞）。
  */
+import type { MediaStateReport } from '@pi/ipc';
 import type { Song } from '@pi/shared';
+import { CH, EVT, invoke, subscribeEvent } from '../bridge';
 import { coverAt } from './cover';
-import { usePlayer } from '../state/player';
+import { usePlayer, type PlaybackStatus } from '../state/player';
 
 declare global {
   interface Window {
@@ -31,6 +33,18 @@ let installed = false;
 
 function artistLine(song: Song): string {
   return song.artists.map((entry) => entry.name).join(' / ');
+}
+
+/**
+ * 把播放器的六态压成主进程要的三态（主人本轮第 3 条）。
+ *
+ * 缩略图工具栏只关心三件事：在播（画暂停键）/ 暂停（画播放键）/ 没有在听的歌（三枚一起置灰）。
+ * `resolving` / `error` / `unplayable` 都归 `idle` —— 主进程不需要知道这些细分状态。
+ */
+function reportOf(status: PlaybackStatus): MediaStateReport['status'] {
+  if (status === 'playing') return 'playing';
+  if (status === 'paused') return 'paused';
+  return 'idle';
 }
 
 /**
@@ -101,6 +115,8 @@ export function installMediaSession(): void {
   window.__piMediaSession = { actions: registered };
 
   let lastSongId: number | null = null;
+  /** 上一次报给主进程的状态（只为去重：`sync` 会被进度变化叫醒，一秒好几次）。 */
+  let lastReport: MediaStateReport['status'] | null = null;
 
   const sync = (state: ReturnType<typeof usePlayer.getState>): void => {
     const songId = state.currentSong?.id ?? null;
@@ -108,8 +124,18 @@ export function installMediaSession(): void {
       lastSongId = songId;
       session.metadata = state.currentSong === null ? null : metadataOf(state.currentSong);
     }
+    const report = reportOf(state.status);
     session.playbackState =
-      state.status === 'playing' ? 'playing' : state.status === 'paused' ? 'paused' : 'none';
+      report === 'playing' ? 'playing' : report === 'paused' ? 'paused' : 'none';
+
+    /*
+     * 任务栏缩略图工具栏（主人本轮第 3 条）：只在**真的变了**时报一次。
+     * 失败一律吞掉 —— 主进程没接这条通道（旧版本、或冒烟里的独立调用点）不该把播放打断。
+     */
+    if (report !== lastReport) {
+      lastReport = report;
+      void invoke(CH.mediaState, { status: report }).catch(() => {});
+    }
 
     const duration = state.durationMs / 1000;
     // `setPositionState` 对参数很挑：duration 必须是有限的 >0，position 不能超出 duration，
@@ -129,4 +155,16 @@ export function installMediaSession(): void {
 
   sync(usePlayer.getState());
   usePlayer.subscribe(sync);
+
+  /*
+   * 任务栏缩略图工具栏那三枚键（主人本轮第 3 条）：主进程只送「哪一枚被点了」，
+   * 落到哪个 action 在这里决定 —— 和上面系统卡片的回调复用同一批 store action，
+   * 所以缩略图上的「下一首」和界面里的「下一首」走的是同一条路（解析链、失败跳曲都一样）。
+   */
+  subscribeEvent(EVT.mediaCommand, (command) => {
+    const player = usePlayer.getState();
+    if (command === 'prev') void player.prev();
+    else if (command === 'next') void player.next('manual');
+    else void player.toggle();
+  });
 }

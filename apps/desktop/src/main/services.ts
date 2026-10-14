@@ -309,6 +309,16 @@ export class Services {
     this.settingsCache = {
       ...merged,
       lyricTuning: { ...DEFAULT_LYRIC_TUNING, ...(stored?.lyricTuning ?? {}) },
+      /*
+       * `lyricSourceEnabled` 是同一类嵌套对象，而且**必然**会被踩到：每加一个歌词源
+       * （比如本轮加的 Lrclib），老用户盘上那份就少一个键。各处判据都是 `!== false`，
+       * 少键恰好等于「开」，行为上没有坏；但对象会与类型 `Record<LyricSourceId, boolean>`
+       * 的名义不符，迟早有一天被别人当真值读。所以这里逐字段兜一层默认值。
+       */
+      lyricSourceEnabled: {
+        ...DEFAULT_SETTINGS.lyricSourceEnabled,
+        ...(stored?.lyricSourceEnabled ?? {}),
+      },
     };
     return this.settingsCache;
   }

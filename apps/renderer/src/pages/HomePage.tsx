@@ -7,7 +7,6 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from 'react';
-import { createPortal } from 'react-dom';
 import { MODE_LABEL } from '@pi/player-core';
 import type { LyricTheme, PlayMode, Song } from '@pi/shared';
 import { errorMessage } from '../bridge';
@@ -38,6 +37,7 @@ import {
   useToggleLike,
 } from '../lib/queries';
 import { usePlayer } from '../state/player';
+import { ISLAND_LOADING_ID, useIsland } from '../state/island';
 import { useUi } from '../state/ui';
 
 /**
@@ -1201,32 +1201,31 @@ function StageMood({ song }: { song: Song }): ReactNode {
  * 用户原话：「『歌曲正在加载』这样的过渡词，改成在顶部的灵动岛提示『少女祈祷中⭐』」。
  * 音源解析中、等歌词、歌词还在取，这三段都亮着它；都不在跑时整块不渲染。
  *
- * ⚠️ **必须 `createPortal` 到 `document.body`**（用户第五轮第 13 条亲眼看出来的坑）：
- * 它原来挂在 `.pi-home__status` 里，而名片 `.pi-home__card` 带着
- * `transform: translateY(46px)`（第十七轮第 7 条「从底部冒出」的基态）——
- * **带 `transform` 的祖先会成为 `position: fixed` 的包含块**（CSS 2.1 定位规则），
- * 于是「fixed + top: 14px」变成了「贴着名片顶 14px」，用户看到的就是
- * 「灵动岛跑到歌曲卡片里去了」。挂到 `body` 上，视口里再没有这样的祖先。
+ * 本轮（用户第 2 条）改成**发布者**：它不再自己画那颗药丸，而是往共享的灵动岛通知栈
+ * （`state/island.ts`）里发一条 id 为 `loading` 的通知，由 `DynamicIsland` 统一渲染 ——
+ * 于是它可以与「已切换 ⨯⨯ 风格」同时存在：新来的当药丸、先来的缩成小球；它退出时
+ * （组件卸载）剩下的那条自己长回药丸。
+ *
+ * 主人第 9 轮第 1 条：「少女祈祷中不需要有歌曲封面图标，删去」——所以这一条**不带封面**，
+ * 药丸/小球里就是一颗发光圆点（`DynamicIsland` 的 `data-island-mark="dot"`）。
+ *
+ * ⚠️ 之前那条坑照旧成立：**绝不能挂在带 `transform` 的祖先里**（`.pi-home__card` 就有
+ * `translateY(46px)`，带 transform 的祖先是 `position: fixed` 的包含块，岛会「跑进名片里」）。
+ * 现在这个问题从根上没了：`DynamicIsland` 用 `createPortal` 挂在 `document.body` 上。
  */
 const LOADING_TEXT = '少女祈祷中⭐';
 
-export function LoadingIsland(): ReactNode {
-  const [host, setHost] = useState<HTMLElement | null>(null);
+export function LoadingIsland(_props: { song: Song }): ReactNode {
+  const publish = useIsland((s) => s.publish);
+  const dismiss = useIsland((s) => s.dismiss);
+
+  /* 挂载即发布、卸载即撤下：加载态本身由调用方决定挂不挂，这里不重复判断。 */
   useEffect(() => {
-    setHost(document.body);
-  }, []);
-  if (host === null) return null;
-  return createPortal(
-    <span
-      className="pi-loading-island"
-      data-loading-island="true"
-      role="status"
-      aria-live="polite"
-    >
-      {LOADING_TEXT}
-    </span>,
-    host,
-  );
+    publish({ id: ISLAND_LOADING_ID, text: LOADING_TEXT, tone: 'loading' });
+    return () => dismiss(ISLAND_LOADING_ID);
+  }, [publish, dismiss]);
+
+  return null;
 }
 
 /**
@@ -1268,7 +1267,7 @@ function StatusLine({ song }: { song: Song }): ReactNode {
       title={loading ? `正在准备《${song.name}》的歌词与音源` : undefined}
     >
       {loading ? (
-        <LoadingIsland />
+        <LoadingIsland song={song} />
       ) : error ? (
         <span className="pi-home__status--error">{error}</span>
       ) : notice ? (

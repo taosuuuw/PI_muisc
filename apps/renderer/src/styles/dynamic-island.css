@@ -1,0 +1,186 @@
+/* ------------------------------------------------------------------ *
+ * 顶部灵动岛：多通知共存时的「药丸 + 小球」形变（用户本轮第 2 条）
+ *
+ * 用户的原文：
+ *   「灵动岛提示遇到多个通知同时存在时（比如少女祈祷中与切换先锋风格），
+ *     新出现的通知可以暂时顶到前面，旧通知缩成小球在旁边，就如图1所示。
+ *     新通知消失旧通知还存在时，旧通知从小球变成灵动岛。小球和灵动岛间的变化有灵动的动画」
+ *
+ * 结构（`DynamicIsland.tsx` 渲染）：一整排 `.pi-island-stack` 里若干颗 `.pi-island`，
+ * **最后一条是 `data-island-slot="lead"`（药丸）**，前面几条是 `ball`（小球）。
+ * 两种形态用**同一棵 DOM**，所以形态切换是 CSS 过渡，不是重新挂载 —— 这正是「小球变成岛」
+ * 能连贯长出来的原因（含里面的文字：`__text` 用 `grid-template-columns: 0fr → 1fr`，
+ * 不量文字宽度也能把宽度平滑撑开，Chromium 支持；Electron 44 上实测可用）。
+ *
+ * 材质沿用上一版那颗岛的规矩：**恒为近黑玻璃**，全仓唯一故意不跟 `--pi-glass-*` 的地方 ——
+ * iPhone 的岛在浅色界面里也是黑的，恒定深色就是它的辨识特征。暗档只提亮轮廓（发丝边 + 落影）。
+ *
+ * 四条纪律（前三条是上一版就有的，别弄丢）：
+ *   ① 整排 `pointer-events: none`：它浮在顶框拖拽带上方，绝不能把拖窗口的那一带吃成死区；
+ *   ② 自身 `-webkit-app-region: no-drag`；
+ *   ③ 只有圆点跟主题（`--pi-primary`），胶囊本身恒定深色；
+ *   ④ **时序不在这里**：显示 2s、出场 0.24s 由发布者（`StyleToast` 的 `SHOW_MS`/`EXIT_MS`）决定，
+ *      `apps/desktop/src/main/index.ts:15214` 起那段冒烟探针读的就是这些时刻，改时长就破约。
+ * ------------------------------------------------------------------ */
+
+.pi-island-stack {
+  --pi-island-top: 8px;
+  --pi-island-h: 32px;
+  --pi-island-bg: rgba(11, 15, 22, 0.86);
+  --pi-island-fg: #ffffff;
+  --pi-island-ring: rgba(255, 255, 255, 0.07);
+  --pi-island-gloss: rgba(255, 255, 255, 0.16);
+  /* 小球 ⇄ 药丸那条过渡的时长与曲线（形变本身、以及里面文字格的收放都用这一份）。 */
+  --pi-island-morph: 0.42s;
+  --pi-island-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --pi-island-shadow:
+    inset 0 1px 0 var(--pi-island-gloss), inset 0 0 0 1px var(--pi-island-ring),
+    0 2px 6px rgba(6, 10, 16, 0.24), 0 10px 26px rgba(6, 10, 16, 0.28);
+
+  position: fixed;
+  top: var(--pi-island-top);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* 小球与药丸之间那点缝：形状切换时它是「活」的一起收放。 */
+  gap: 8px;
+  pointer-events: none;
+  -webkit-app-region: no-drag;
+}
+
+.pi-island {
+  display: inline-flex;
+  align-items: center;
+  height: var(--pi-island-h);
+  /* 小球态：没有左右内边距，宽度就等于下面那条 `min-width`（24px 的小圆）。 */
+  padding: 0;
+  gap: 0;
+  border-radius: 999px;
+  background: var(--pi-island-bg);
+  /*
+   * ⚠️ 这里**故意不做背景模糊**（主人第 16 轮：「灵动岛与小球之间的切换互动动画还是有点卡顿」）。
+   *
+   * 原来这一条是 `backdrop-filter: blur(14px) saturate(1.25)`。问题不在它平时贵，而在**形变时
+   * 每帧都要重做一次**：元素尺寸一变，Chromium 就得按新的范围重新采样它背后的画面、再模糊一次 ——
+   * 于是那 0.42s 里每一帧都是「重排 + 重绘 + 重做一遍模糊」。逐帧实测（`.tmp/frames.mjs`，
+   * 空闲基线最大帧 13.8ms 干净无慢帧）：
+   *   形变期间出现 13 帧 > 20ms，最高 **181ms**（42 / 70 / 28 / 21 / 181 / 132 / 90 / 56 …）。
+   *
+   * 而它几乎看不出差别：底色是 `rgba(11,15,22,0.86)`，86% 的黑已经把背后压没了，
+   * 模糊只剩一点点。去掉之后材质靠「发丝边 + 上缘高光 + 落影」（`--pi-island-shadow`）读出来，
+   * 观感不变、每帧的模糊没了。
+   */
+  box-shadow: var(--pi-island-shadow);
+  color: var(--pi-island-fg);
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  /* 挂载时「从顶边里撑出来」；形态切换不会重挂载，所以这条动画不会重播。 */
+  transform-origin: top center;
+  animation: pi-island-in 0.3s var(--pi-island-ease) both;
+  /*
+   * 小球 ⇄ 药丸：内边距、最小宽度与高度一起走同一条曲线。
+   * `gap` 不在列表里 —— 岛上已经没有图案区了（第 10 轮第 1 条删掉的），这个属性是空的，
+   * 留着只会让每帧多算一项。`opacity` 单独一条更短的（退场用）。
+   */
+  transition:
+    min-width var(--pi-island-morph) var(--pi-island-ease),
+    height var(--pi-island-morph) var(--pi-island-ease),
+    padding var(--pi-island-morph) var(--pi-island-ease),
+    opacity 0.24s ease;
+}
+
+/* 小球：一颗空的小黑球（主人第 10 轮第 1 条起岛上不再有图案，形状就是唯一的信号），
+   比药丸矮一圈，收起来才看得出来是「缩」而不是「换了个短的」。 */
+.pi-island[data-island-slot='ball'] {
+  min-width: 24px;
+  height: 24px;
+}
+
+/* 药丸态：撑开内边距，文字格从 0fr 长到 1fr。 */
+.pi-island[data-island-slot='lead'] {
+  min-width: 0;
+  padding: 0 14px;
+  gap: 7px;
+}
+
+/* 主人第 10 轮第 1 条：「图1 红圈框选的部分可以删去，灵动岛只保留文本显示」——
+   这里原来有 `__mark` / `__cover` / `__dot` 三块（药丸左边那颗图案区），整块删掉了：
+   岛上现在只有文字，形状（药丸 32px / 小球 24px）就是它唯一的自我表达。
+   留下这段注释是为了让以后的人知道「这里曾经有图案，是主人点名去掉的」，别再顺手加回来。 */
+
+.pi-island__text {
+  /* 0fr → 1fr：不量文字宽度也能平滑改变宽度（小球态把它裁没，DOM 里仍留着文字）。 */
+  display: grid;
+  grid-template-columns: 0fr;
+  overflow: hidden;
+  white-space: nowrap;
+  transition: grid-template-columns var(--pi-island-morph) var(--pi-island-ease);
+}
+
+.pi-island__text > * {
+  min-width: 0;
+}
+
+.pi-island[data-island-slot='lead'] .pi-island__text {
+  grid-template-columns: 1fr;
+}
+
+/* 退场：收成小球 + 淡出（0.24s，与 `StyleToast` 的 `EXIT_MS` 对齐）。
+   退场那条**不占药丸位**（见 `DynamicIsland` 的 `leadId`），所以它一边收，
+   旁边那条同时在长回药丸 —— 看起来是接力，不是「先等它消失」。 */
+.pi-island[data-island-leaving='true'] {
+  animation: pi-island-out 0.24s cubic-bezier(0.4, 0, 0.72, 1) both;
+}
+
+.pi-island[data-island-leaving='true'] .pi-island__text {
+  grid-template-columns: 0fr;
+}
+
+[data-theme='dark'] .pi-island-stack {
+  --pi-island-ring: rgba(255, 255, 255, 0.12);
+  --pi-island-gloss: rgba(255, 255, 255, 0.18);
+  --pi-island-shadow:
+    inset 0 1px 0 var(--pi-island-gloss), inset 0 0 0 1px var(--pi-island-ring),
+    0 2px 6px rgba(0, 0, 0, 0.5), 0 12px 30px rgba(0, 0, 0, 0.62);
+}
+
+@keyframes pi-island-in {
+  from {
+    /* 0.72 的小核 + 4px 上提：读起来像「岛从顶边里撑出来」。 */
+    transform: translateY(-4px) scale(0.72);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0) scale(1);
+    opacity: 1;
+  }
+}
+
+@keyframes pi-island-out {
+  from {
+    transform: scale(1);
+    opacity: 1;
+  }
+  to {
+    transform: scale(0.86) translateY(-7px);
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pi-island,
+  .pi-island__text {
+    transition-duration: 0.01s;
+  }
+
+  .pi-island,
+  .pi-island[data-island-leaving='true'] {
+    animation-duration: 0.01s;
+  }
+}

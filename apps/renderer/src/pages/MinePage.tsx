@@ -8,6 +8,7 @@ import { DownloadList, LocalLibrarySection } from '../components/DownloadList';
 // `LikedWall`（环形/墙面展示）本轮在「我的喜欢」页签被 `SongCollage` 取代，
 // 这里不再引用它——但组件文件保留，别的页面/下一轮可能还要用。
 import { NeedsLogin } from '../components/NeedsLogin';
+import { Icon } from '../components/Icons';
 import { NewPlaylistCard } from '../components/NewPlaylistCard';
 import { PlaylistGrid } from '../components/PlaylistGrid';
 // 第十七轮第 ② 条：平凡风格的歌曲列表换成竖排列表（`SongCards` 那套封面卡片在新方案里
@@ -31,9 +32,12 @@ import {
   useLikedTracksPaged,
   useMyPlaylists,
   useRecentTracks,
+  useToggleLike,
 } from '../lib/queries';
 // 用户 m03805 第 1 条：平凡列表的「加载更多」按钮换成下滑自动加载。
 import { useAutoLoadMore } from '../lib/useAutoLoadMore';
+import { coverAt } from '../lib/cover';
+import { usePlayer } from '../state/player';
 import { useNowPlaying } from '../state/nowPlaying';
 import { useUi, type UiStyle } from '../state/ui';
 // 第十八轮第 5/8/10 条（用户 m01482）：底栏从这一页的 `HomeBar persistent` 换成公共的
@@ -90,6 +94,8 @@ export function MinePage({ tab }: MinePageProps): ReactNode {
    */
   const openPlaylist = useUi((s) => s.openPlaylist);
   const navigate = useUi((s) => s.navigate);
+  /** 主人第 15 轮：退出键要回「上一级歌单选择页」，来源由 store 的 `navigate` 记着。 */
+  const lastNav = useUi((s) => s.lastNav);
   /** 第十七轮第 ②③ 条：这一页的歌曲列表按风格二选一（平凡竖排列表 / 先锋队列拼贴）。 */
   const uiStyle = useUi((s) => s.uiStyle);
 
@@ -100,7 +106,13 @@ export function MinePage({ tab }: MinePageProps): ReactNode {
    * （`useLikedTracksPaged`，offset 推进），而不是一次要 100 首。
    */
   const liked = useLikedTracksPaged(loggedIn && tab === 'like', LIKED_PRELOAD_PAGE_SIZE);
-  const playlists = useMyPlaylists(loggedIn && tab === 'playlists');
+  /**
+   * 歌单列表这两档都要用 `useMyPlaylists`：`playlists` 页签自己要用，而「我的喜欢」也要它
+   * —— 主人第 11 轮第 1 条让这一页抬头变成「歌单封面 + 歌单名」，那张封面就是「我喜欢的音乐」
+   * 这张歌单自己的 `coverImgUrl`（`withLikedFirst` 会把它置首）。多这一次 `/user/playlist`
+   * 换来抬头有真封面，值。
+   */
+  const playlists = useMyPlaylists(loggedIn && (tab === 'playlists' || tab === 'like'));
   // 用户第五轮第 9 条：拼贴页的边缘暗角（只在深色档真的画出来，判定在 CSS 里）。
   const edgeVignette = useEdgeVignette();
 
@@ -127,6 +139,22 @@ export function MinePage({ tab }: MinePageProps): ReactNode {
 
   const meta = TITLES[tab];
 
+  /**
+   * 玻璃底（主人第 8 轮第 3 条）：「我的喜欢、听过的歌的歌曲选择页如图2所示不透明，需要改成玻璃底」。
+   *
+   * 这两页的**竖排列表**（平凡风格）原来是整屏铺在底色上的一整块不透明板；改成：主区自己用
+   * 全仓那套 `--pi-glass-*` 料（样式在 `styles/global.css` 的 `[data-page='mine:like']` 那一条），
+   * 底下垫一层当前封面的大半径虚化（`.pi-mine-backdrop`）—— 玻璃才有东西可「透」。
+   *
+   * ⚠️ 主人第 13 轮又收了一次：「界面都没填充满应用界面，是不是单独做了个框架」——
+   * 上一版给这块玻璃加了外边距 + 圆角 + 落影，看起来像一张浮在背景上的卡，而别的歌单页都是
+   * 铺满的。现在几何上一律贴边，只留材质（见那条 CSS 里的注释）。
+   *
+   * 先锋风格（队列拼贴）不套这一层：那面墙自己就是整屏内容，本来也没有底板。
+   */
+  const glassList = uiStyle !== 'avant' && (tab === 'like' || tab === 'recent');
+  const playingCover = coverAt(usePlayer((s) => s.currentSong?.album?.coverUrl), 640) ?? '';
+
   /** 翻页拿到的所有喜歌（按页面顺序拼接；offset 由 hook 内部推进，这里不重排）。 */
   const likedSongs = useMemo(
     () => (liked.data?.pages ?? []).flatMap((page) => page.tracks),
@@ -134,6 +162,42 @@ export function MinePage({ tab }: MinePageProps): ReactNode {
   );
   const likedTotal = liked.data?.pages[0]?.total;
   const likedHasMore = liked.hasNextPage === true;
+
+  /**
+   * 主人第 11 轮第 1 条：「我的喜欢」的抬头要和**其他歌单一样** = 歌单封面 + 歌单名，
+   * 而且**点封面就能删歌**。
+   *
+   * 封面取「我喜欢的音乐」那张歌单自己的 `coverImgUrl`（`withLikedFirst` 把它置首）。
+   * 拿不到就退回一块空封面（图标），不会因为少一张图就整块抬头塌掉。
+   */
+  const likedPlaylist = useMemo(
+    () => withLikedFirst(playlists.data?.playlists ?? [])[0] ?? null,
+    [playlists.data],
+  );
+  const likedCover = coverAt(likedPlaylist?.coverUrl, 200);
+  /** 编辑态（点封面切换）：平凡档每行左边浮现删除键，先锋档每格右上角浮现删除键。 */
+  const [likeEditing, setLikeEditing] = useState(false);
+  const toggleLike = useToggleLike();
+  /**
+   * 已经点了删除、还在等接口回来的那几首：**先从界面上拿掉**。
+   * 不这么做的话，点了删除键要等 `['library']` 作废重拉（几百毫秒）才消失，
+   * 那几秒里界面像没反应。接口失败就把 id 放回去（歌自己会重新出现）。
+   */
+  const [removingIds, setRemovingIds] = useState<readonly number[]>([]);
+  const visibleLikedSongs = useMemo(
+    () => likedSongs.filter((song) => !removingIds.includes(song.id)),
+    [likedSongs, removingIds],
+  );
+  const removeLiked = useCallback(
+    (song: Song) => {
+      setRemovingIds((ids) => (ids.includes(song.id) ? ids : [...ids, song.id]));
+      toggleLike.mutate(
+        { songId: song.id, like: false },
+        { onError: () => setRemovingIds((ids) => ids.filter((id) => id !== song.id)) },
+      );
+    },
+    [toggleLike],
+  );
 
   /**
    * 用户 m03805 第 1 条（原来的「加载更多」按钮改成下滑自动加载）：
@@ -338,8 +402,27 @@ export function MinePage({ tab }: MinePageProps): ReactNode {
 
   return (
     <>
-      <h1 className="pi-page-title">{meta.title}</h1>
-      <p className="pi-page-sub">{meta.sub}</p>
+      {/* 玻璃底（主人本轮第 3 条）：垫一层当前封面的大半径虚化，玻璃面板才有东西可透。
+          它是 `position: fixed` 的纯装饰层，放哪儿都不影响这一页的排版。 */}
+      {glassList && playingCover !== '' ? (
+        <div
+          className="pi-mine-backdrop"
+          data-mine-backdrop="true"
+          aria-hidden="true"
+          style={{ backgroundImage: `url("${playingCover}")` }}
+        />
+      ) : null}
+      {/*
+       * 主人第 11 轮第 1 条：「图1 红色框选部分应改成和其他歌单一样的歌单封面加上歌单名的形式」
+       * —— 红圈圈的就是这两行（页面大标题 + 副标题）。「我的喜欢」这一页改成下面的抬头
+       * （`.pi-detail__hero`，和歌单浮层同一套），所以这两行在那一档不再渲染。
+       */}
+      {tab === 'like' ? null : (
+        <>
+          <h1 className="pi-page-title">{meta.title}</h1>
+          <p className="pi-page-sub">{meta.sub}</p>
+        </>
+      )}
 
       {account.isPending ? (
         <div className="pi-placeholder">正在读取账号信息…</div>
@@ -359,7 +442,68 @@ export function MinePage({ tab }: MinePageProps): ReactNode {
              * 所以只有在「一首都没拿到」（首次加载就失败）时才把错误交给它，其余情况
              * 把话写在下面那行小字里，歌照旧留着。
              */
-            <AsyncSection isPending={liked.isPending} error={likedSongs.length > 0 ? null : liked.error}>
+            <>
+              {/*
+               * 左上角那枚**退出键**（主人第 12 轮第 2 条：「我的喜欢歌单在平凡风格下左上角
+               * 缺失液态玻璃材质的退出键」）。和歌单浮层那枚同一套材质，热区靠近才浮现。
+               *
+               * 去哪一级：主人第 15 轮点名的 bug ——「点左上角退出键不是回到上一级歌单选择页
+               * 而是回到播放页」。这一页的入口主要是**歌单选择页里的「我喜欢的音乐」那张卡**
+               * （`openMinePlaylist` → `navigate('mine:like')`），所以上一级就该是那一页。
+               * `nav` 本身只是一根当前值，遂在 store 的 `navigate` 里记了一层 `lastNav`；
+               * 没记过（比如从抽屉直接点进来）就退回播放页。
+               */}
+              <div className="pi-mine-exit-zone">
+                <button
+                  type="button"
+                  className="pi-detail__exit pi-mine-exit"
+                  data-mine-exit="true"
+                  aria-label="回到歌单选择页"
+                  title="回到歌单选择页"
+                  onClick={() => navigate(lastNav ?? 'home')}
+                >
+                  <Icon name="chevronLeft" size={16} />
+                </button>
+              </div>
+
+              {/*
+               * 抬头（主人第 11 轮第 1 条）：和歌单浮层同一套「封面 + 歌单名 + N 首」。
+               * 点封面进/出编辑态 —— 平凡档每行左边浮现删除键、先锋档每格右上角浮现，
+               * 删除 = 取消喜欢（`/like` like=false）。触屏没有 hover，牌子常显（CSS 里管）。
+               */}
+              <div className="pi-detail__hero pi-mine-hero">
+                <button
+                  type="button"
+                  className="pi-detail__cover-btn"
+                  data-mine-edit="true"
+                  aria-pressed={likeEditing}
+                  aria-label={likeEditing ? '退出编辑' : '编辑我喜欢的音乐'}
+                  title={likeEditing ? '退出编辑' : '编辑：点一下，每首歌旁边会出现删除键'}
+                  onClick={() => setLikeEditing((value) => !value)}
+                >
+                  {likedCover ? (
+                    <img className="pi-detail__cover" src={likedCover} alt="" />
+                  ) : (
+                    <span className="pi-detail__cover pi-plcard__cover--empty">
+                      <Icon name="heart" size={34} />
+                    </span>
+                  )}
+                  <span className="pi-detail__cover-hint" aria-hidden="true">
+                    {likeEditing ? '编辑中' : '编辑'}
+                  </span>
+                </button>
+                <div style={{ minWidth: 0 }}>
+                  <h2 className="pi-detail__title">我喜欢的音乐</h2>
+                  <p className="pi-page-sub">
+                    {visibleLikedSongs.length} 首
+                    {likedTotal !== undefined && likedTotal > visibleLikedSongs.length
+                      ? ` · 共 ${likedTotal} 首`
+                      : ''}
+                  </p>
+                </div>
+              </div>
+
+              <AsyncSection isPending={liked.isPending} error={likedSongs.length > 0 ? null : liked.error}>
               {uiStyle === 'avant' ? (
                 /* 第十三轮第 7 条（用户 m04663）：歌单/列表改成队列拼贴。
                    `display: contents` 的外壳只用来挂滚轮监听，不产生盒子、不改布局。 */
@@ -382,13 +526,16 @@ export function MinePage({ tab }: MinePageProps): ReactNode {
                   {preloadDone ? (
                     <SongCollage
                       ref={collageRef}
-                      songs={likedSongs}
+                      songs={visibleLikedSongs}
                       onSelect={select}
                       onEnterPlaying={enterPlaying}
                       hasMore={likedHasMore}
                       onNeedMore={needMore}
                       /* 第十八轮第 6 条：这面墙自己在后台一批批长大，不用等用户拖到边上。 */
                       autoMore
+                      /* 主人第 11 轮第 3 条：先锋档这一页原来一格删除键都没有（没传 `onRemove`），
+                         现在传上：编辑态下每格右上角浮现删除键，点了就是取消喜欢。 */
+                      onRemove={removeLiked}
                       /* 用户第五轮第 9 条：边缘暗角。 */
                       edgeVignette={edgeVignette}
                     />
@@ -408,8 +555,11 @@ export function MinePage({ tab }: MinePageProps): ReactNode {
                    高度，免得最后几行被药丸压住。 */
                 <div style={{ paddingBottom: 104 }}>
                   <SongList
-                    songs={likedSongs}
+                    songs={visibleLikedSongs}
                     onSelect={select}
+                    /* 主人第 11 轮第 1 条：点封面进编辑态后，每行左边浮现删除键。 */
+                    editing={likeEditing}
+                    onRemove={removeLiked}
                     emptyText="我喜欢的音乐还是空的。"
                   />
                 </div>
@@ -452,6 +602,7 @@ export function MinePage({ tab }: MinePageProps): ReactNode {
                 </div>
               ) : null}
             </AsyncSection>
+            </>
           ) : null}
 
           {/* 第十八轮第 5/8/10 条：歌单页底栏 —— 与播放页同一条药丸（常态只留进度条，

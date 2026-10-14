@@ -6,6 +6,7 @@ import {
   Tray,
   globalShortcut,
   nativeImage,
+  nativeTheme,
   shell,
 } from 'electron';
 import type { NativeImage } from 'electron';
@@ -24,6 +25,8 @@ import {
   resolveTrayIcon,
   trayIconCandidates,
 } from './tray.js';
+import { buildThumbarGlyph, describeThumbar, thumbarSpecs } from './thumbar.js';
+import { EVT, type MediaStateReport } from '@pi/ipc';
 import type { Settings, Song } from '@pi/shared';
 
 /** 连续播放冒烟默认抽查几首（M2 验收要求「能连续播放 3 首」）。 */
@@ -289,6 +292,86 @@ function resolveAppIcon(): string | undefined {
     resourcesPath: process.resourcesPath,
     exeDir: path.dirname(app.getPath('exe')),
   }).find((candidate) => existsSync(candidate));
+}
+
+/* ------------------------------------------------------------------ *
+ * 任务栏缩略图工具栏（主人本轮第 3 条）
+ * ------------------------------------------------------------------ */
+
+/*
+ * 主人原话：「悬停任务栏出现的预览框底部缺少音乐播放器应该拥有的部件，如图 3 所示的上下切歌和暂停」。
+ *
+ * 那排键是 Windows 画的（`ITaskbarList3::ThumbBarAddButtons`），Electron 把它包成
+ * `BrowserWindow.setThumbarButtons()`，**只有 Windows 有**。所以：
+ *   · 字形与「什么状态摆哪三枚」的纯逻辑在 `thumbar.ts`（有单测，不碰 Electron）；
+ *   · 这里只做「把位图包成 NativeImage、点一下就把动作发给渲染进程、状态变了重挂一次」。
+ *
+ * 为什么中间那枚键的字形由渲染层回报、而不是主进程自己记：`<audio>` 与队列状态机都在渲染层，
+ * 「解析失败自动跳下一首」这类事主进程推算不出来 —— 自己记会画出跟真实播放状态相反的键。
+ */
+
+/** 渲染层报上来的播放状态（三态，定义在 `@pi/ipc` 的 `MediaStateReport`）。 */
+let mediaStatus: MediaStateReport['status'] = 'idle';
+
+/**
+ * 把三枚键挂到窗口的缩略图上。
+ *
+ * 没窗口 / 不是 Windows 就直接返回：`setThumbarButtons` 在别的平台不存在，
+ * 而「为了一排按钮让应用起不来」是绝对不能接受的（和图标、托盘同一条规矩）。
+ */
+function updateThumbarButtons(): void {
+  if (process.platform !== 'win32') return;
+  const win = mainWindow;
+  if (!win || win.isDestroyed()) return;
+  const specs = thumbarSpecs(mediaStatus);
+  const dark = nativeTheme.shouldUseDarkColors;
+  const buttons: Electron.ThumbarButton[] = specs.map((spec) => {
+    const glyph = buildThumbarGlyph(spec.glyph, { dark });
+    return {
+      icon: nativeImage.createFromBitmap(glyph.buffer, { width: glyph.width, height: glyph.height }),
+      tooltip: spec.tooltip,
+      flags: spec.disabled ? ['disabled'] : [],
+      click: () => {
+        if (win.isDestroyed()) return;
+        // 只转发「哪一枚被点了」，落到哪个 action 由渲染层按它的状态机决定。
+        win.webContents.send(EVT.mediaCommand, spec.action);
+      },
+    };
+  });
+  const applied = win.setThumbarButtons(buttons);
+  console.info(`[pi/thumbar] ${describeThumbar(specs, applied)}`);
+}
+
+/** 系统明暗切换时重画一次（缩略图图标不会被系统自动反色，见 `thumbar.ts` 顶部）。 */
+let thumbarThemeHooked = false;
+function hookThumbarTheme(): void {
+  if (thumbarThemeHooked) return;
+  thumbarThemeHooked = true;
+  nativeTheme.on('updated', () => updateThumbarButtons());
+}
+
+/** 是否已经收到过渲染层的第一次回报（只用来打一行日志，见下）。 */
+let mediaStatusReported = false;
+
+/**
+ * 渲染层回报播放状态。
+ *
+ * 只在**状态真的变了**时才重挂：渲染层那边已经做了去重，但这里再挡一道 ——
+ * 每次重挂都是一次 `ITaskbarList3` 调用 + 一行日志，position 每帧变一次的时候
+ * 不该把日志刷满。
+ *
+ * 第一次收到回报时无论如何都打一行：这条通道的方向是「渲染层说了算」，而
+ * 静默失败（通道没接上 / preload 没起来）在外观上和「状态压根没变」一模一样 ——
+ * 留一行日志，排障时不用猜。
+ */
+function applyMediaStatus(next: MediaStateReport['status']): void {
+  if (!mediaStatusReported) {
+    mediaStatusReported = true;
+    console.info(`[pi/thumbar] 渲染层已回报播放状态：${next}`);
+  }
+  if (next === mediaStatus) return;
+  mediaStatus = next;
+  updateThumbarButtons();
 }
 
 /* ------------------------------------------------------------------ *
@@ -587,11 +670,40 @@ function createWindow(): void {
 
   mainWindow.once('ready-to-show', () => {
     mainWindow?.show();
+    /*
+     * 缩略图工具栏（主人本轮第 3 条）挂在这里而不是窗口创建之后：
+     * `ITaskbarList3` 要等**任务栏真的有了这个窗口的按钮**才吃得住，窗口还没上屏时挂的
+     * 键在部分系统上会被丢掉（悬停卡片底下就是空的）。
+     */
+    hookThumbarTheme();
+    updateThumbarButtons();
     // 冒烟还需要窗口真的在前台：被遮挡时 Chromium 连纯 hover 的鼠标移动都不投递给渲染进程。
     if (smokeRun) {
       mainWindow?.setAlwaysOnTop(true);
       mainWindow?.focus();
     }
+  });
+
+  /*
+   * F11 = 最大化 / 还原（主人本轮第 1 条）。
+   *
+   * 原来这里是**独占全屏**（`setFullScreen`），主人现在明确不要那一套：「我觉得不需要全屏按键，
+   * 而是让最大化按键的逻辑就是全屏，并且保留最大化的过渡动画。鼠标往下移到底部依旧可以唤起
+   * 隐藏的任务栏。」——独占全屏恰恰会把任务栏整条压死、鼠标碰底边也不弹，和第二句相反；
+   * 而 Windows 的最大化会连自动隐藏的任务栏那条一起盖住，同时**故意留那条 1~2px 的悬停沿**，
+   * 鼠标碰底边照样能唤出任务栏。所以「铺满屏幕」在这个应用里统一成**最大化**：
+   * 右上那颗独立的全屏键删了（`WindowControls`），F11 也改走这里。
+   *
+   * 挂在主进程的 `before-input-event`（不是渲染层 keydown）：无论焦点在哪个元素、
+   * 页面里有没有输入框拦键，F11 都该管用。**故意不拦 Esc** —— 页面上 Esc 有自己的语义（收浮层）。
+   */
+  mainWindow.webContents.on('before-input-event', (event, input) => {
+    if (input.type !== 'keyDown' || input.key !== 'F11') return;
+    event.preventDefault();
+    const win = mainWindow;
+    if (win === null || win.isDestroyed()) return;
+    if (win.isMaximized()) win.unmaximize();
+    else win.maximize();
   });
 
   /*
@@ -2873,7 +2985,16 @@ async function describePage(win: BrowserWindow): Promise<string> {
   return (await win.webContents.executeJavaScript(
     `(() => {
       const main = document.querySelector('.pi-main');
-      return (document.querySelector('.pi-page-title')?.textContent || '') + '｜' +
+      /*
+       * 主人第 11 轮第 1 条把「我的喜欢」的页面大标题（pi-page-title）换成了歌单样式的抬头
+       * （pi-detail__title：封面 + 歌名），所以那一页这里要能退回抬头去读，否则整页描述
+       * 会以「｜」开头、日志里认不出是哪一页。
+       * ⚠️ 这段在模板字符串里，注释里**不能出现反引号**（见 19860 行那段警告）。
+       */
+      const title = document.querySelector('.pi-page-title')?.textContent
+        || document.querySelector('.pi-detail__title')?.textContent
+        || '';
+      return title + '｜' +
         (main?.textContent || '').replace(/\\s+/g, ' ').slice(0, 90);
     })()`,
     true,
@@ -20260,9 +20381,15 @@ void app.whenReady().then(async () => {
     closeAction = 'quit';
   }
 
-  registerIpc(services, () => mainWindow, (next) => {
-    closeAction = next.closeAction;
-  });
+  registerIpc(
+    services,
+    () => mainWindow,
+    (next) => {
+      closeAction = next.closeAction;
+    },
+    // 缩略图工具栏中间那枚键的字形跟着渲染层的真实播放状态走（主人本轮第 3 条）。
+    applyMediaStatus,
+  );
 
   // 自动验收模式：跑完即退出，不创建窗口。
   if (process.env.PI_SMOKE_PLAY) {

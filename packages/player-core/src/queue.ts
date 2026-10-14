@@ -178,3 +178,64 @@ export function cycleMode(mode: PlayMode): PlayMode {
 export function currentId(state: QueueState): number | undefined {
   return state.index >= 0 ? state.ids[state.index] : undefined;
 }
+
+/**
+ * 把第 `from` 首挪到第 `to` 个位置（主人本轮第 3 条：长按歌曲一行拖动改顺序）。
+ *
+ * 纯函数：只重排 `ids`，并把 `index`（当前曲目在 `ids` 里的下标）跟着挪到同一首歌上 ——
+ * 拖动别的歌绝不能让「正在播的那首」突然换人。`shuffle` 的那条播放序列（`shuffleOrder`）
+ * 存的是**下标**，重排后下标全体错位，所以这里直接把它重置成空（下一次切歌会按新顺序重算），
+ * 免得出现「随机序列指着一个已经换了歌的下标」。
+ *
+ * 下标越界一律原样返回（拖动过程中的中间态不值得抛错）。
+ */
+export function moveInQueue(state: QueueState, from: number, to: number): QueueState {
+  const count = state.ids.length;
+  if (!Number.isInteger(from) || !Number.isInteger(to)) return state;
+  if (from < 0 || from >= count || to < 0 || to >= count || from === to) return state;
+
+  const ids = [...state.ids];
+  const [moved] = ids.splice(from, 1);
+  if (moved === undefined) return state;
+  ids.splice(to, 0, moved);
+
+  /* 当前曲目的新下标：按「被移动的是不是它、移动方向跨没跨过它」三种情况算。 */
+  let index = state.index;
+  if (state.index === from) index = to;
+  else if (from < state.index && to >= state.index) index = state.index - 1;
+  else if (from > state.index && to <= state.index) index = state.index + 1;
+
+  return { ...state, ids, index: clampIndex(index, ids.length), shuffleOrder: [], shuffleCursor: 0 };
+}
+
+/**
+ * 从队列里去掉第 `at` 首（主人本轮第 3 条：歌曲选择页要能删歌）。
+ *
+ * 返回 `{ state, removedId, wasCurrent }`：
+ *   · `removedId` 给调用方用（比如「从歌单删掉」要拿 id）；
+ *   · `wasCurrent` 为真表示**删掉的正是正在播的那首** —— 队列状态机在这里不替用户做决定
+ *     （是接着播下一首还是停下，得看 `<audio>` 那一侧的情况），交给 `state/player.ts` 处理。
+ *
+ * 删掉当前曲目**之前**的一首时下标注跟着减一，保证「正在播的还是同一首」。
+ */
+export function removeFromQueue(
+  state: QueueState,
+  at: number,
+): { state: QueueState; removedId: number | undefined; wasCurrent: boolean } {
+  const count = state.ids.length;
+  if (!Number.isInteger(at) || at < 0 || at >= count) {
+    return { state, removedId: undefined, wasCurrent: false };
+  }
+  const ids = state.ids.filter((_, position) => position !== at);
+  const wasCurrent = at === state.index;
+  const index = wasCurrent
+    ? clampIndex(state.index, ids.length)
+    : at < state.index
+      ? state.index - 1
+      : state.index;
+  return {
+    state: { ...state, ids, index, shuffleOrder: [], shuffleCursor: 0 },
+    removedId: state.ids[at],
+    wasCurrent,
+  };
+}

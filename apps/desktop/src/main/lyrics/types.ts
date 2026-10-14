@@ -61,6 +61,14 @@ export interface LyricProvider {
   readonly supportsWord: boolean;
   /** 是否需要联网（本地导入的那个源不需要）。 */
   readonly needsNetwork: boolean;
+  /**
+   * 兜底源：**主力源一个都没命中时才问它**（目前只有 Lrclib）。
+   *
+   * 为什么要这个标记：解析器是并行问所有源、等最慢的那个回。兜底源是免费的社区接口，
+   * 偶尔要好几秒（本机实测撞到过 8 秒超时），不标出来的话每次取词都会白等它一轮 ——
+   * 哪怕平台早就把词给了。判定与两段式流程见 `resolver.ts` 的 `compute()`。
+   */
+  readonly fallback?: boolean;
   candidates(query: LyricQuery, signal: AbortSignal): Promise<LyricCandidate[]>;
 }
 

@@ -13,6 +13,7 @@ import { SongPageOverlay } from './components/SongPageOverlay';
 import { PlaylistCoverflowOverlay, type PlaylistNav } from './components/PlaylistCoverflowOverlay';
 import { ShortcutLayer } from './components/ShortcutLayer';
 import { StyleToast } from './components/StyleToast';
+import { DynamicIsland } from './components/DynamicIsland';
 import { customAccentTokens } from './lib/accent';
 import { useIdle } from './lib/idle';
 import { useLastPlayed } from './lib/last-played';
@@ -239,6 +240,22 @@ function usePageLeave(
     const from = current.current;
     // 浮层那一档自己交叉淡出（`SongListOverlay` 的 `data-closing`），不需要这一层。
     if (kind !== 'page' || from === 'home') return;
+    /*
+     * **先锋档的「我的喜欢 / 最近听过」不挂副本**（主人第 12 轮第 1 条：「先锋风格下是会闪一下
+     * 才淡出到播放页」）。
+     *
+     * 这两页在先锋档是那面**队列拼贴墙**（`MinePage` 里的 `SongCollage`）。副本是**重新挂载**
+     * 的一份 `MinePage`：数据虽然在 react-query 缓存里，但墙要重新算几何、重新摆格、封面重新解码，
+     * 于是换页那一拍屏幕上先出现「另一面还没摆好的墙」——就是主人看到的「闪一下」。
+     * 先锋档的歌单页没这个问题：它们本来就是浮在播放页上的封面卡片层
+     * （`isPlaylistNav` 那三档，副本挂的是同一个层、内容早就渲染好）。
+     *
+     * 所以这两页在先锋档只留**薄幕**那次淡出（`useArriveVeil` 照旧会铺），不挂副本。
+     */
+    if (uiStyle === 'avant' && (from === 'mine:like' || from === 'mine:recent')) {
+      setLeave({ page: null, cover: null });
+      return;
+    }
     const cover = uiStyle === 'avant' && isPlaylistNav(from) ? from : null;
     token.current += 1;
     const mine = token.current;
@@ -314,8 +331,12 @@ export function App(): ReactNode {
       <ShortcutLayer />
       <WindowControls />
       {/* 用户 m02213 第 5 条：圆球左划换排版之后，从顶框下滑一条「已切换 ⨯⨯ 风格」，
-          显示 2s 再升回顶框里（组件只盯 `uiStyle` 的变化，设置页换排版也认）。 */}
+          显示 2s 再升回顶框里（组件只盯 `uiStyle` 的变化，设置页换排版也认）。
+          本轮（用户第 2 条）它只**发布通知**，本体由灵动岛统一渲染 —— 见下一个组件。 */}
       <StyleToast />
+      {/* 用户本轮第 2 条：顶部灵动岛的通知栈。多条通知同时存在时，最新那条是药丸、
+          先来的缩成小球挂旁边；新的退场后剩下那条自己从小球长回药丸。 */}
+      <DynamicIsland />
       <main
         className="pi-main"
         data-page={nav}

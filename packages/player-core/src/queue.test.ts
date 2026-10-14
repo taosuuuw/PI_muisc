@@ -20,6 +20,8 @@ import {
   currentId,
   cycleMode,
   jumpTo,
+  moveInQueue,
+  removeFromQueue,
   retreat,
 } from './queue.js';
 
@@ -172,5 +174,100 @@ describe('changeMode / createQueue', () => {
     expect(state.mode).toBe('shuffle');
     expect(state.shuffleOrder[0]).toBe(2);
     expect(state.index).toBe(2);
+  });
+});
+
+/**
+ * 拖动改顺序与删歌（主人本轮第 3 条）。
+ *
+ * 这两件事看着像 UI，其实全是「下标怎么跟着挪」的算术 —— 最容易出的错是
+ * 「拖动别的歌，正在播的那首跟着换人」。所以口径全部收在纯函数里、在这里钉死：
+ *   · `moveInQueue` 只重排 `ids`，`index` 始终指向**同一首歌**；
+ *   · `removeFromQueue` 删当前曲目之前的那首时下标注跟着减一，删到当前曲目时要如实回报
+ *     `wasCurrent`（是接着播下一首还是停下，由 `state/player.ts` 决定，纯函数不碰 `<audio>`）。
+ */
+describe('moveInQueue —— 拖动改顺序', () => {
+  it('往后拖：ids 重排，当前曲目仍然指向同一首歌', () => {
+    const state = createQueue([1, 2, 3, 4], 0);
+    const next = moveInQueue(state, 0, 2);
+    expect(next.ids).toEqual([2, 3, 1, 4]);
+    expect(currentId(next)).toBe(1);
+    expect(next.index).toBe(2);
+  });
+
+  it('往前拖：当前曲目在前面的那首被挪到后面时，下标跟着减一', () => {
+    const state = createQueue([1, 2, 3, 4], 3);
+    const next = moveInQueue(state, 0, 2);
+    expect(next.ids).toEqual([2, 3, 1, 4]);
+    expect(currentId(next)).toBe(4);
+    expect(next.index).toBe(3);
+  });
+
+  it('拖的正是正在播的那一首：跟着挪，歌不变', () => {
+    const state = createQueue([1, 2, 3], 1);
+    const next = moveInQueue(state, 1, 0);
+    expect(next.ids).toEqual([2, 1, 3]);
+    expect(currentId(next)).toBe(2);
+    expect(next.index).toBe(0);
+  });
+
+  it('随机播放的排列会被重置（它的值是按旧下标存的，重排后必须作废）', () => {
+    const state = createQueue([1, 2, 3, 4], 1, 'shuffle', zeroRandom);
+    expect(state.shuffleOrder.length).toBe(4);
+    const next = moveInQueue(state, 0, 3);
+    expect(next.shuffleOrder).toEqual([]);
+    expect(next.shuffleCursor).toBe(0);
+    expect(currentId(next)).toBe(2);
+  });
+
+  it('越界与原地不动都原样返回', () => {
+    const state = createQueue([1, 2, 3], 0);
+    expect(moveInQueue(state, 0, 0)).toBe(state);
+    expect(moveInQueue(state, -1, 1)).toBe(state);
+    expect(moveInQueue(state, 0, 3)).toBe(state);
+    expect(moveInQueue(EMPTY_QUEUE, 0, 1)).toBe(EMPTY_QUEUE);
+  });
+});
+
+describe('removeFromQueue —— 从队列删一首', () => {
+  it('删当前曲目后面的那首：当前曲目不受影响', () => {
+    const state = createQueue([1, 2, 3], 0);
+    const { state: next, removedId, wasCurrent } = removeFromQueue(state, 2);
+    expect(next.ids).toEqual([1, 2]);
+    expect(removedId).toBe(3);
+    expect(wasCurrent).toBe(false);
+    expect(currentId(next)).toBe(1);
+  });
+
+  it('删当前曲目前面那首：下标注减一，正在播的还是同一首', () => {
+    const state = createQueue([1, 2, 3], 2);
+    const { state: next, wasCurrent } = removeFromQueue(state, 0);
+    expect(next.ids).toEqual([2, 3]);
+    expect(wasCurrent).toBe(false);
+    expect(currentId(next)).toBe(3);
+    expect(next.index).toBe(1);
+  });
+
+  it('删掉正在播的那一首：如实回报 wasCurrent，下标按夹取处理', () => {
+    const state = createQueue([1, 2, 3], 1);
+    const { state: next, removedId, wasCurrent } = removeFromQueue(state, 1);
+    expect(removedId).toBe(2);
+    expect(wasCurrent).toBe(true);
+    expect(next.ids).toEqual([1, 3]);
+    /* 原来是中间那首，删掉后下标仍为 1 —— 指向接棒的下一首（3）。 */
+    expect(currentId(next)).toBe(3);
+  });
+
+  it('删到空队列：index 夹回 -1 语义（空 ids 时 currentId 为 undefined）', () => {
+    const { state: next, wasCurrent } = removeFromQueue(createQueue([9]), 0);
+    expect(next.ids).toEqual([]);
+    expect(wasCurrent).toBe(true);
+    expect(currentId(next)).toBeUndefined();
+  });
+
+  it('越界原样返回', () => {
+    const state = createQueue([1, 2], 0);
+    expect(removeFromQueue(state, 5).state).toBe(state);
+    expect(removeFromQueue(state, -1).state).toBe(state);
   });
 });

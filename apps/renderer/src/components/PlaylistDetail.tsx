@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import type { Playlist, Song } from '@pi/shared';
 import { CH, errorMessage, invoke } from '../bridge';
@@ -15,10 +15,22 @@ import { SongList } from './SongList';
 import { CollageSearchBar, COLLAGE_SEARCH_EXIT_MS } from './CollageSearchBar';
 // 用户 m03805 第 1 条：平凡列表的「加载更多」按钮换成下滑自动加载。
 import { useAutoLoadMore } from '../lib/useAutoLoadMore';
+import { useEditPlaylistTracks } from '../lib/queries';
 
 export interface PlaylistDetailProps {
   playlist: Playlist;
   onClose: () => void;
+}
+
+/** 歌单封面（有没有图都长这样）：两处用同一份，免得「可编辑 / 只读」两种形态画得不一样。 */
+function PlaylistCover({ cover }: { cover: string | undefined }): ReactNode {
+  return cover ? (
+    <img className="pi-detail__cover" src={cover} alt="" />
+  ) : (
+    <span className="pi-detail__cover pi-plcard__cover--empty">
+      <Icon name="music" size={34} />
+    </span>
+  );
 }
 
 const PAGE_SIZE = 100;
@@ -44,10 +56,33 @@ export function PlaylistDetail({ playlist, onClose }: PlaylistDetailProps) {
   const [hasMore, setHasMore] = useState(true);
   // 加歌面板：只有自己的歌单能加（收藏来的歌单是别人的，加不进去）。
   const [adding, setAdding] = useState(false);
-  const canEdit = playlist.subscribed !== true;
+  /**
+   * 能不能改这个歌单的曲目（主人第 9 轮第 4 条：「**只有我的歌单和播放列表**可以编辑歌单歌曲，
+   * 其他的都不允许」）。
+   *
+   * 判据收在 `subscribed === false` 这一条上：`/user/playlist` 里**自己建的**歌单明确带
+   * `subscribed: false`，收藏来的带 `true`；而推荐歌单 / 收藏页那些对象来自别的接口，
+   * 这个字段**根本没有**（`undefined`）。原来写的是 `subscribed !== true`，于是那些
+   * 「没有这个字段」的歌单全被判成可编辑 —— 正是主人看到的那类越权。
+   * 现在要求**明确说自己不是订阅的**才给编辑入口：拿不准就当不能改。
+   */
+  const canEdit = playlist.subscribed === false;
+  /**
+   * 编辑态（主人本轮第 3 条）：「点击图3红圈的图标，……每首歌左边浮现删除键，再次点击红圈图标删除键消失」。
+   *
+   * 图3 红圈圈的是**歌单封面**（这一页唯一像「图标」的东西），所以点封面 = 进/出编辑态。
+   * 进编辑态后：每行左边浮出删除键（`SongList` 的 `editing` + `onRemove`），
+   * 「添加歌曲」也只在这一姿态里出现 —— 它原来常驻右上角，主人要求去掉（绿色的那一圈）。
+   * 想加歌时点封面进编辑态就能找到它，这条能力不至于因为藏起来而丢掉。
+   */
+  const [editing, setEditing] = useState(false);
+  const editTracks = useEditPlaylistTracks();
   const select = useNowPlaying((s) => s.select);
   /** 第十七轮第 ②③ 条：「歌曲列表」长什么样由全局风格开关决定。 */
   const uiStyle = useUi((s) => s.uiStyle);
+  /** 主人第 10 轮第 5 条：退出键要回「上一级歌单选择页」，来源在 store 里记着。 */
+  const navigate = useUi((s) => s.navigate);
+  const playlistOrigin = useUi((s) => s.playlistOrigin);
   /** 第十八轮第 7 条：拼贴顶上那条搜索（往墙上定位）要拿到拼贴句柄。 */
   const collageRef = useRef<SongCollageHandle>(null);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -180,32 +215,97 @@ export function PlaylistDetail({ playlist, onClose }: PlaylistDetailProps) {
   // 曲目数是活的：全拉完了就以本地列表为准（刚加完歌 prop 里的 trackCount 还是旧的）。
   const liveCount = query.isSuccess && !hasMore ? tracks.length : playlist.trackCount;
 
+  /**
+   * 从歌单里删一首（主人本轮第 3 条）。
+   *
+   * 两步：① 本地先去掉（点下去就有反应，不等网络）；② `libraryPlaylistEditTracks` 的 `op: 'del'`。
+   *
+   * **删完必须从第 0 页重拉**（和 `onAdded` 同一个理由）：歌单是按 offset 分页累加出来的，
+   * 少了一首，后面每一页的 offset 都往前错一格 —— 不重拉就会出现「翻下一页时跳过一首」。
+   */
+  const removeTrack = useCallback(
+    (song: Song) => {
+      setTracks((prev) => prev.filter((item) => item.id !== song.id));
+      editTracks.mutate(
+        { playlistId: playlist.id, trackIds: [song.id], op: 'del' },
+        {
+          onSettled: () => {
+            setTracks([]);
+            setOffset(0);
+          },
+        },
+      );
+    },
+    [editTracks, playlist.id],
+  );
+
   return (
-    <section className="pi-detail" aria-label={`歌单 ${playlist.name}`}>
-      {/* 第九轮第 3 条：歌单浮层里的「返回」键删掉了——点玻璃空白处（或按 Esc）就收回播放页。 */}
+    <section
+      className="pi-detail"
+      aria-label={`歌单 ${playlist.name}`}
+      data-playlist-editing={editing ? 'true' : 'false'}
+    >
+      {/* 第九轮第 3 条：歌单浮层里的「返回」键删掉了——点玻璃空白处（或按 Esc）就收回播放页。
+          主人第 9 轮第 3 条：「右上角红色框选的按键应该删去」——原来常驻的「添加歌曲」与
+          上一轮我加的「完成」都撤了，右上角回到只有「歌单」两个字。
+          进/出编辑态只剩一条路：点左边那张歌单封面（主人第 8 轮就是这么圈的）。
+          加歌这条路没有断：空歌单那张「点这里搜一首歌加进来」还在（见下面的空态按钮）。 */}
+      {/* 主人第 10 轮第 5 条：左上角那枚**退出键**（图3 红圈位置）。
+          平时藏起来（`opacity: 0` + 缩到 0.9），鼠标靠近这一块才浮现；材质是液态玻璃
+          （透底 + 背景模糊 + 上缘高光 + 发丝边）。点它回**上一级歌单选择页** ——
+          也就是打开这个浮层时人站着的那一页（`playlistOrigin`），不是一律回播放页。
+          Esc 与点玻璃空白处照旧是本浮层的另外两条退出路（第九轮第 3 条留的）。 */}
+      <div className="pi-detail__exit-zone">
+        <button
+          type="button"
+          className="pi-detail__exit"
+          data-playlist-exit="true"
+          aria-label="回到歌单选择页"
+          title="回到歌单选择页"
+          onClick={() => {
+            onClose();
+            navigate(playlistOrigin ?? 'home');
+          }}
+        >
+          <Icon name="chevronLeft" size={16} />
+        </button>
+      </div>
+
       <header className="pi-detail__bar">
         <strong>歌单</strong>
         <span className="pi-detail__spacer" />
-        {canEdit ? (
-          <button
-            type="button"
-            className="pi-btn pi-btn--small"
-            data-addtracks-open
-            onClick={() => setAdding((open) => !open)}
-          >
-            {adding ? '收起' : '添加歌曲'}
-          </button>
-        ) : null}
       </header>
 
       <div className="pi-detail__body">
         <div className="pi-detail__hero">
-          {cover ? (
-            <img className="pi-detail__cover" src={cover} alt="" />
+          {/*
+           * 主人第 8 轮第 3 条：点封面 = 进/出编辑态（图3 红圈圈的就是它）。
+           *
+           * 主人第 9 轮第 4 条把范围收紧了：「**只有我的歌单和播放列表**可以编辑歌单歌曲，
+           * 其他的都不允许」。所以**不能编辑的歌单连这个键都不给**：这里渲染成一张普通的
+           * 封面（`<span>`），没有 `data-playlist-edit`、没有「编辑」小牌子、点了也没反应 ——
+           * 否则点下去只会把 `data-playlist-editing` 翻成 `true` 而一个删除键都不出现，
+           * 用户会以为「点了没坏但也没用」。
+           */}
+          {canEdit ? (
+            <button
+              type="button"
+              className="pi-detail__cover-btn"
+              data-playlist-edit="true"
+              aria-pressed={editing}
+              aria-label={editing ? '退出编辑' : '编辑歌单'}
+              title={editing ? '退出编辑' : '编辑歌单：点一下，每首歌左边会出现删除键'}
+              onClick={() => setEditing((value) => !value)}
+            >
+              <PlaylistCover cover={cover} />
+              <span className="pi-detail__cover-hint" aria-hidden="true">
+                {editing ? '编辑中' : '编辑'}
+              </span>
+            </button>
           ) : (
-            <div className="pi-detail__cover pi-plcard__cover--empty">
-              <Icon name="music" size={34} />
-            </div>
+            <span className="pi-detail__cover-btn" data-playlist-cover="readonly">
+              <PlaylistCover cover={cover} />
+            </span>
           )}
           <div style={{ minWidth: 0 }}>
             <h2 className="pi-detail__title">{playlist.name}</h2>
@@ -277,6 +377,7 @@ export function PlaylistDetail({ playlist, onClose }: PlaylistDetailProps) {
                   if (query.isFetching) return;
                   setOffset((n) => n + PAGE_SIZE);
                 }}
+                {...(canEdit ? { onRemove: removeTrack } : {})}
               />
             ) : (
               // 骨架：和 `.pi-collage` 同一层背景，切到真墙时不会闪；里面一个 `data-collage-cell` 都没有。
@@ -297,7 +398,13 @@ export function PlaylistDetail({ playlist, onClose }: PlaylistDetailProps) {
             ) : null}
           </div>
         ) : (
-          <SongList songs={tracks} onSelect={select} emptyText="这个歌单还没有歌。" />
+          <SongList
+            songs={tracks}
+            onSelect={select}
+            emptyText="这个歌单还没有歌。"
+            editing={editing}
+            {...(canEdit ? { onRemove: removeTrack } : {})}
+          />
         )}
 
         {query.isPending ? <div className="pi-placeholder">正在加载…</div> : null}

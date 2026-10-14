@@ -39,6 +39,12 @@ interface CacheEntry {
   value: ResolvedLyric;
 }
 
+/** 一个源的跑腿结果：给界面看的元信息 + 参与打分的候选。 */
+interface ProviderOutcome {
+  info: LyricCandidateInfo;
+  scored: { candidate: LyricCandidate; match: number }[];
+}
+
 export interface ResolveOptions {
   mode: LyricSourceMode;
   /** 自动模式下允许参与挑选的源。 */
@@ -94,27 +100,46 @@ export class LyricResolver {
     // 「用户手动导入的那一份」永远优先：他不是在等匹配，他是在指定用这一份。
     const local = await this.fromLocalImport(query);
 
-    const targets =
+    const pool =
       pinned === undefined
         ? this.providers.filter((item) => item.id !== 'local' && options.enabled[item.id] !== false)
         : PROBE_ALL_IN_PINNED_MODE || pinned.id === 'local'
           ? this.providers.filter((item) => item.id !== 'local')
           : [pinned];
 
-    const outcomes = await Promise.all(targets.map((provider) => this.runProvider(provider, query)));
+    /*
+     * **两段式**：先问主力源，一个都没命中（门槛内）才去问兜底源（`fallback: true`，目前只有 Lrclib）。
+     *
+     * 为什么要分段：`Promise.all` 等的是**最慢的那个**。兜底源是免费的社区词库，
+     * 偶尔要好几秒才回（本机实测撞到过 8 秒超时），不分段的话每次取词都得白等它一轮 ——
+     * 哪怕网易云 300 毫秒就把词给了。分段之后常见路径（平台有词）根本不会去打扰它。
+     *
+     * 钉死某个源时不分段：那时候用户要的就是那一个源，没有「主力/兜底」之分。
+     */
+    const primary = pinned === undefined ? pool.filter((item) => item.fallback !== true) : pool;
+    const fallback = pinned === undefined ? pool.filter((item) => item.fallback === true) : [];
+
+    const outcomes: ProviderOutcome[] = await Promise.all(
+      primary.map((provider) => this.runProvider(provider, query)),
+    );
+    // 钉死某一源时，别的源的结果**只用来展示**（用户能看出「自动会挑哪一个」），不参与选择。
+    const selectableOf = (list: ProviderOutcome[]): ProviderOutcome[] =>
+      pinned === undefined ? list : list.filter((outcome) => outcome.info.source === options.mode);
+    const scoreOf = (list: ProviderOutcome[]): { candidate: LyricCandidate; match: number }[] =>
+      selectableOf(list)
+        .flatMap((outcome) => outcome.scored)
+        .sort((left, right) => right.match - left.match);
+
+    let scored = scoreOf(outcomes);
+    let best = scored.find((entry) => entry.match >= options.minMatch) ?? undefined;
+
+    if (best === undefined && fallback.length > 0) {
+      outcomes.push(...(await Promise.all(fallback.map((provider) => this.runProvider(provider, query)))));
+      scored = scoreOf(outcomes);
+      best = scored.find((entry) => entry.match >= options.minMatch) ?? undefined;
+    }
 
     const infos: LyricCandidateInfo[] = outcomes.map((outcome) => outcome.info);
-    // 钉死某一源时，别的源的结果**只用来展示**（用户能看出「自动会挑哪一个」），不参与选择。
-    const selectable =
-      pinned === undefined
-        ? outcomes
-        : outcomes.filter((outcome) => outcome.info.source === options.mode);
-
-    const scored = selectable
-      .flatMap((outcome) => outcome.scored)
-      .sort((left, right) => right.match - left.match);
-
-    const best = scored.find((entry) => entry.match >= options.minMatch) ?? undefined;
 
     if (best !== undefined) {
       for (const info of infos) if (info.source === best.candidate.source) info.used = true;
@@ -158,7 +183,7 @@ export class LyricResolver {
   private async runProvider(
     provider: LyricProvider,
     query: LyricQuery,
-  ): Promise<{ info: LyricCandidateInfo; scored: { candidate: LyricCandidate; match: number }[] }> {
+  ): Promise<ProviderOutcome> {
     const started = Date.now();
     const base: LyricCandidateInfo = {
       source: provider.id,

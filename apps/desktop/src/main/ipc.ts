@@ -23,6 +23,7 @@ import {
   type LyricImportRequest,
   type LyricRemoveRequest,
   type LyricRequest,
+  type MediaStateReport,
   /*
    * `RuntimeInfo` 保持从 `@pi/shared` 引（类型定义在那边）。
    * ⚠️ 别把它挪去 `@pi/ipc`：那条测试按**文本**抓「相对路径 + .js」的 import，
@@ -134,11 +135,15 @@ function register<P, R>(channel: string, handler: (payload: P) => Promise<R> | R
  * `onSettingsPatched`（本轮第 4 条加）：设置写成功后回调一次，让主进程把需要**同步**读到的
  * 设置同步进缓存 —— 目前只有「关闭窗口时退到后台还是直接退出」（窗口的 `close` 事件是同步的，
  * 在里面 await 读设置来不及）。不传就不回调，冒烟里的独立调用点因此一个都不用改。
+ *
+ * `onMediaState`（主人本轮第 3 条加）：渲染层回报播放状态，主进程据此重挂任务栏缩略图工具栏
+ * 中间那枚键（播放/暂停字形、没有在听的歌时三枚一起置灰）。同样可选，不传就当没接。
  */
 export function registerIpc(
   services: Services,
   getWindow: () => Electron.BrowserWindow | null,
   onSettingsPatched?: (next: Settings) => void,
+  onMediaState?: (status: MediaStateReport['status']) => void,
 ): void {
   /** 需要联网的通道统一先等内嵌服务就绪，失败时给一句人能看懂的话。 */
   const requireNcm = async (): Promise<void> => {
@@ -510,6 +515,19 @@ export function registerIpc(
   });
   register<void, void>(CH.windowClose, () => {
     getWindow()?.close();
+  });
+
+  /* ---------------- 任务栏缩略图工具栏（主人本轮第 3 条） ---------------- */
+
+  /*
+   * 渲染层 → 主进程：**播放状态变了**。
+   *
+   * 只回报三态（playing / paused / idle），主进程拿它做两件事：中间那枚键画播放还是暂停、
+   * 没有在听的歌时把三枚键一起置灰。状态本来该由渲染层说了算 —— 它才是持有 `<audio>`
+   * 与队列状态机的那一侧（解析失败自动跳下一首这种事，主进程推算不出来）。
+   */
+  register<MediaStateReport, void>(CH.mediaState, (payload) => {
+    onMediaState?.(payload?.status ?? 'idle');
   });
 
   /* ---------------- 播放页自定义背景（主人本轮第 1 条） ---------------- */

@@ -374,12 +374,23 @@ export function parseQrc(text: string): LyricLine[] {
     const body = line[3] ?? '';
     const words: LyricWord[] = [];
     let matched = '';
-    for (const word of body.matchAll(QRC_WORD)) {
+    const marks = [...body.matchAll(QRC_WORD)];
+    /*
+     * 逐字时间的基准：**QQ 真实密文里是绝对毫秒**（`[2250,2250]词(2250,450)…` —— 首字时间 == 行时间），
+     * 但也有相对本行的写法（首字是个小偏移）。两种都收：首字时间 ≥ 行时间就按绝对算，
+     * 否则加上行首；行时间为 0 时两种写法本来就重合。
+     *
+     * 这条判据不是拍脑袋来的：它由 `tests/lyrics-qrc.test.ts` 里那段真密文（两只老虎）钉住 ——
+     * 早先这里无条件加行首，真歌词的第 4 行会把 17.4 秒读成 34.9 秒，逐字点亮整体晚一倍。
+     */
+    const firstWordTime = marks.length > 0 ? Number.parseInt(marks[0]?.[2] ?? '0', 10) : 0;
+    const timeBase = marks.length > 0 && firstWordTime >= lineStart ? 0 : lineStart;
+    for (const word of marks) {
       const wordText = word[1] ?? '';
       if (wordText === '') continue;
       matched += wordText;
       words.push({
-        timeMs: lineStart + Number.parseInt(word[2] ?? '0', 10),
+        timeMs: timeBase + Number.parseInt(word[2] ?? '0', 10),
         durationMs: Number.parseInt(word[3] ?? '0', 10),
         text: wordText,
       });

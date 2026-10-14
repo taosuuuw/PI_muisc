@@ -7,6 +7,8 @@ import {
   currentId,
   cycleMode as nextMode,
   jumpTo,
+  moveInQueue,
+  removeFromQueue,
   retreat,
   type AdvanceOrigin,
   type QueueState,
@@ -84,6 +86,16 @@ interface PlayerState {
   restoreLast: (song: Song, songs: readonly Song[]) => void;
   play: (songs: readonly Song[], startIndex?: number) => Promise<void>;
   playAt: (index: number) => Promise<void>;
+  /**
+   * 从播放队列里去掉第 `at` 首（主人本轮第 3 条：播放列表的歌曲选择页要能删歌）。
+   *
+   * 删的不是正在播的那首时，队列变了、声音一点不动；删的正是它时，按新队列装填下一首
+   * （删空了就回到 `idle`）。「删掉当前这首要不要接着播」这件事只有这里能决定 ——
+   * 纯函数 `removeFromQueue` 只负责把 `wasCurrent` 如实报上来。
+   */
+  removeAt: (at: number) => Promise<void>;
+  /** 把队列里的第 `from` 首挪到第 `to` 位（主人本轮第 3 条：长按一行拖动改顺序）。 */
+  moveQueue: (from: number, to: number) => void;
   toggle: () => Promise<void>;
   next: (origin?: AdvanceOrigin) => Promise<void>;
   prev: () => Promise<void>;
@@ -361,6 +373,25 @@ export const usePlayer = create<PlayerState>((set, get) => {
     async playAt(index) {
       set({ queue: jumpTo(get().queue, index) });
       await loadCurrent();
+    },
+
+    async removeAt(at) {
+      const state = get();
+      const removed = removeFromQueue(state.queue, at);
+      if (removed.state === state.queue) return;
+      set({ queue: removed.state });
+      /*
+       * 删掉的不是正在播的那首：队列变了、正在响的声音一个字节都不用动。
+       * 删掉的正是它：`removeFromQueue` 已经把下标挪到「接棒的那一首」上，
+       * 直接按新队列装填 —— 队列空了 `loadCurrent` 自己会回到 `idle`。
+       */
+      if (removed.wasCurrent) await loadCurrent();
+    },
+
+    moveQueue(from, to) {
+      const state = get();
+      const queue = moveInQueue(state.queue, from, to);
+      if (queue !== state.queue) set({ queue });
     },
 
     async toggle() {

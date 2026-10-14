@@ -69,6 +69,10 @@ namespace PiSetup
         internal const string UninstExeName = "卸载 PI.exe";
         internal const string ProductVersion = "0.9.0";
         internal const string PublisherName = "PI";
+        /* 必须与主进程 `app.setAppUserModelId('com.pi.music')`（apps/desktop/src/main/index.ts）
+           逐字一致，也等于 apps/desktop/electron-builder.yml 的 appId。任务栏按这个字符串分组，
+           并且从「AUMID 相同的那个快捷方式」上取这一组的图标（主人本轮第 2 条）。 */
+        internal const string AppUserModelId = "com.pi.music";
         internal const string AppDescription = "PI —— 桌面音乐应用";
 
         internal const string DefaultUninstallSubKey = @"Software\Microsoft\Windows\CurrentVersion\Uninstall";
@@ -904,11 +908,31 @@ namespace PiSetup
                 Reg.WriteDword(keyPath, "EstimatedSize", (int)(estimatedBytes / 1024));
         }
 
+        /* 自检时把快捷方式建到别处，避免覆盖用户真实的开始菜单/桌面项：
+             $env:PI_DEBUG_SHORTCUT_DIR = '<某个目录>' ⇒ 建到 <目录>\StartMenu\PI.lnk 与 <目录>\Desktop\PI.lnk
+           与 Program.RegRoot（注册表那套）同一个用意：验收要能整套跑一遍，又不动用户的东西。
+           AUMID 这种「只有真的建出 .lnk 才验得到」的东西，没有这条接缝就只能拿用户的快捷方式去试。 */
+        internal static void ShortcutDirs(out string programs, out string desktop)
+        {
+            string root = Environment.GetEnvironmentVariable("PI_DEBUG_SHORTCUT_DIR");
+            if (!string.IsNullOrEmpty(root))
+            {
+                programs = Path.Combine(root, "StartMenu");
+                desktop = Path.Combine(root, "Desktop");
+                Directory.CreateDirectory(programs);
+                Directory.CreateDirectory(desktop);
+                return;
+            }
+            programs = Environment.GetFolderPath(Environment.SpecialFolder.Programs);
+            desktop = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
+        }
+
         private static void CreateShortcuts(string targetDir)
         {
             string app = Path.Combine(targetDir, Program.AppExeName);
-            string programs = Environment.GetFolderPath(Environment.SpecialFolder.Programs);
-            string desktop = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
+            string programs;
+            string desktop;
+            ShortcutDirs(out programs, out desktop);
             string l1 = Path.Combine(programs, Program.AppName + ".lnk");
             string l2 = Path.Combine(desktop, Program.AppName + ".lnk");
             bool ok1 = MakeShortcut(l1, app, targetDir);
@@ -920,8 +944,9 @@ namespace PiSetup
 
         private static void RemoveShortcuts()
         {
-            string programs = Environment.GetFolderPath(Environment.SpecialFolder.Programs);
-            string desktop = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
+            string programs;
+            string desktop;
+            ShortcutDirs(out programs, out desktop);
             foreach (string p in new string[] {
                 Path.Combine(programs, Program.AppName + ".lnk"),
                 Path.Combine(desktop, Program.AppName + ".lnk") })
@@ -942,17 +967,115 @@ namespace PiSetup
                 Type lt = lnk.GetType();
                 lt.InvokeMember("TargetPath", BindingFlags.SetProperty, null, lnk, new object[] { target });
                 lt.InvokeMember("WorkingDirectory", BindingFlags.SetProperty, null, lnk, new object[] { workDir });
-                lt.InvokeMember("IconLocation", BindingFlags.SetProperty, null, lnk, new object[] { target + ",0" });
+
+                /* 图标优先指包里那枚**独立的 .ico**：让系统去 235MB 的 pi.exe 里抽图标既慢又
+                   容易抽到缓存里的旧图（用户反馈过「任务栏还是 Electron 的图」）。 */
+                string iconSource = Path.Combine(workDir, "pi.ico");
+                if (!File.Exists(iconSource)) iconSource = target;
+                lt.InvokeMember("IconLocation", BindingFlags.SetProperty, null, lnk, new object[] { iconSource + ",0" });
+
                 lt.InvokeMember("Description", BindingFlags.SetProperty, null, lnk, new object[] { Program.AppDescription });
                 lt.InvokeMember("Save", BindingFlags.InvokeMethod, null, lnk, null);
                 Marshal.ReleaseComObject(lnk);
                 Marshal.ReleaseComObject(shell);
+
+                /* 「Save 之后再写 AUMID」是必须的顺序：IPropertyStore 写的是**已在盘上的那个 .lnk**，
+                   而 WScript.Shell 的 Save 会把文件整个重写一遍 —— 先写 AUMID 会被它覆盖掉。 */
+                SetAppUserModelId(lnkPath, Program.AppUserModelId);
                 return true;
             }
             catch (Exception ex)
             {
                 Log.Line("创建快捷方式失败 " + lnkPath + "：" + ex.Message);
                 return false;
+            }
+        }
+
+        /* ---------------------------------------------------------------- 快捷方式的 AUMID */
+
+        /*
+         * 把 `System.AppUserModel.ID` 写进 .lnk（主人本轮第 2 条：「应用图标在任务栏为 electron 原始图标」）。
+         *
+         * 为什么必须有这一条：主进程调了 `app.setAppUserModelId('com.pi.music')`，Windows 于是按这个
+         * AUMID 给我们的窗口分组；而**这一组的图标是从「开始菜单里 AUMID 相同的那个快捷方式」上取的**。
+         * 快捷方式里 AUMID 是空的时候，系统不知道「这组是谁、用什么图」，任务栏那一格就退回宿主 exe
+         * 的图标 —— 打包后的 pi.exe 里其实是我们的 π，这也是为什么「exe 属性页图标对了、任务栏却不对」。
+         *
+         * 为什么不能用 WScript.Shell：它只暴露 Target/Args/Icon/WorkingDirectory/Description 五个属性，
+         * AUMID 不在其中，只能走 shell32 的属性存储（IPropertyStore）。
+         *
+         * 全程包裹在 try/catch 里：写不进去就回到旧行为（能用、只是图标可能不对），
+         * **绝不能因为一个属性让安装失败**。
+         */
+        [ComImport, Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        internal interface IPropertyStore
+        {
+            void GetCount(out uint cProps);
+            void GetAt(uint iProp, out PROPERTYKEY pkey);
+            void GetValue(ref PROPERTYKEY key, out PROPVARIANT pv);
+            void SetValue(ref PROPERTYKEY key, ref PROPVARIANT pv);
+            void Commit();
+        }
+
+        [StructLayout(LayoutKind.Sequential, Pack = 4)]
+        internal struct PROPERTYKEY
+        {
+            public Guid fmtid;
+            public uint pid;
+        }
+
+        /* PROPVARIANT 只要「vt + 一个指针」这两格（VT_LPWSTR 就写在这里）。
+           Size 写死 24 是 PROPVARIANT 在 x64 上的真实大小 —— 声明小了会被系统写出界。 */
+        [StructLayout(LayoutKind.Explicit, Size = 24)]
+        internal struct PROPVARIANT
+        {
+            [FieldOffset(0)] public ushort vt;
+            [FieldOffset(8)] public IntPtr pointerValue;
+        }
+
+        [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = false)]
+        private static extern void SHGetPropertyStoreFromParsingName(
+            [MarshalAs(UnmanagedType.LPWStr)] string pszPath,
+            IntPtr pbc,
+            int flags,
+            ref Guid riid,
+            [MarshalAs(UnmanagedType.Interface)] out IPropertyStore ppv);
+
+        private static void SetAppUserModelId(string lnkPath, string aumid)
+        {
+            IPropertyStore store = null;
+            try
+            {
+                Guid iid = new Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99");
+                /* GPS_READWRITE = 0x2 */
+                SHGetPropertyStoreFromParsingName(lnkPath, IntPtr.Zero, 2, ref iid, out store);
+
+                PROPERTYKEY key = new PROPERTYKEY();
+                /* PKEY_AppUserModel_ID = {9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3}, 5 */
+                key.fmtid = new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3");
+                key.pid = 5;
+
+                PROPVARIANT pv = new PROPVARIANT();
+                pv.vt = 31; /* VT_LPWSTR */
+                pv.pointerValue = Marshal.StringToCoTaskMemUni(aumid);
+                try
+                {
+                    store.SetValue(ref key, ref pv);
+                    store.Commit();
+                    Log.Line("快捷方式已写入 AppUserModelID：" + lnkPath + " → " + aumid);
+                }
+                finally
+                {
+                    Marshal.FreeCoTaskMem(pv.pointerValue);
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Line("写 AppUserModelID 失败（不影响安装，只影响任务栏图标/分组）：" + lnkPath + "：" + ex.Message);
+            }
+            finally
+            {
+                if (store != null) Marshal.ReleaseComObject(store);
             }
         }
 

@@ -5,10 +5,7 @@ import {
   BLOCK_ROWS,
   COLLAGE_FILL_MS,
   COLLAGE_FOLLOW_MS,
-  COLLAGE_PERSPECTIVE_PX,
   COLLAGE_PITCH,
-  COLLAGE_PITCH_DEG,
-  COLLAGE_YAW_DEG,
   ENTRANCE_MAX_DELAY,
   EXPANSION_COLS,
   EXPANSION_ROWS,
@@ -419,25 +416,19 @@ describe('song-collage-geometry 几何', () => {
     expect(bounds.bottom).toBeLessThanOrEqual(geometry.worldHeight + 1e-6);
   });
 
-  it('3D 姿态：透视 1400px、俯仰 3.4°、偏航 −2.6°，对尺寸比的影响有界', () => {
-    expect(COLLAGE_PERSPECTIVE_PX).toBe(1400);
-    expect(COLLAGE_PITCH_DEG).toBe(3.4);
-    expect(COLLAGE_YAW_DEG).toBe(-2.6);
+  it('整面墙是平的：没有透视/俯仰（第十五轮那版 3D 姿态已按主人要求撤掉）', () => {
+    /*
+     * 第十五轮第 1 条曾给整面墙加 `perspective: 1400px` + `rotateX(3.4°) rotateY(−2.6°)`，
+     * 主人本轮第 3 条对着 folia 的实录指出「有点倾斜」⇒ 那套自创姿态连同三个常量一起删了。
+     * 现在相机只剩平移 + 定档缩放 ⇒ 任意深度的投影缩放恒为 1（这里就写死 1），
+     * 于是「离视口中心最远的邻居」也不会被透视压小 —— 这正是不变量要保住的东西。
+     */
+    const flatScale = 1;
     expect(COLLAGE_FOLLOW_MS).toBeGreaterThanOrEqual(240);
     expect(COLLAGE_FOLLOW_MS).toBeLessThanOrEqual(900);
-    // 1920×1080 视口的屏幕角：|dx| ≤ 960、|dy| ≤ 540。姿态把「离中心最远的那一点」
-    // 往屏幕里/外推的深度上界 ≈ |dx·sin(yaw)| + |dy·sin(pitch)| ≈ 43.6 + 32.0 ≈ 75.6px，
-    // 于是最坏情况下透视缩放 ≥ 1400 / (1400 + 75.6) ≈ 0.949（最多压 5%）。
-    const depth =
-      960 * Math.abs(Math.sin((COLLAGE_YAW_DEG * Math.PI) / 180)) +
-      540 * Math.abs(Math.sin((COLLAGE_PITCH_DEG * Math.PI) / 180));
-    expect(depth).toBeGreaterThan(70);
-    expect(depth).toBeLessThan(81);
-    const worstScale = COLLAGE_PERSPECTIVE_PX / (COLLAGE_PERSPECTIVE_PX + depth);
-    expect(worstScale).toBeGreaterThan(0.94);
-    // 2×2 的邻居（264px）在最坏角度下仍 ≥ 250px，所以 808 / 250 ≈ 3.2 依然远高于 1.8。
-    const worstNeighbour = (2 * COLLAGE_PITCH - 8) * worstScale;
-    expect(worstNeighbour).toBeGreaterThan(250);
+    // 2×2 的邻居（264px）不再被透视压缩，808 / 264 ≈ 3.06，依然远高于探针要求的 1.8。
+    const worstNeighbour = (2 * COLLAGE_PITCH - 8) * flatScale;
+    expect(worstNeighbour).toBe(264);
     expect(EXPANSION_SIZE / worstNeighbour).toBeGreaterThan(1.8);
   });
 

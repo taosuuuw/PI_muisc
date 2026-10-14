@@ -13,8 +13,10 @@ import { NcmClient } from '@pi/ncm-client';
 import type { Lyric, LyricLine } from '@pi/shared';
 import { LYRIC_SOURCE_TIMEOUT_MS, type LyricCandidate, type LyricProvider, type LyricQuery } from './types.js';
 import { decodeBase64Text, fetchBuffer, fetchJson, fetchText } from './http.js';
-import { parseKrc, parseLrcText, parseTtml, readLrcOffset, splitInlineTranslation, stripLrcMeta } from './parsers.js';
+import { parseKrc, parseLrcText, parseQrc, parseTtml, readLrcOffset, splitInlineTranslation, stripLrcMeta } from './parsers.js';
 import { decodeKrcLanguage, decryptKrc } from './kugou-krc.js';
+import { decodeQqLyricField, unwrapQrcXml } from './qq-qrc.js';
+import { lrclibProvider } from './lrclib.js';
 
 /* ------------------------------------------------------------------ *
  * 网易云音乐（L0，官方）
@@ -107,6 +109,8 @@ function amllProvider(): LyricProvider {
 
 interface QqSearchHit {
   mid: string;
+  /** 数字 id：逐字那条接口（`PlayLyricInfo`）两个都要，实测缺了它拿不到 QRC。 */
+  songId?: number;
   title: string;
   artists: string[];
   durationMs?: number;
@@ -121,6 +125,7 @@ interface QqSearchResponse {
         song?: {
           list?: {
             mid?: string;
+            id?: number;
             title?: string;
             interval?: number;
             singer?: { name?: string }[];
@@ -162,6 +167,7 @@ async function searchQq(query: LyricQuery, limit = 6): Promise<QqSearchHit[]> {
       .filter((name) => name !== '');
     hits.push({
       mid,
+      ...(typeof row.id === 'number' && row.id > 0 ? { songId: row.id } : {}),
       title,
       artists,
       ...(typeof row.interval === 'number' && row.interval > 0
@@ -211,19 +217,97 @@ async function fetchQqLyric(mid: string): Promise<{ lines: LyricLine[]; translat
   };
 }
 
+interface QqLyricInfoResponse {
+  req?: {
+    code?: number;
+    data?: { lyric?: string; trans?: string; roma?: string; qrc?: number };
+  };
+}
+
+/**
+ * 把一条 QQ 歌词字段读成行数组：**先按逐字（QRC）认，认不出再按逐行 LRC 认**。
+ *
+ * 为什么要两套：同一条接口在不同参数下给的字段形态不一样 —— 实测 `crypt: 0` 时
+ * `trans` 是 base64 的明文 LRC，而 `lyric` / `roma` 仍是 hex 密文解出来的 QRC。
+ * 两套判据都不需要额外标志位，认哪种就是哪种。
+ */
+function parseQqField(text: string | undefined): LyricLine[] {
+  if (text === undefined || text === '') return [];
+  const body = unwrapQrcXml(text);
+  const wordLines = parseQrc(body);
+  if (wordLines.length > 0) return wordLines;
+  /* 退到逐行：`[offset:]` 要先读出来再剥元数据行，免得译文与原文各偏一次。 */
+  const offset = readLrcOffset(body);
+  return parseLrcText(stripLrcMeta(body)).map((row) => ({ ...row, timeMs: row.timeMs + offset }));
+}
+
+/**
+ * 取一首 QQ 歌的**逐字**歌词（QRC）。拿不到就返回 `undefined`，由上层退回逐行通道。
+ *
+ * 三个坑（都是实测的）：
+ * ① `songMID` 与数字 `songID` 都要带，缺了数字 id 拿不到 QRC；
+ * ② 响应里的 `lyric` 是**密文 hex**（不是 base64 明文），要 `qq-qrc.ts` 那套解密；
+ * ③ 纯音乐会被 QQ 用「此歌曲为没有填词的纯音乐…」这种**正文提示**顶替歌词 ——
+ *    那种解出来一行 QRC 行都没有，这里按「没拿到逐字」处理，让上层去试逐行。
+ */
+async function fetchQqQrc(
+  mid: string,
+  songId: number | undefined,
+): Promise<{ lines: LyricLine[]; translated: LyricLine[]; roman: LyricLine[] } | undefined> {
+  const payload = {
+    comm: { ct: 11, cv: '1003006', v: '1003006', format: 'json', uin: '0' },
+    req: {
+      module: 'music.musichallSong.PlayLyricInfo',
+      method: 'GetPlayLyricInfo',
+      param: {
+        format: 'json',
+        songMID: mid,
+        songID: songId ?? 0,
+        qrc: 1,
+        trans: 1,
+        roma: 1,
+        crypt: 1,
+      },
+    },
+  };
+  const json = await fetchJson<QqLyricInfoResponse>(
+    `https://u.y.qq.com/cgi-bin/musicu.fcg?format=json&data=${encodeURIComponent(JSON.stringify(payload))}`,
+    { timeoutMs: LYRIC_SOURCE_TIMEOUT_MS, headers: { referer: 'https://y.qq.com/' } },
+  );
+  const data = json?.req?.data;
+  if (data === undefined) return undefined;
+  const lines = parseQqField(decodeQqLyricField(data.lyric));
+  if (lines.length === 0) return undefined;
+  return {
+    lines,
+    translated: parseQqField(decodeQqLyricField(data.trans)),
+    roman: parseQqField(decodeQqLyricField(data.roma)),
+  };
+}
+
 function qqProvider(): LyricProvider {
   return {
     id: 'qq',
     label: 'QQ 音乐',
-    // QQ 的逐字（QRC）要靠 `lyric_download.fcg` 的 POST + 签名，公开通道只给逐行 LRC；
-    // 所以这里如实声明「不提供逐字」，界面上也就不会给它打逐字标签。
-    supportsWord: false,
+    /*
+     * 逐字（QRC）走 `music.musichallSong.PlayLyricInfo`：`qrc: 1` 时 `lyric` 是 hex 密文，
+     * 解开（3DES-EDE + zlib，见 `qq-qrc.ts`）就是逐字文本；逐行则走
+     * `fcg_query_lyric_new.fcg` 兜底（有的歌只有逐行，有的歌接口抽风）。
+     *
+     * 为什么以前这里是 `false`：当时只接了公开的逐行通道（`fcg_query_lyric_new.fcg`，
+     * 那条只给 LRC），逐字得换一条接口再解开密文 —— 主人本轮第 2 条问的就是这件事。
+     * 现在那条路通了，声明就跟着真话翻成 `true`（界面上的「逐字」标签仍然按**真实候选**
+     * 有没有 `words` 来点亮，所以这里说真话不会骗人）。
+     */
+    supportsWord: true,
     needsNetwork: true,
     async candidates(query: LyricQuery): Promise<LyricCandidate[]> {
       const hits = await searchQq(query);
       const candidates: LyricCandidate[] = [];
       for (const hit of hits.slice(0, 3)) {
-        const lyric = await fetchQqLyric(hit.mid);
+        /* 先试逐字：拿不到（没有 QRC / 解密失败 / 只有纯音乐提示）再退回逐行。 */
+        const word = await fetchQqQrc(hit.mid, hit.songId);
+        const lyric = word ?? { ...(await fetchQqLyric(hit.mid)), roman: [] as LyricLine[] };
         if (lyric.lines.length === 0) continue;
         candidates.push({
           source: 'qq',
@@ -233,7 +317,7 @@ function qqProvider(): LyricProvider {
           remoteId: hit.mid,
           lines: lyric.lines,
           translated: lyric.translated,
-          roman: [],
+          roman: lyric.roman,
           raw: lyric.lines.map((line) => line.text).join('\n'),
         });
       }
@@ -413,6 +497,11 @@ function kugouProvider(): LyricProvider {
  * ------------------------------------------------------------------ */
 
 /** 四个联网源。本地导入那一个由 `LyricStore` 提供（它不联网，形状也不同）。 */
+/**
+ * 联网歌词源的注册表。**顺序有意义**：解析器按匹配率排序，同分时保持这里的顺序
+ * （`Array.prototype.sort` 是稳定的，`Promise.all` 也保序）—— 所以 Lrclib 这个兜底源
+ * 必须排在最后，只在「前面几个都没词」或「它明显更准」时才被选中。
+ */
 export function createNetworkProviders(client: NcmClient): LyricProvider[] {
-  return [ncmProvider(client), amllProvider(), qqProvider(), kugouProvider()];
+  return [ncmProvider(client), amllProvider(), qqProvider(), kugouProvider(), lrclibProvider()];
 }

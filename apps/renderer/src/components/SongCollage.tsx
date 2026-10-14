@@ -130,6 +130,7 @@ import {
 import type { Song } from '@pi/shared';
 import { coverAt } from '../lib/cover';
 import { artistNames } from '../lib/format';
+import { Icon } from './Icons';
 import { usePlayer } from '../state/player';
 import { useUi } from '../state/ui';
 import {
@@ -143,10 +144,7 @@ import {
   collageCellExitTransform,
   COLLAGE_FILL_MS,
   COLLAGE_FOLLOW_MS,
-  COLLAGE_PERSPECTIVE_PX,
   COLLAGE_PITCH,
-  COLLAGE_PITCH_DEG,
-  COLLAGE_YAW_DEG,
   ENTRANCE_LIFT,
   expandedCenterOf,
   geometryFor,
@@ -206,6 +204,15 @@ export interface SongCollageProps {
    * 别的调用方（歌手 / 专辑页）不传就是默认开。
    */
   edgeVignette?: boolean;
+  /**
+   * 主人本轮第 3 条：「对于先锋风格，如图4 任意比例的卡片右上角在鼠标悬停在其上时浮现一个删除键，
+   * 点击即从歌单中删去歌曲」。
+   *
+   * 给了它，每格右上角多一枚 ×（**只在悬停/键盘聚焦时浮现**，触屏设备上常显）：
+   * 点它 = 把这首歌从**这份列表**里去掉（歌单页是「从歌单里删」，队列页是「出队」）。
+   * 不给就完全没有这枚键（「我的喜欢」那面墙不传 —— 在那里「去掉」的意思不是删歌）。
+   */
+  onRemove?: (song: Song) => void;
 }
 
 /**
@@ -278,6 +285,7 @@ export const SongCollage = forwardRef<SongCollageHandle, SongCollageProps>(funct
     onNeedMore,
     autoMore,
     edgeVignette,
+    onRemove,
   }: SongCollageProps,
   ref,
 ): ReactNode {
@@ -1167,10 +1175,12 @@ export const SongCollage = forwardRef<SongCollageHandle, SongCollageProps>(funct
       style={
         {
           '--pi-collage-lift': `${ENTRANCE_LIFT}px`,
-          // 第十五轮第 1 条的 3D 俯仰：透视挂在根上（透视原点 = 视口中心），
-          // 旋转挂在新加的一层 `.pi-collage__tilt` 上（旋转原点 = 视口中心）。
-          perspective: `${COLLAGE_PERSPECTIVE_PX}px`,
-          perspectiveOrigin: '50% 50%',
+          /*
+           * 这里原来还挂 `perspective` + `perspectiveOrigin`、再由下面那层 `.pi-collage__tilt`
+           * 转 `rotateX(3.4deg) rotateY(-2.6deg)`（第十五轮第 1 条）。主人本轮第 3 条：
+           * 对着 folia 的实录像是「有点倾斜」，而那套姿态本来就是我们自己加的 —— 已整层撤掉，
+           * 现在整面墙是平的（理由见 `song-collage-geometry.ts` 顶部说明④）。
+           */
         } as CSSProperties
       }
       role="application"
@@ -1193,19 +1203,15 @@ export const SongCollage = forwardRef<SongCollageHandle, SongCollageProps>(funct
       <div className="pi-collage__vignette" data-collage-vignette="true" aria-hidden="true" />
 
       {/**
-       * 3D 姿态层：它自己不滚动、不裁剪，只把整面墙绕**视口中心**转过一个小角度。
-       * 世界层仍然是原来的 `translate3d(...) scale(...)`（探针读的就是它），
-       * 所以「相机」的语义没有被 3D 改动。
+       * 世界层。原来它外面还包着一层 `.pi-collage__tilt`（第十五轮第 1 条的 3D 姿态），
+       * 主人本轮第 3 条把那层撤了 —— 世界层直接就是 `.pi-collage` 的子节点，姿态为「平」。
+       * 世界层仍然是原来的 `translate3d(...) scale(...)`（探针读的就是它），相机语义没变。
        */}
       <div
-        className="pi-collage__tilt"
-        style={{ transform: `rotateX(${COLLAGE_PITCH_DEG}deg) rotateY(${COLLAGE_YAW_DEG}deg)` }}
+        ref={worldRef}
+        className="pi-collage__world"
+        style={{ width: geometry.worldWidth, height: geometry.worldHeight }}
       >
-        <div
-          ref={worldRef}
-          className="pi-collage__world"
-          style={{ width: geometry.worldWidth, height: geometry.worldHeight }}
-        >
           {items.map((item) => {
             const song = songs[item.queueIndex];
             if (song === undefined) return null;
@@ -1228,6 +1234,16 @@ export const SongCollage = forwardRef<SongCollageHandle, SongCollageProps>(funct
             const inset = Math.round(
               Math.min(32, Math.max(8, Math.min(item.width, item.height) * 0.045)),
             );
+            /**
+             * 右上角删除键的直径（主人第 10 轮第 4 条：「应该适应卡片的大小变化而不是统一一个大小」）。
+             *
+             * 沿用同一套口径：标题字号吃 `width × 0.062`、内缩吃 `min(w,h) × 0.045`，
+             * 这枚键取 `min(w,h) × 0.085` 再夹在 18~44px 之间 —— 小卡上不会顶掉封面，
+             * 大卡（放大块）上也不会缩成一个小点。图标由 CSS 按按钮的百分比画，跟着一起缩放。
+             */
+            const removeSize = Math.round(
+              Math.min(44, Math.max(18, Math.min(item.width, item.height) * 0.085)),
+            );
             const style = {
               left: item.x,
               top: item.y,
@@ -1238,6 +1254,7 @@ export const SongCollage = forwardRef<SongCollageHandle, SongCollageProps>(funct
               '--pi-collage-delay': `${item.delay.toFixed(2)}s`,
               '--pi-collage-copy': `${copySize}px`,
               '--pi-collage-inset': `${inset}px`,
+              '--pi-collage-remove': `${removeSize}px`,
             } as CSSProperties;
             return (
               <button
@@ -1295,6 +1312,33 @@ export const SongCollage = forwardRef<SongCollageHandle, SongCollageProps>(funct
                 <span className="pi-collage__badge" aria-hidden="true">
                   {item.queueIndex + 1}
                 </span>
+                {/* 主人本轮第 3 条：悬停浮现的删除键。
+                    ⚠️ 用 `<span role="button">` 而不是 `<button>`：外层格子本身就是 `<button>`，
+                    按钮里套按钮是非法结构（浏览器会把它拆掉）。指针按下也 `stopPropagation` ——
+                    那是这面墙开始拖动的手势，别从 × 上起拖。 */}
+                {onRemove !== undefined && !isExiting ? (
+                  <span
+                    className="pi-collage__remove"
+                    role="button"
+                    tabIndex={0}
+                    data-collage-remove={song.id}
+                    aria-label={`从列表里移除 ${song.name}`}
+                    title="从列表里移除"
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onRemove(song);
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key !== 'Enter' && event.key !== ' ') return;
+                      event.preventDefault();
+                      event.stopPropagation();
+                      onRemove(song);
+                    }}
+                  >
+                    <Icon name="close" size={12} />
+                  </span>
+                ) : null}
                 <span className="pi-collage__copy">
                   <strong className="pi-collage__name">{song.name}</strong>
                   <small className="pi-collage__meta">{artistNames(song)}</small>
@@ -1302,7 +1346,6 @@ export const SongCollage = forwardRef<SongCollageHandle, SongCollageProps>(funct
               </button>
             );
           })}
-        </div>
       </div>
     </div>
   );

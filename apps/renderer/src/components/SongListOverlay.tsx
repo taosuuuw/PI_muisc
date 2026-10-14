@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { MODE_LABEL } from '@pi/player-core';
 import type { Song } from '@pi/shared';
 import { errorMessage } from '../bridge';
 import { coverAt, dailyCoverUrls } from '../lib/cover';
@@ -158,6 +157,17 @@ const OVERLAY_EXIT_MS = 320;
  * 见 `packages/ipc` 与 `packages/ncm-client`）；「当前播放」那一档直接读活着的 `usePlayer`——
  * 它不该被快照住，队列随时在变（点卡片进队列时用的是 `playAt`，不是把队列替换掉）。
  */
+/** 浮层抬头那张封面（有图没图都长这样）：可编辑档把它包成按钮，其余档原样展示。 */
+function QueueCover({ cover }: { cover: string | undefined }): ReactNode {
+  return cover ? (
+    <img className="pi-songslist__cover" src={cover} alt="" />
+  ) : (
+    <span className="pi-songslist__cover pi-plcard__cover--empty">
+      <Icon name="music" size={30} />
+    </span>
+  );
+}
+
 function SongsListOverlay({ target, onClose, closing }: SongsListProps): ReactNode {
   const kind = target.kind;
 
@@ -169,10 +179,12 @@ function SongsListOverlay({ target, onClose, closing }: SongsListProps): ReactNo
   const queue = usePlayer((s) => s.queue);
   const allSongs = usePlayer((s) => s.songs);
   const current = usePlayer((s) => s.currentSong);
-  const mode = usePlayer((s) => s.mode);
-  const cycleMode = usePlayer((s) => s.cycleMode);
   const playAt = usePlayer((s) => s.playAt);
   const play = usePlayer((s) => s.play);
+  /** 主人本轮第 3 条：播放列表这一档要能删歌、能长按拖动改顺序。 */
+  const removeAt = usePlayer((s) => s.removeAt);
+  const moveQueue = usePlayer((s) => s.moveQueue);
+  const [editing, setEditing] = useState(false);
 
   const queueSongs = queue.ids
     .map((id) => allSongs[id])
@@ -308,26 +320,37 @@ function SongsListOverlay({ target, onClose, closing }: SongsListProps): ReactNo
           />
           <strong>{label}</strong>
           <span className="pi-detail__spacer" />
-          {kind === 'queue' ? (
-            <button
-              type="button"
-              className="pi-btn pi-btn--small"
-              data-queue-mode
-              onClick={cycleMode}
-              title={`播放模式：${MODE_LABEL[mode]}（点击切换）`}
-            >
-              {MODE_LABEL[mode]}
-            </button>
-          ) : null}
+          {/* 主人第 10 轮第 2 条：「右上黄色框选的按键都可以删去」——原来这里放了两颗
+              （「编辑」与「列表循环」），整排撤掉了。编辑改成点下面那张封面（和歌单页同一套），
+              播放模式请回播放页的底栏切。 */}
         </header>
 
         <div className="pi-songslist__hero">
-          {cover ? (
-            <img className="pi-songslist__cover" src={cover} alt="" />
+          {/*
+           * 主人第 10 轮第 2 条：「红色框选的地方点击缺少删除歌曲的功能显示」——
+           * 图2 红圈圈的正是这张「当前播放」的封面。所以播放列表这一档把封面做成编辑开关
+           * （与歌单页的封面同一个交互：悬停浮出小牌子、点一下每行左边出现删除键）。
+           *
+           * 只给 `queue` 这一档：歌手 / 专辑 / 每日推荐是「别人给的内容」，不给编辑入口
+           * （主人第 9 轮第 4 条：「只有我的歌单和播放列表可以编辑歌单歌曲，其他的都不允许」）。
+           */}
+          {kind === 'queue' ? (
+            <button
+              type="button"
+              className="pi-detail__cover-btn pi-songslist__cover-btn"
+              data-queue-edit="true"
+              aria-pressed={editing}
+              aria-label={editing ? '退出编辑' : '编辑播放列表'}
+              title={editing ? '退出编辑' : '编辑播放列表：点一下，每首歌左边会出现删除键'}
+              onClick={() => setEditing((value) => !value)}
+            >
+              <QueueCover cover={cover} />
+              <span className="pi-detail__cover-hint" aria-hidden="true">
+                {editing ? '编辑中' : '编辑'}
+              </span>
+            </button>
           ) : (
-            <div className="pi-songslist__cover pi-plcard__cover--empty">
-              <Icon name="music" size={30} />
-            </div>
+            <QueueCover cover={cover} />
           )}
           <div style={{ minWidth: 0 }}>
             <h2 className="pi-songslist__title">{target.title}</h2>
@@ -348,9 +371,41 @@ function SongsListOverlay({ target, onClose, closing }: SongsListProps): ReactNo
               {kind === 'queue' ? '队列还是空的。在列表里点一首歌就会进来。' : '这里还没有歌。'}
             </p>
           ) : collage ? (
-            <SongCollage songs={list} onSelect={onSelect} edgeVignette={edgeVignette} />
+            <SongCollage
+              songs={list}
+              onSelect={onSelect}
+              edgeVignette={edgeVignette}
+              {...(kind === 'queue'
+                ? {
+                    onRemove: (song: Song) => {
+                      const at = queue.ids.indexOf(song.id);
+                      if (at >= 0) void removeAt(at);
+                    },
+                  }
+                : {})}
+            />
           ) : (
-            <SongList songs={list} onSelect={onSelect} emptyText="这里还没有歌。" />
+            <SongList
+              songs={list}
+              onSelect={onSelect}
+              emptyText="这里还没有歌。"
+              editing={kind === 'queue' && editing}
+              {...(kind === 'queue'
+                ? {
+                    onRemove: (song: Song) => {
+                      const at = queue.ids.indexOf(song.id);
+                      if (at >= 0) void removeAt(at);
+                    },
+                    onReorder: (from: number, to: number) => {
+                      const fromSong = list[from];
+                      const toSong = list[to];
+                      if (fromSong === undefined || toSong === undefined) return;
+                      /* 列表是按队列 id 映射出来的，两边下标要经 id 对回到队列自己的下标。 */
+                      moveQueue(queue.ids.indexOf(fromSong.id), queue.ids.indexOf(toSong.id));
+                    },
+                  }
+                : {})}
+            />
           )}
         </div>
       </div>

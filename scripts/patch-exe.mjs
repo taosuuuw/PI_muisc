@@ -15,7 +15,7 @@
  * 选项：
  *   --ico <file>        图标文件（默认 build/pi-embed.ico，回退 build/pi.ico）
  *   --product <name>    ProductName        （默认 PI）
- *   --desc <text>       FileDescription    （默认 "PI —— 桌面音乐应用"）
+ *   --desc <text>       FileDescription    （默认 PI，见下方「为什么不是长描述」）
  *   --company <name>    CompanyName        （默认 PI）
  *   --version <x.y.z>   FileVersion/ProductVersion（默认取仓库根 package.json 的 version）
  *   --copyright <text>  LegalCopyright     （默认 "© 2026 PI"）
@@ -28,6 +28,13 @@
  *    改写后的文件签名必然失效，留着坏签名比没有签名更容易触发 SmartScreen 拦截。
  *  · Electron 运行时（*.dll / *.pak / icudtl.dat / locales）**不要**改写，只改主 exe。
  *  · Electron 的 MIT 许可证文本随发行包一起提供（packaging 时确认 dist 里的 LICENSE 被带上）。
+ *
+ * 为什么 `FileDescription` 就是「PI」这一句短名字（主人本轮第 1 条）：
+ * 任务管理器「进程」标签里那一行**显示的就是 FileDescription**（不是窗口标题、也不是
+ * 快捷方式的名字）—— 本项目 0.x 时代改不动 PE 资源时，那里显示的一直是「Electron」，
+ * 就是这条规则的实证。所以那一格该放**应用名**；「PI —— 桌面音乐应用」这种一句话介绍
+ * 会连进程数一起被读成「PI —— 桌面音乐应用 (6)」，既超宽又不像应用名。
+ * 想放介绍的话有 `Comments`（属性页的「备注」），那里不占任务管理器那一行。
  */
 import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -77,7 +84,7 @@ function parseArgs(argv) {
     exe: undefined,
     ico: undefined,
     product: 'PI',
-    desc: 'PI —— 桌面音乐应用',
+    desc: 'PI',
     company: 'PI',
     version: undefined,
     copyright: '© 2026 PI',

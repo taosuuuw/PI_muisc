@@ -389,6 +389,62 @@ input {
   overflow: hidden;
 }
 
+/* ---- 「我的喜欢 / 最近听过」的玻璃底（主人本轮第 3 条） ----------------------------
+ *
+ * 原话：「我的喜欢、听过的歌的歌曲选择页如图2所示不透明，需要改成玻璃底」。
+ *
+ * 这两页的平凡风格（竖排列表）原来是整屏铺在底色上的一整块不透明板。现在把**主区自己**
+ * 变成一块玻璃面板：材质直接用全仓那套 `--pi-glass-*`（和浮层、卡片同一份料），
+ * 于是它糊到的东西就是底下那层封面虚化（`MinePage` 里那颗 `.pi-mine-backdrop`，
+ * 用当前歌曲封面 + 大半径 blur）。
+ *
+ * 为什么改**主区**而不是在页子里包一层 div：主区就是「这一页的可视范围」，
+ * 而页子里的排版一个像素都不用动（那页里有拼贴、列表、底栏三种宿主，包一层就得改三处）。
+ *
+ * ⚠️ **它必须是铺满的，不是一张浮卡**（主人第 13 轮：「我的喜欢的界面都没填充满应用界面，
+ * 是不是我的喜欢是单独做到一个框架和其他歌单不统一，要修正」）。
+ *
+ * 上一版这里写了 `margin: 10px 12px 12px` + `border-radius: 26px` + 落影，本意是「和歌单浮层
+ * 同一套语言的一张玻璃卡」，但别的歌单页（我的歌单 / 收藏 / 推荐）都是**铺满窗口**的，
+ * 于是这一页四周露出背景、看起来像单独做了个框架 —— 正是主人看到的那个不一致。
+ * 现在几何上一律贴边（没有外边距、没有圆角、没有落影、没有描边），只留玻璃材质本身：
+ * 底下那层封面虚化（`.pi-mine-backdrop`）照样透过来，所以「玻璃底」这件事没丢，
+ * 变的只是它不再缩成一张卡。
+ *
+ * 只挑 `plain`（平凡）档：先锋档这两页是整屏队列拼贴，本来就没有这层底板。
+ *
+ * ⚠️ **退场副本要排除在外**（`App` 换页时会拿这一页再挂一份 `.pi-main.pi-page-leaving`）：
+ * 那份是 `position: fixed; inset: 0` 的**纯透明**层，靠它自己淡出来做交叉淡出。
+ * 少了这个 `:not()`，玻璃规则会连它一起套上 —— 半透明底 + 背景模糊，
+ * 淡起来就成了「一层糊玻璃慢慢化开」，和其它页（歌单页 / 设置页）的退场完全不一样。
+ * 主人第 9 轮第 4 条点名的正是这个：「我的喜欢在平凡风格下点进度条退回播放页的淡出动画
+ * 是错误的，与其他歌单不一致」。退场副本保持和其它页一模一样，问题就没了。
+ */
+.pi-app[data-ui-style='plain'] .pi-main[data-page='mine:like']:not(.pi-page-leaving),
+.pi-app[data-ui-style='plain'] .pi-main[data-page='mine:recent']:not(.pi-page-leaving) {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: var(--pi-glass-sheen), var(--pi-glass-bg-strong);
+  -webkit-backdrop-filter: var(--pi-glass-blur);
+  backdrop-filter: var(--pi-glass-blur);
+  box-shadow: none;
+}
+
+/* 玻璃底下那层封面虚化：铺满视口、压到最底（`-1` 让正文与玻璃都在它上面），
+   模糊半径给足、再放大一点，免得虚化后边缘露出没被糊到的直边。 */
+.pi-mine-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background-position: center;
+  background-size: cover;
+  filter: blur(64px) saturate(1.25);
+  transform: scale(1.18);
+  opacity: 0.5;
+}
+
 /* ---- 从歌单页回到播放页的过渡（用户第二十一轮第 3 条） ----------------------------
  *
  * 原话：「从歌单页点击进度条部件回到歌曲播放页的加个过渡动画」。
@@ -476,21 +532,21 @@ input {
   z-index: 30;
   pointer-events: none;
   /*
-   * **先原地停住 0.2s，再淡 0.36s**（用户第二十五轮第 2 条定的形，第二十七轮起更稳）。
+   * **立刻淡出**（主人第 10 轮第 3 条改的）。
    *
-   * 逐**合成帧**亮度实测（`.tmp-r21/smoke-r25d.log`）：
-   * `84 84 84 84 → 36 39 49 57 67 73 80 87 92 97 101 104 107 …`
-   * —— 换页那一帧不是「白闪」，而是**先掉到很暗、再一路爬回来**：那一刻播放页的沉浸背景
-   * 自己也正在「绽开」（`opacity: 0.55 → 1`，0.52s），旧页同一时刻又在半透明，
-   * 两边一起半透明 ⇒ 露出底下的暗色底 ⇒ 屏幕上出现一个**暗谷**。
+   * 原话：「我的喜欢平凡风格点击进度条退出到歌曲播放页的淡出动画存在**先暂留一段时间画面保持高亮
+   * 再淡出**的情况，正确应该是直接淡出到播放页，与其他歌曲（歌单）的效果不一致，要修正」——
+   * 「先暂留一段」正是原来那条 `0.2s` 延迟（`animation: … 0.36s … 0.2s both`：先满不透明地停
+   * 0.2 秒再淡）。那 0.2 秒是第二十五～二十七轮为了躲「换页时先掉暗再爬回来」那个暗谷加的：
+   * 当时**播放页的沉浸背景自己也在「绽开」**（`opacity 0.55 → 1`），两页同时半透明就露出暗底。
+   * 第二十七轮已经把那条绽开整条删掉了（用户点名），所以暗谷的另一半已经不存在；
+   * 现在这个延迟只留下「旧画面亮着多停一会儿」这一个可见副作用 —— 就是主人看到的那个「暂留」。
+   * 歌单浮层那一路（`data-closing` 的交叉淡出）从来没有这个延迟，两边也就对不上了。
    *
-   * 两手都上了：这里让退场层带着 `0.2s` 延迟（这段时间它**满不透明地原地停着**，
-   * `both` 填充保证停在 `from { opacity: 1 }`），延迟与淡出加起来 0.56s、与
-   * `App.tsx` 的 `PAGE_LEAVE_MS = 640` 对齐；另一手是第二十七轮把沉浸背景那条绽开
-   * **整条删掉**（用户直接点名的那一条，见文件上半部分）。于是现在屏幕从「旧页」单调溶到
-   * 「一上来就是常态的新页」，中间没有任何会变暗的东西。
+   * 于是抹掉延迟，与浮层那一路对齐：点下去就开始淡，0.44s 淡完（总时长与 `PAGE_LEAVE_MS = 640`
+   * 仍然留有余量）。
    */
-  animation: pi-page-leaving 0.36s cubic-bezier(0.4, 0, 0.2, 1) 0.2s both;
+  animation: pi-page-leaving 0.44s cubic-bezier(0.4, 0, 0.2, 1) both;
   /*
    * **这一层不加任何底色**（第二十五轮试过、第二十七轮撤掉）。
    *
@@ -1139,6 +1195,207 @@ input {
   object-fit: cover;
   flex: none;
   background: var(--pi-bg-subtle);
+}
+
+/*
+ * 歌单浮层左上角的**退出键**（主人第 10 轮第 5 条）。
+ *
+ * 原话：「平凡风格下进入到收藏歌单 / 我的歌单 / 推荐歌单的歌曲选择页，正常情况下图3 红色框选
+ * 位置的退出键隐藏，鼠标靠近才浮现，点击回到上一级歌单选择页。退出键液态玻璃材质。」
+ *
+ * 所以：绝对定位贴在浮层左上（`top/left` 跟着 `.pi-detail` 自己的内边距走），
+ * 平时 `opacity: 0`；鼠标进到这一层浮层里给一点点轮廓（0.3，让人知道这儿有东西），
+ * 真正指到它身上才完全显形。材质与拼贴那枚删除键同一套（透底 + 模糊 + 上缘高光 + 发丝边）。
+ */
+.pi-detail__exit {
+  position: absolute;
+  /*
+   * ⚠️ 这一对偏移是**相对热区**（`.pi-detail__exit-zone`，它自己也是定位元素），不是相对面板。
+   * 热区贴在面板左上角外 −50/−50 处，所以键再用 +12/+12 落回去，净效果就是原来的
+   * 「面板外 −38/−38」＝外壳左上角那道留白里。
+   * （踩过一次：键直接写 −38/−38 又套进热区，等于叠了两次负偏移，键被推到窗口外 (−35,−24)。）
+   */
+  top: 12px;
+  left: 12px;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: linear-gradient(
+    160deg,
+    rgba(255, 255, 255, 0.42),
+    rgba(255, 255, 255, 0.18) 46%,
+    rgba(255, 255, 255, 0.26)
+  );
+  -webkit-backdrop-filter: blur(16px) saturate(1.7);
+  backdrop-filter: blur(16px) saturate(1.7);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.55),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.3),
+    0 3px 10px rgba(6, 10, 16, 0.28);
+  color: var(--pi-text);
+  cursor: pointer;
+  opacity: 0;
+  transition:
+    opacity 0.18s ease,
+    transform 0.18s cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 0.18s ease;
+}
+
+/*
+ * 热区（主人第 12 轮第 2 条：「不是鼠标有动作就浮现，而是鼠标移动到左上角退出键**附近**才浮现」）。
+ *
+ * 原来那条是 `.pi-detail:hover .pi-detail__exit`，等于「鼠标只要在浮层里动一下就冒出来」。
+ * 现在把可见性交给这块**看不见的热区**：它盖住浮层左上那一小块（连外壳的留白一起），
+ * 指针进到这块里才亮起来 —— 与「靠近才浮现」是一个意思，而且纯 CSS、没有监听器。
+ * 热区自己 `pointer-events: auto` 但完全透明：点在它上面照旧冒泡到浮层（点空白收回），
+ * 行为与之前一样。
+ */
+.pi-detail__exit-zone {
+  position: absolute;
+  top: -50px;
+  left: -50px;
+  z-index: 2;
+  width: 136px;
+  height: 116px;
+}
+
+.pi-detail__exit-zone:hover .pi-detail__exit {
+  opacity: 0.4;
+}
+
+.pi-detail__exit:hover,
+.pi-detail__exit:focus-visible,
+.pi-detail__exit-zone:hover .pi-detail__exit:hover {
+  opacity: 1;
+  transform: scale(1.06);
+}
+
+.pi-detail__exit:focus-visible {
+  outline: 2px solid var(--pi-primary);
+  outline-offset: 2px;
+}
+
+/* 触屏没有 hover：一律显形，否则那枚键等于不存在。 */
+@media (hover: none) {
+  .pi-detail__exit {
+    opacity: 1;
+  }
+}
+
+/*
+ * 「我的喜欢」抬头（主人第 11 轮第 1 条）：和歌单浮层共用 `.pi-detail__hero` 那一套，
+ * 只补这一页自己的边距 —— 面板铺满窗口（第 13 轮改的，没有外边距了），列表行自己带内边距，
+ * 抬头左右跟它对齐、上面给左上角那枚退出键留出地方。
+ */
+.pi-mine-hero {
+  /* 上面留得比别处宽：左上角那枚退出键（38px，落在窗口左上约 (28,30)）要有一块自己的地方，
+     不能让歌单封面顶上来。 */
+  padding: 72px 22px 12px;
+}
+
+/*
+ * **退场副本里不许画那层模糊封面底**（主人第 12 轮第 1 条：「平凡风格下……原本的还是有画面暂留」）。
+ *
+ * `.pi-mine-backdrop` 是「我的喜欢 / 最近听过」这块玻璃面板底下垫的那张 64px 大半径虚化的
+ * 当前封面（`MinePage` 里 `glassList` 那一支）。它是 `position: fixed`、铺满整窗、`z-index: -1`，
+ * 所以换页时那份**重新挂载的副本**会连它一起再画一遍 —— 一层又大又亮的模糊图盖在正在接管的
+ * 播放页上，跟着副本一起淡出，看起来就是「旧画面还亮着停在那儿」（主人说的「暂留」）。
+ * 副本的使命只是「把刚才那一屏原样端住然后淡掉」，那层垫底不属于那一屏的内容，去掉它，
+ * 剩下的就与「我的歌单」这些页的退场完全一致了。
+ */
+.pi-page-leaving .pi-mine-backdrop {
+  display: none;
+}
+
+/*
+ * 「我的喜欢」页自己的**退出键**（主人第 12 轮第 2 条：这一页左上角缺一枚液态玻璃退出键）。
+ *
+ * 与歌单浮层那枚同一个组件、同一套材质，只是锚点不同：浮层那枚挂在浮层外壳左上角的留白里
+ * （所以是相对面板的负偏移），这一页没有外壳，直接贴玻璃面板自己的左上角。
+ */
+.pi-mine-exit {
+  position: fixed;
+  top: 22px;
+  left: 20px;
+  z-index: 40;
+}
+
+/* 靠近才浮现：鼠标要先落到这枚键（或它周围那一小圈热区）上，它才显形。 */
+.pi-mine-exit-zone {
+  position: fixed;
+  top: 8px;
+  left: 8px;
+  z-index: 40;
+  width: 116px;
+  height: 100px;
+}
+
+.pi-mine-exit-zone:hover .pi-mine-exit {
+  opacity: 0.4;
+}
+
+.pi-mine-exit:hover,
+.pi-mine-exit:focus-visible {
+  opacity: 1;
+  transform: scale(1.06);
+}
+
+/*
+ * 封面 = 编辑歌单的开关（主人本轮第 3 条：点图3 红圈那个图标 → 每首歌左边浮现删除键）。
+ *
+ * 图3 红圈圈的就是这张封面，所以它现在是个 `<button>`：悬停时浮出一枚「编辑」小牌子，
+ * 编辑态下牌子变成「编辑中」并给封面套一圈主色描边 —— 不然「点封面能编辑」这件事
+ * 在界面上没有任何线索（用户看不到红圈，只看到一张封面）。
+ */
+.pi-detail__cover-btn {
+  position: relative;
+  flex: none;
+  padding: 0;
+  border: 0;
+  border-radius: 12px;
+  background: none;
+  cursor: pointer;
+  line-height: 0;
+  transition: box-shadow 0.16s ease, transform 0.16s ease;
+}
+
+.pi-detail__cover-btn:hover {
+  transform: translateY(-1px);
+}
+
+.pi-detail__cover-btn:focus-visible {
+  outline: 2px solid var(--pi-primary);
+  outline-offset: 2px;
+}
+
+.pi-detail[data-playlist-editing='true'] .pi-detail__cover-btn {
+  box-shadow: 0 0 0 2px var(--pi-primary), var(--pi-shadow-float);
+}
+
+.pi-detail__cover-hint {
+  position: absolute;
+  left: 6px;
+  bottom: 6px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(11, 15, 22, 0.78);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.4;
+  opacity: 0;
+  transition: opacity 0.16s ease;
+}
+
+.pi-detail__cover-btn:hover .pi-detail__cover-hint,
+.pi-detail__cover-btn:focus-visible .pi-detail__cover-hint,
+.pi-detail[data-playlist-editing='true'] .pi-detail__cover-hint {
+  opacity: 1;
 }
 .pi-detail__title {
   margin: 0 0 6px;
@@ -2860,48 +3117,11 @@ input {
   color: #e5484d;
 }
 /*
- * 「少女祈祷中⭐」的加载灵动岛（用户第五轮第 5 / 6 / 10 条）。
- *
- * 观感与 `styles/style-toast.css` 那条切风格提示**刻意一致**（近黑玻璃、四角全圆、
- * 一道内高光、柔和落影），文案由 `HomePage` 的 `LoadingIsland` 给。
- *
- * 它总是**浮在窗口顶部居中**（`position: fixed`），并且由 `createPortal` 挂到
- * `document.body` 上 —— 这不是随意选的落点：用户第五轮第 13 条看到的「灵动岛跑到
- * 歌曲卡片里」，根因就是原来的落点 `.pi-home__card` 带着 `transform: translateY(46px)`，
- * 而**带 transform 的祖先会成为 fixed 的包含块**，于是 `top: 14px` 变成「贴着名片顶 14px」。
- * 挂到 body 之后视口里再没有这样的祖先，`fixed` 就真的是视口。
- *
- * 不吃指针事件：它只是「有活儿在干」的信号。
+ * 「少女祈祷中⭐」那颗加载灵动岛的样式**搬走了**（用户本轮第 2 条）：
+ * 它不再自己画一颗 `position: fixed` 的药丸，而是往共享的通知栈里发一条通知，
+ * 与「已切换 ⨯⨯ 风格」并排显示（最新那条是药丸、先来的缩成小球）。
+ * 形状、材质、小球 ⇄ 药丸的形变全在 `styles/dynamic-island.css`，本文件不再管它。
  */
-.pi-loading-island {
-  pointer-events: none;
-  position: fixed;
-  top: 14px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 60;
-  display: inline-flex;
-  align-items: center;
-  padding: 7px 16px;
-  border-radius: 999px;
-  background: color-mix(in srgb, #05070a 86%, transparent);
-  box-shadow:
-    inset 0 1px 0 color-mix(in srgb, #ffffff 14%, transparent),
-    0 10px 26px rgb(0 0 0 / 0.36);
-  color: #f4f6f8;
-  font-size: 12.5px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  white-space: nowrap;
-  animation: pi-loading-island-in 0.24s cubic-bezier(0.2, 0.9, 0.3, 1);
-}
-
-@keyframes pi-loading-island-in {
-  from {
-    opacity: 0;
-    transform: translate(-50%, -8px) scale(0.94);
-  }
-}
 .pi-home__status-dim {
   color: var(--pi-text-tertiary);
 }

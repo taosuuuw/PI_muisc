@@ -21,8 +21,73 @@
 }
 
 .pi-songlist__item {
-  display: block;
+  /* 一行 = [删除键（编辑态才有宽度）] + [整行按钮]；拖动时整行跟着指针走。 */
+  display: flex;
+  align-items: center;
   min-width: 0;
+  transition: box-shadow 0.16s ease;
+}
+
+/* 拖动中：被拎起来的那一行抬高一点、跟着指针；落点那行给一条虚线引导。 */
+.pi-songlist__item[data-dragging='true'] {
+  position: relative;
+  z-index: 2;
+  border-radius: 10px;
+  box-shadow: var(--pi-shadow-float);
+  opacity: 0.94;
+}
+
+.pi-songlist__item[data-drop-target='true'] .pi-songrow {
+  border-color: color-mix(in srgb, var(--pi-primary) 55%, transparent);
+  border-style: dashed;
+}
+
+/*
+ * 删除键（主人本轮第 3 条）：**平时宽度为 0**，进编辑态才展开 —— 这样「浮现」是真的长出来，
+ * 也不会在正常浏览时把整行的歌名往右挤。`pointer-events` 跟着一起开关，
+ * 免得它在宽度为 0 时还截走点击。
+ */
+.pi-songrow__del {
+  flex: 0 0 0;
+  width: 0;
+  height: 30px;
+  margin-right: 0;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 10px;
+  background: none;
+  color: var(--pi-text-tertiary);
+  cursor: pointer;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+  transition:
+    flex-basis 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+    width 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+    margin-right 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.2s ease,
+    background 0.16s ease,
+    color 0.16s ease;
+}
+
+.pi-songlist[data-song-list-editing='true'] .pi-songrow__del {
+  flex-basis: 30px;
+  width: 30px;
+  margin-right: 6px;
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.pi-songrow__del:hover {
+  background: color-mix(in srgb, #e5484d 14%, transparent);
+  color: #e5484d;
+}
+
+.pi-songrow__del:focus-visible {
+  outline: 2px solid var(--pi-primary);
+  outline-offset: 1px;
 }
 
 .pi-songrow {
@@ -144,12 +209,21 @@
   text-overflow: ellipsis;
 }
 
-.pi-songrow__meta {
-  color: var(--pi-text-tertiary);
+/*
+ * 专辑名与时长（主人第 9 轮第 3 条：「黄色框选的文本在浅色和暗色状态下都不醒目，需要调整颜色」）。
+ *
+ * 原来这一列用的是 `--pi-text-tertiary`（浅色 `#9aa3b2` / 暗色 `#6f7787`）——
+ * 它压在浮层的玻璃上、玻璃背后又是专辑封面那种亮底时，几乎读不出来（主人的截图就是那样）。
+ * 换成 `--pi-text-sub`（浅色 `#6b7280` / 暗色 `#a1a9b8`）两档都提了一级对比度；
+ * 时长同理。序号那一列是装饰性的，保持 tertiary 不动。
+ */
+.pi-songrow__meta,
+.pi-songrow__time {
+  color: var(--pi-text-sub);
 }
 
 .pi-songrow__time {
-  color: var(--pi-text-tertiary);
+  color: var(--pi-text-sub);
   font-size: 12.5px;
   font-variant-numeric: tabular-nums;
   text-align: right;

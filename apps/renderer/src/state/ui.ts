@@ -194,6 +194,16 @@ interface UiState {
 
   /** 当前页面。跳页一律走 `navigate`，它会顺手收起抽屉与环形菜单。 */
   nav: NavId;
+  /**
+   * 「上一级」：换页之前人站在哪一页（主人第 15 轮）。
+   *
+   * 原话：「我的喜欢歌曲选择页点左上角退出键不是回到上一级歌单选择页而是回到播放页，
+   * 要修正为回到上一级歌单选择页」。`nav` 只是一根当前值、没有栈，所以退出键本来无从知道
+   * 「上一级」是哪一页 —— 这里在 `navigate` 里顺手记一笔（只记一层就够：换页是线性的，
+   * 而且歌单选择页 → 我的喜欢 这条路上不会连跳两次）。没记过就退回播放页（抽屉直接点进来的
+   * 那种情况，上一级本来就是播放页）。
+   */
+  lastNav: NavId | null;
   navigate: (id: NavId) => void;
   /**
    * 「从别的页回到播放页」的那一下的时间戳（用户第二十一轮第 3 条）。
@@ -279,6 +289,15 @@ interface UiState {
    * `openPlaylist` 顺手把 `nav` 拨回 `home`——浮层永远出现在歌曲播放页上。
    */
   openedPlaylist: Playlist | null;
+  /**
+   * 打开这个歌单浮层时**人站在哪一页**（主人第 10 轮第 5 条）。
+   *
+   * 原话：「平凡风格下进入到收藏歌单 / 我的歌单 / 推荐歌单的歌曲选择页……点击回到**上一级**
+   * 歌单选择页」。浮层是盖在播放页上的（`openPlaylist` 会把 `nav` 拨回 `home`），
+   * 所以「上一级」必须在这里记一笔 —— 否则退出去只能回播放页，回不到刚才那张歌单列表。
+   * 记的是 `nav` 而不是历史栈：这一层浮层同时只可能开一个，一个来源就够了。
+   */
+  playlistOrigin: NavId | null;
   openPlaylist: (playlist: Playlist) => void;
   closePlaylist: () => void;
 
@@ -426,9 +445,12 @@ export const useUi = create<UiState>((set) => ({
   // `styles/global.css` 的 `.pi-page-leaving` / `pi-listoverlay-crossfade-out` /
   // `::view-transition-old(root)`）。原来还有一条沉浸式背景的「绽开」，第二十七轮已删。
   // 记时间戳而不是记布尔：动画自然结束，不需要谁来清状态，也不会因为连点而叠出多条计时器。
+  lastNav: null,
   navigate: (id) =>
     set((state) => ({
       nav: id,
+      // 「上一级」＝这一下换页之前人站在哪一页（主人第 15 轮：我的喜欢那枚退出键要回歌单选择页）。
+      lastNav: state.nav === id ? state.lastNav : state.nav,
       navOpen: false,
       searchOpen: false,
       quickPos: null,
@@ -487,18 +509,22 @@ export const useUi = create<UiState>((set) => ({
   setQuickPanel: (quickPanel) => set({ quickPanel }),
 
   openedPlaylist: null,
+  // 「上一级」记的是打开它的那一页（主人第 10 轮第 5 条：退出键要回歌单选择页）。
+  playlistOrigin: null,
   // 顺手回播放页：歌曲卡片列表浮层是「盖在正在听的歌上面」的一层，不是另一个页面。
   // 同时清掉歌手/专辑那一份：同一时刻只允许一层（它们盖的是同一个浮层）。
   openPlaylist: (openedPlaylist) =>
-    set({
+    set((state) => ({
       openedPlaylist,
+      // 在把 `nav` 拨回 `home` 之前先记下「人原来站在哪一页」。
+      playlistOrigin: state.nav,
       openedSongs: null,
       // M4 剩余项：歌单浮层与专辑/歌手独立页互斥（同一时刻只允许一层盖在播放页上）。
       openedSongPage: null,
       nav: 'home',
       navOpen: false,
       searchOpen: false,
-    }),
+    })),
   closePlaylist: () => set({ openedPlaylist: null }),
 
   openedSongs: null,

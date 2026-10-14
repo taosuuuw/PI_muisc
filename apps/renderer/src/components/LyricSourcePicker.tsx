@@ -67,12 +67,14 @@ function SourceTags({ info }: { info: LyricCandidateInfo | undefined }): ReactNo
   );
 }
 
-/** 每个源在界面上的小图案：四枚用语义最近的既有图标，不新增图形。 */
-const SOURCE_ICON: Record<LyricSourceId, 'music' | 'album' | 'waveform' | 'bars' | 'upload'> = {
+/** 每个源在界面上的小图案：用语义最近的既有图标，不新增图形。 */
+const SOURCE_ICON: Record<LyricSourceId, 'music' | 'album' | 'waveform' | 'bars' | 'upload' | 'database'> = {
   ncm: 'music',
   amll: 'album',
   qq: 'waveform',
   kugou: 'bars',
+  /* Lrclib 是社区公共词库，用「数据库」那枚图标最贴近。 */
+  lrclib: 'database',
   local: 'upload',
 };
 
@@ -330,6 +332,7 @@ export function LyricSourcePicker({ variant }: LyricSourcePickerProps): ReactNod
                           amll: enabled?.amll !== false,
                           qq: enabled?.qq !== false,
                           kugou: enabled?.kugou !== false,
+                          lrclib: enabled?.lrclib !== false,
                           local: enabled?.local !== false,
                           [entry.id]: event.target.checked,
                         },
@@ -430,6 +433,7 @@ export function LyricSourcePicker({ variant }: LyricSourcePickerProps): ReactNod
                       amll: enabled?.amll !== false,
                       qq: enabled?.qq !== false,
                       kugou: enabled?.kugou !== false,
+                      lrclib: enabled?.lrclib !== false,
                       local: enabled?.local !== false,
                       [entry.id]: event.target.checked,
                     },

@@ -252,7 +252,12 @@ const patchResult = spawnSync(
     '--product',
     'PI',
     '--desc',
-    'PI —— 桌面音乐应用',
+    /*
+     * 任务管理器「进程」标签那一行显示的就是这个 FileDescription（主人本轮第 1 条：
+     * 那里原来读成「PI —— 桌面音乐应用 (6)」）。所以这里只放**应用名**，
+     * 一句话介绍挪到 `Comments`（属性页的「备注」），不占任务管理器那一格。
+     */
+    'PI',
     '--company',
     'PI',
     '--version',

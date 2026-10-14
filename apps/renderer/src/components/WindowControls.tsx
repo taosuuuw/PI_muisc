@@ -244,7 +244,14 @@ export function WindowControls(): ReactNode {
         onClick={() => toggleNav()}
       />
 
-      {/* 右上：窗口三键。`data-window-controls` / `data-visible` 是冒烟探针的抓手。 */}
+      {/* 右上：窗口三键（最小化 / 最大化 / 关闭）。
+          主人本轮第 1 条：「我觉得不需要全屏按键，而是让最大化按键的逻辑就是全屏，并且保留最大化的过渡动画。
+          鼠标往下移到底部依旧可以唤起隐藏的任务栏。」——所以在整个应用里**「铺满屏幕」就等于最大化**：
+          Windows 的最大化会连自动隐藏的任务栏那条也盖住，同时**故意留那条 1~2px 的悬停沿**，
+          鼠标碰底边照样能把任务栏唤出来；而独占全屏（`setFullScreen`）会把任务栏整条压死、
+          悬停也不弹，正好和主人要的第二句相反。那颗键因此删掉，F11 也一并改成走最大化（见主进程）。
+
+          `data-window-controls` / `data-visible` 是冒烟探针的抓手。 */}
       <div
         className="pi-windowcontrols pi-windowcontrols--right"
         data-window-controls

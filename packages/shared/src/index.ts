@@ -290,8 +290,13 @@ export interface Lyric {
   candidates?: LyricCandidateInfo[];
 }
 
-/** 歌词来源（图 1 那一排）：网易云音乐 / AMLLDB / QQ 音乐 / 酷狗音乐 / 本地导入。 */
-export type LyricSourceId = 'ncm' | 'amll' | 'qq' | 'kugou' | 'local';
+/**
+ * 歌词来源（图 1 那一排）：网易云音乐 / AMLLDB / QQ 音乐 / 酷狗音乐 / Lrclib / 本地导入。
+ *
+ * `lrclib` 是**兜底源**（主人本轮要求）：前四个都拿不到词时才轮到它 ——
+ * 它的作用是「别让一首本来有词的歌空着」，而不是抢前四个的活。
+ */
+export type LyricSourceId = 'ncm' | 'amll' | 'qq' | 'kugou' | 'lrclib' | 'local';
 
 /**
  * 歌词源的选源档位。
@@ -302,7 +307,7 @@ export type LyricSourceId = 'ncm' | 'amll' | 'qq' | 'kugou' | 'local';
  */
 export type LyricSourceMode = 'auto' | LyricSourceId;
 
-export const LYRIC_SOURCE_IDS: readonly LyricSourceId[] = ['ncm', 'amll', 'qq', 'kugou', 'local'];
+export const LYRIC_SOURCE_IDS: readonly LyricSourceId[] = ['ncm', 'amll', 'qq', 'kugou', 'lrclib', 'local'];
 
 export const LYRIC_SOURCE_MODE_LABEL: Readonly<Record<LyricSourceMode, string>> = {
   auto: '自动匹配',
@@ -310,6 +315,7 @@ export const LYRIC_SOURCE_MODE_LABEL: Readonly<Record<LyricSourceMode, string>> 
   amll: 'AMLLDB',
   qq: 'QQ 音乐',
   kugou: '酷狗音乐',
+  lrclib: 'Lrclib',
   local: '本地导入',
 };
 
@@ -317,8 +323,9 @@ export const LYRIC_SOURCE_MODE_LABEL: Readonly<Record<LyricSourceMode, string>> 
 export const LYRIC_SOURCE_NOTE: Readonly<Record<LyricSourceId, string>> = {
   ncm: '官方歌词，多数带逐字与翻译',
   amll: '社区的 TTML 逐词词库，打轴最准',
-  qq: '按歌名歌手跨平台匹配，多为逐行',
+  qq: '按歌名歌手跨平台匹配，QQ 的逐字（QRC）也在这里',
   kugou: '按歌名歌手跨平台匹配，KRC 逐字',
+  lrclib: '社区公共词库，前四个都没词时才兜底（逐行）',
   local: '你自己导入的歌词文件，优先级最高',
 };
 
@@ -697,7 +704,7 @@ export const DEFAULT_SETTINGS: Settings = {
   // 歌词源默认「自动匹配」，且五个源全开：官方给逐字、AMLLDB 给最准的打轴、
   // QQ 与酷狗在官方没收录这首歌时兜底；本地导入的如果没有文件就是一个空候选。
   lyricSource: 'auto',
-  lyricSourceEnabled: { ncm: true, amll: true, qq: true, kugou: true, local: true },
+  lyricSourceEnabled: { ncm: true, amll: true, qq: true, kugou: true, lrclib: true, local: true },
   lyricMinMatch: 0.62,
   // 边缘暗角默认开：它只在深色档生效，用户第一次进拼贴页就能看到那个效果。
   edgeVignette: true,

@@ -27,19 +27,14 @@
  *      每条带再用「横向搁板」把宽度均分掉（`planShelfBand`）。因为每条带的宽度之和恒等于带宽、
  *      高度之和恒等于带高，所以**重排后整块 12×8 仍然精确满铺**（单测穷举 16 朝向 × 12 槽位验证：
  *      无重叠、无空洞），邻居是真的被挤小、而不是被盖住。
- *   ④ **3D 俯仰**（`COLLAGE_PERSPECTIVE_PX` / `COLLAGE_PITCH_DEG` / `COLLAGE_YAW_DEG`）：
- *      参考笔记 §3.4 / §6 把 folia 的 Lattice 相机记得很清楚——只有
- *      `translate3d(x,y,0) scale(s)`，**没有任何 perspective / rotateX / rotateY 数值**；
- *      笔记里唯一带 3D 的是另一个页面 `Grid3D.tsx`，而它被标注为「未读」。
- *      所以这三个数是**我们自己定的**，不是从 folia 抄的：
- *        · `perspective: 1400px` + `rotateX(3.4°) rotateY(−2.6°)`，绕**视口中心**旋转，
- *          不是绕世界原点（绕世界原点会让上千米外的边甩出屏幕，且剔除边界要重算）；
- *        · 为什么是这三个数：1920×1080 的窗口上，离视口中心最远的那个屏幕角最多后退
- *          `960·sin 2.6° + 540·sin 3.4° ≈ 75.6px`，透视缩放 `1400 / (1400 + 75.6) ≈ 0.949` ——
- *          也就是**最多约 5% 的透视压缩**，足够读出一面「斜着立起来的墙」，又不至于把字压变形；
- *          俯仰比偏航大一档（3.4° > 2.6°）是为了读成「往后仰 + 略微侧转」，
- *          而不是一个对称的机关。世界居中后左右各多出 ≥ `PAN_MARGIN_X/2` = 240px、
- *          上下各多出 ≥ `PAN_MARGIN_Y/2` = 180px，这点透视收边绝不会露出世界之外。
+ *   ④ **3D 俯仰已撤掉**（第十五轮第 1 条加上，主人本轮第 3 条要求撤掉）：
+ *      第十五轮那版给整面墙加了 `perspective: 1400px` + `rotateX(3.4°) rotateY(−2.6°)`，
+ *      而那三个数**是我们自己定的**——参考笔记 §3.4 / §6 把 folia 的 Lattice 相机记得很清楚：
+ *      只有 `translate3d(x,y,0) scale(s)`，**没有任何 perspective / rotateX / rotateY 数值**。
+ *      主人拿 folia 的实录一比就说我们「有点倾斜」，于是现在回到 folia 那种**平的墙**：
+ *      相机只剩平移 + 定档缩放，投影缩放恒为 1，每张卡都是轴对齐的矩形。
+ *      那三个常量连同 `.pi-collage__tilt` 那一层一起删了；历史实现与当时的数值理由
+ *      留在 `docs/PLAN.md` 第十五轮那一条里，不再在这里重复。
  *
  * 这些常量全部来自 folia 原文（`PosterWall.tsx` / `layout.ts` / `LatticePoster.tsx`），
  * 算法实现是自己的；没有任何一行是从 AGPL 仓库抄过来的代码。
@@ -120,16 +115,12 @@ export const ENTRANCE_MAX_DELAY = 0.34;
 export const ENTRANCE_WINDOW_MS = 1100;
 export const ENTRANCE_LIFT = 90;
 
-/**
- * 第十五轮第 1 条的「3D 俯仰」。三个数都是我们定的（理由见本文件顶部说明④）：
- * folia 的 Lattice 相机在参考笔记里只有 `translate3d + scale`，没有任何透视/旋转数值。
- *   透视距离 `1400px`：1920×1080 上最远的屏幕角最多后退 `(960·sin 2.6° + 540·sin 3.4°) ≈ 76px`，
- *   于是透视缩放落在 `1400/(1400±76)`，也就是 `0.949 ~ 1.057`——最坏约 5% 的收/放。
- *   俯仰 `3.4°`（rotateX，正角 = 墙顶向观察者倾）+ 偏航 `−2.6°`（rotateY，负角 = 墙左侧略微转远）。
+/*
+ * 这里原来还有第十五轮第 1 条定的三个常量：
+ *   `COLLAGE_PERSPECTIVE_PX = 1400` / `COLLAGE_PITCH_DEG = 3.4` / `COLLAGE_YAW_DEG = −2.6`
+ * （整面墙的 3D 俯仰）。主人本轮第 3 条要求撤掉那套姿态 —— 理由见文件顶部说明④ ——
+ * 所以它们连同 `.pi-collage__tilt` 那一层、以及那条断言它们的单测一起删了，只留这条记录。
  */
-export const COLLAGE_PERSPECTIVE_PX = 1400;
-export const COLLAGE_PITCH_DEG = 3.4;
-export const COLLAGE_YAW_DEG = -2.6;
 
 /**
  * 点击某一格放大后，相机平滑移到那一格所用的时长（毫秒）。
