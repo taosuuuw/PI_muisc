@@ -495,19 +495,6 @@ const THEME_LABEL: Readonly<Record<ThemeMode, string>> = {
 const THEME_ORDER: readonly ThemeMode[] = ['light', 'dark', 'system'];
 
 /**
- * 界面语言的两个选项。
- * 值必须原样是设置里存的字符串（`'zh-CN' | 'en'`），别另造 id——这里只换控件外观，
- * 字段与写盘路径和原来的 `<select>` 完全一样。
- */
-const LOCALE_OPTIONS: readonly {
-  readonly value: 'zh-CN' | 'en';
-  readonly label: string;
-}[] = [
-  { value: 'zh-CN', label: '简体中文' },
-  { value: 'en', label: 'English' },
-];
-
-/**
  * 应用主题色的三档（用户第二十一轮第 5 条：「将黑白/天蓝设为默认色，并且有自定义选项」）。
  * 值就是 `state/ui.ts` 里 `accentMode` 的字面量，别另造 id。
  */
@@ -799,7 +786,7 @@ function clampPan(value: number): number {
   return Number.isFinite(value) ? Math.min(1, Math.max(-1, value)) : 0;
 }
 
-/** 界面：主题明暗与界面语言。都是 `Settings` 里现成的字段。 */
+/** 界面：主题明暗、先锋风格与上报开关。都是 `Settings` / `state/ui.ts` 里现成的字段。 */
 function UiTab(): ReactNode {
   const settings = useSettings();
   const patch = usePatchSettings();
@@ -822,13 +809,26 @@ function UiTab(): ReactNode {
   const accentColor = useUi((state) => state.accentColor);
   const setAccentMode = useUi((state) => state.setAccentMode);
   const setAccentColor = useUi((state) => state.setAccentColor);
+  /*
+   * 先锋皮肤（主人本轮要求这一格回来）：同 `accentMode`，纯本机偏好，直接读 zustand
+   * （`state/ui.ts` 的 `pi.avant-style`），不走 `patch.mutate`。
+   */
+  const avantStyle = useUi((state) => state.avantStyle);
+  const setAvantStyle = useUi((state) => state.setAvantStyle);
 
   const value = settings.data;
   if (!value) return null;
 
   return (
     <div className="pi-settings" data-settings-tab-panel="ui">
-      <section className="pi-card">
+      {/*
+        主人本轮：「去掉功能标题下的文字注释，只留下标题和开关，并且不是一行一行的排列，
+        而是在上面这块区域里类似田字格式的分布」——所以这一节挂 `pi-tilegrid`：
+        里面每一行都变成一个**格子**（标题在上、控件在下、不留说明），两列铺开成田字格。
+        样式见 `styles/settings-frame.css` 的「田字格」那一段；格子还是原来的 `.pi-setting`
+        节点（`data-*` 抓手与控件一行没动），只是换了排布。
+      */}
+      <section className="pi-card pi-tilegrid">
         <div className="pi-setting">
           <span>
             <span className="pi-setting__title" title="跟随系统时会实时响应系统的深色模式切换。">
@@ -842,6 +842,43 @@ function UiTab(): ReactNode {
             disabled={patch.isPending}
             options={THEME_ORDER.map((mode) => ({ value: mode, label: THEME_LABEL[mode] }))}
             onChange={(next) => patch.mutate({ theme: next })}
+          />
+        </div>
+
+        {/*
+          先锋风格（主人：「界面语言改成先锋风格类型切换，选项分别为队列拼贴/莱茵风」）——
+          这一格写的是 `state/ui.ts` 的 `AvantStyle`，存本机（`pi.avant-style`，键名已冻结）。
+
+          「先锋」这一档内部有两套皮肤：
+            · `collage` 队列拼贴 = 歌单是封面卡片流、歌曲是那面队列拼贴墙（现在就是这套）；
+            · `rhine` **莱茵风** = 主人本轮给第二套皮肤起的名字，**本体尚未实现**——
+              所以现在选它只记偏好，界面上不会有任何变化。要接的时候按 `AvantStyle`
+              那段注释里的三步走（建组件 → 这一格已经在 → `App.tsx` 按 `avantStyle` 分流）。
+          平凡档下这一格照旧可点：它管的是「先锋档里用哪套皮肤」，切到先锋才看得见。
+        */}
+        <div className="pi-setting" data-avant-style-setting="true">
+          <span>
+            <span
+              className="pi-setting__title"
+              title="只在「先锋」排版下生效：队列拼贴 = 歌单是封面卡片流、歌曲是那面拼贴墙；莱茵风 = 第二套先锋皮肤（本体尚未实现，现在选它只记偏好）。"
+            >
+              先锋风格
+            </span>
+            <span className="pi-setting__hint">
+              {avantStyle === 'rhine'
+                ? '莱茵风：第二套先锋皮肤（未实现）'
+                : '队列拼贴：封面卡片流 + 拼贴墙'}
+            </span>
+          </span>
+          <Segmented
+            ariaLabel="先锋风格"
+            value={avantStyle}
+            disabled={false}
+            options={[
+              { value: 'collage', label: '队列拼贴' },
+              { value: 'rhine', label: '莱茵风' },
+            ]}
+            onChange={(next) => setAvantStyle(next)}
           />
         </div>
 
@@ -882,6 +919,11 @@ function UiTab(): ReactNode {
           「边缘暗角 / 在队列拼贴页面四周加一层淡淡的暗角，让视线落在中间的海报上。」
           **只在深色档生效**（用户明确要求），判定在 `styles/song-collage.css` 里按
           `<html data-theme>` 做——这里不做分叉，免得出现「系统切亮色了、暗角还挂着」。
+
+          主人本轮：「边缘暗角的开关替换成开/关两个按键，UI 形式与其他设置项保持一致」——
+          所以那颗勾选开关换成了跟「关闭窗口」同一种分段按钮。设置字段一个字没动：
+          仍然写 `edgeVignette`（布尔），这里只把「真 / 假」映射成「开 / 关」两个按钮；
+          字段缺失时按**开**算，跟原来那颗勾选框的 `!== false` 一个语义。
         */}
         <div className="pi-setting" data-edge-vignette-setting="true">
           <span>
@@ -895,14 +937,15 @@ function UiTab(): ReactNode {
               在队列拼贴页面四周加一层淡淡的暗角，让视线落在中间的海报上（仅深色模式）。
             </span>
           </span>
-          <input
-            className="pi-check"
-            type="checkbox"
-            data-edge-vignette="true"
-            aria-label="边缘暗角"
-            checked={value.edgeVignette !== false}
+          <Segmented
+            ariaLabel="边缘暗角"
+            value={value.edgeVignette !== false ? 'on' : 'off'}
             disabled={patch.isPending}
-            onChange={(event) => patch.mutate({ edgeVignette: event.target.checked })}
+            options={[
+              { value: 'on', label: '开' },
+              { value: 'off', label: '关' },
+            ]}
+            onChange={(next) => patch.mutate({ edgeVignette: next === 'on' })}
           />
         </div>
 
@@ -969,24 +1012,6 @@ function UiTab(): ReactNode {
           </div>
         ) : null}
 
-        <div className="pi-setting">
-          <span>
-            <span
-              className="pi-setting__title"
-              title="目前整套界面文案只有中文一套，选英文只把这个偏好记进设置文件，界面不会变——等翻译表做出来再由这里切换。"
-            >
-              界面语言
-            </span>
-            <span className="pi-setting__hint">英文只记偏好，界面暂不变</span>
-          </span>
-          <Segmented
-            ariaLabel="界面语言"
-            value={value.locale}
-            disabled={patch.isPending}
-            options={LOCALE_OPTIONS}
-            onChange={(next) => patch.mutate({ locale: next })}
-          />
-        </div>
       </section>
 
       <section className="pi-card">

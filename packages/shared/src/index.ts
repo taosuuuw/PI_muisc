@@ -625,8 +625,6 @@ export interface Settings {
    * 扫描只读文件名、不解析音频标签，所以路径填错最坏结果是「没有本地兜底」，不会坏事。
    */
   localLibraryDir: string;
-  /** UI 语言。 */
-  locale: 'zh-CN' | 'en';
   /** 播放器主页歌词用哪套动效主题（m08768 第 4 条）；设置页里选。 */
   lyricTheme: LyricTheme;
   /** 歌词动效的细调参数；和 `lyricTheme` 一样只影响歌词怎么画。 */
@@ -695,7 +693,6 @@ export const DEFAULT_SETTINGS: Settings = {
   downloadDir: '',
   // 默认不扫任何目录：本地曲库可能是几万首歌，未经用户指定不该去读磁盘。
   localLibraryDir: '',
-  locale: 'zh-CN',
   // 默认还是 folia 的 classic（我们已经一比一复刻过的那套「流光」）。
   lyricTheme: 'classic',
   // 展开一份副本：`DEFAULT_SETTINGS` 与 `DEFAULT_LYRIC_TUNING` 是两个导出的常量，

@@ -19923,13 +19923,116 @@ async function runSettingsSmoke(win: BrowserWindow): Promise<void> {
     )) as SettingsPageReport;
 
     const names = new Set(page.rows.map((row) => row.name));
-    // 第十二轮第 7 条：圆形页签（radiusPct≈50、边长 30~46、文字标签 sr-only）+ 拍立得卡面
-    // （圆角 ≥ 12px、有落影、底部白边比顶部厚）。
+    // 第十二轮第 7 条：圆形页签（radiusPct≈50、边长 30~46、文字标签 sr-only）。
+    // **本轮（用户参考图 2 + 田字格）把卡面那份契约换成了「扁平 + 两列格子」**：
+    // 小节圆角 0、无落影；「界面」tab 第一节是田字格（提示文字不显示、每格都有控件）；
+    // 分段控件是几块等宽实心方块，选中块吃主色、不带落影。
     const tabLookMatch = /radiusPct=(\d+) size=(\d+)x(\d+) labelHidden=(yes|no|missing)/.exec(
       page.tabLook,
     );
     const cardLookMatch = /radius=(\d+) shadow=(yes|none) padBottom=(\d+)/.exec(page.cardLook);
-    const polaroidOk =
+    /*
+     * 分段控件与田字格都只在「界面」tab 上（打开设置框默认停在「音源」），所以先切过去再量。
+     * 注意：这段在模板字符串里，注释里**不能出现反引号**（写进去会把字符串截断）。
+     */
+    await win.webContents.executeJavaScript(
+      `(() => {
+         const tab = document.querySelector('[data-settings-tab="ui"]');
+         if (tab === null) return false;
+         tab.click();
+         return true;
+       })()`,
+      true,
+    );
+    await delay(420);
+    const uiLook = (await win.webContents.executeJavaScript(
+      `(() => {
+         const frame = document.querySelector('.pi-settings-frame');
+         if (!frame) return { seg: '无', tiles: '无' };
+         const items = [];
+         for (const seg of frame.querySelectorAll('.pi-tilegrid .pi-seg')) {
+           for (const item of seg.querySelectorAll('.pi-seg__item')) items.push(item);
+         }
+         const segActive = items.filter((el) => el.dataset.active === 'true')[0] ?? null;
+         const segIdle = items.filter((el) => el.dataset.active !== 'true')[0] ?? null;
+         const segStyle = items.length === 0 ? null : getComputedStyle(items[0]);
+         /*
+          * 「等宽」只在**同一组内**比：界面上有好几组分段控件（外观 3 块、先锋风格 2 块、
+          * 关闭窗口 2 块、应用主题色 3 块…），跨组比宽度必然不等；而且只比**格子里**的那些 ——
+          * 格子外的分段控件（搬下去的「界面语言」那一行）本来就是按文字宽排的，不受这条约束。
+          */
+         let sameWidth = items.length > 0;
+         for (const seg of frame.querySelectorAll('.pi-tilegrid .pi-seg')) {
+           const group = [];
+           for (const item of seg.querySelectorAll('.pi-seg__item')) group.push(item);
+           if (group.length > 1 && group.some((el) => Math.abs(el.offsetWidth - group[0].offsetWidth) > 1)) {
+             sameWidth = false;
+           }
+         }
+         const seg =
+           segStyle === null
+             ? '无'
+             : 'radius=' + Math.round(parseFloat(segStyle.borderTopLeftRadius) || 0) +
+               ' border=' + Math.round(parseFloat(segStyle.borderTopWidth) || 0) +
+               ' equal=' + (sameWidth ? 'yes' : 'no') +
+               ' activeBg=' + (segActive ? getComputedStyle(segActive).backgroundColor : '无') +
+               ' idleBg=' + (segIdle ? getComputedStyle(segIdle).backgroundColor : '无') +
+               ' activeShadow=' + (segActive ? getComputedStyle(segActive).boxShadow : '无');
+         const grid = frame.querySelector('.pi-tilegrid');
+         let tiles = '无';
+         if (grid !== null) {
+           const cells = [];
+           for (const cell of grid.children) {
+             if (cell.classList.contains('pi-setting')) cells.push(cell);
+           }
+           const cols = getComputedStyle(grid).gridTemplateColumns.split(' ').filter((v) => v !== '').length;
+           let hintHidden = 0;
+           let withControl = 0;
+           for (const cell of cells) {
+             const hint = cell.querySelector('.pi-setting__hint');
+             if (hint === null || getComputedStyle(hint).display === 'none') hintHidden += 1;
+             if (cell.querySelector('.pi-seg, .pi-check, .pi-range, .pi-select, .pi-btn, .pi-accent-picker') !== null) {
+               withControl += 1;
+             }
+           }
+           /*
+            * 「不留空白」是几何判据：按格子的顶边分行，**每一行的左右两端都必须贴到网格的
+            * 左右两端**（容差 1.5px）。少一格 / 跨列算错，那一行就会短一截，这条立刻红。
+            */
+           const gridRect = grid.getBoundingClientRect();
+           const rowMap = new Map();
+           for (const cell of cells) {
+             const rect = cell.getBoundingClientRect();
+             const key = Math.round(rect.top);
+             const row = rowMap.get(key) ?? { left: rect.left, right: rect.right };
+             row.left = Math.min(row.left, rect.left);
+             row.right = Math.max(row.right, rect.right);
+             rowMap.set(key, row);
+           }
+           let filled = rowMap.size > 0;
+           for (const row of rowMap.values()) {
+             if (Math.abs(row.left - gridRect.left) > 1.5 || Math.abs(row.right - gridRect.right) > 1.5) {
+               filled = false;
+             }
+           }
+           tiles = 'count=' + cells.length + ' cols=' + cols + ' rows=' + rowMap.size +
+             ' filled=' + (filled ? 'yes' : 'no') +
+             ' hintHidden=' + hintHidden + '/' + cells.length +
+             ' control=' + withControl + '/' + cells.length;
+         }
+         return { seg, tiles };
+       })()`,
+      true,
+    )) as { seg: string; tiles: string };
+    const segLookMatch =
+      /radius=(\d+) border=(\d+) equal=(yes|no) activeBg=(.*?) idleBg=(.*?) activeShadow=(.*)$/.exec(
+        uiLook.seg,
+      );
+    const tileLookMatch =
+      /count=(\d+) cols=(\d+) rows=(\d+) filled=(yes|no) hintHidden=(\d+)\/(\d+) control=(\d+)\/(\d+)/.exec(
+        uiLook.tiles,
+      );
+    const flatLookOk =
       tabLookMatch !== null &&
       Number(tabLookMatch[1]) >= 45 &&
       Number(tabLookMatch[2]) >= 30 &&
@@ -19938,9 +20041,22 @@ async function runSettingsSmoke(win: BrowserWindow): Promise<void> {
       Number(tabLookMatch[3]) <= 46 &&
       tabLookMatch[4] === 'yes' &&
       cardLookMatch !== null &&
-      Number(cardLookMatch[1]) >= 12 &&
-      cardLookMatch[2] === 'yes' &&
-      Number(cardLookMatch[3]) >= 16;
+      Number(cardLookMatch[1]) <= 2 &&
+      cardLookMatch[2] === 'none' &&
+      Number(cardLookMatch[3]) <= 12 &&
+      segLookMatch !== null &&
+      Number(segLookMatch[1]) <= 10 &&
+      Number(segLookMatch[2]) >= 1 &&
+      segLookMatch[3] === 'yes' &&
+      segLookMatch[4] !== segLookMatch[5] &&
+      segLookMatch[6] === 'none' &&
+      tileLookMatch !== null &&
+      Number(tileLookMatch[1]) >= 5 &&
+      Number(tileLookMatch[2]) >= 2 &&
+      Number(tileLookMatch[3]) >= 2 &&
+      tileLookMatch[4] === 'yes' &&
+      tileLookMatch[5] === tileLookMatch[6] &&
+      tileLookMatch[7] === tileLookMatch[8];
     const settingsPass =
       settingsClicked &&
       page.boxed &&
@@ -19956,8 +20072,108 @@ async function runSettingsSmoke(win: BrowserWindow): Promise<void> {
         ` → ${settingsPass ? '✓' : '✗'}`,
     );
     console.info(
-      `[pi/smoke] 设置页拍立得外观（第十二轮第 7 条）：页签 ${page.tabLook}｜卡片 ${page.cardLook}` +
-        ` → ${polaroidOk ? '✓' : '✗'}`,
+      `[pi/smoke] 设置页扁平外观 + 田字格（本轮：按参考图 2 简化；取代第十二轮第 7 条的拍立得）：` +
+        `页签 ${page.tabLook}｜小节 ${page.cardLook}｜分段 ${uiLook.seg}｜田字格 ${uiLook.tiles}` +
+        ` → ${flatLookOk ? '✓' : '✗'}`,
+    );
+
+    /*
+     * 「先锋风格」那一格（本轮：主人把「界面语言」换成「先锋风格的切换类型」，
+     * 选项是 队列拼贴 / 莱茵风）。点另一档 → 读回 localStorage 的 `pi.avant-style`
+     * → 再点回原档还原原值。锁的是「这个控件真的把偏好写进去了」（`rhine` 莱茵风那套
+     * 皮肤本体还没实现，但偏好必须先真存下来），以及「选完能点回去」——不还原的话，
+     * 跑一次冒烟就把主人的选择改掉了。
+     */
+    const avantRoundTrip = (await win.webContents.executeJavaScript(
+      `(async () => {
+         const row = document.querySelector('[data-avant-style-setting]');
+         if (row === null) return { ok: false, why: '没有这一格' };
+         const items = [];
+         for (const item of row.querySelectorAll('.pi-seg__item')) items.push(item);
+         if (items.length !== 2) return { ok: false, why: '选项数=' + items.length };
+         const read = () => window.localStorage.getItem('pi.avant-style') ?? 'collage';
+         const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+         const before = read();
+         const active = items.filter((el) => el.dataset.active === 'true')[0] ?? null;
+         if (active === null) return { ok: false, why: '没有选中项' };
+         const other = items.filter((el) => el.dataset.active !== 'true')[0];
+         other.click();
+         await wait(260);
+         const after = read();
+         active.click();
+         await wait(260);
+         const restored = read();
+         return {
+           ok: true,
+           before,
+           after,
+           restored,
+           labels: items.map((el) => el.textContent).join('/'),
+         };
+       })()`,
+      true,
+    )) as {
+      ok: boolean;
+      before?: string;
+      after?: string;
+      restored?: string;
+      labels?: string;
+      why?: string;
+    };
+    const avantOk =
+      avantRoundTrip.ok === true &&
+      avantRoundTrip.after !== avantRoundTrip.before &&
+      avantRoundTrip.restored === avantRoundTrip.before;
+    console.info(
+      `[pi/smoke] 设置页「先锋风格」格（本轮）：选项=${avantRoundTrip.labels ?? '无'}` +
+        `｜点另一档：${avantRoundTrip.before ?? '?'} → ${avantRoundTrip.after ?? '?'}` +
+        `｜点回来：${avantRoundTrip.restored ?? '?'}${avantRoundTrip.why ? `（${avantRoundTrip.why}）` : ''}` +
+        ` → ${avantOk ? '✓' : '✗'}`,
+    );
+
+    /*
+     * 「边缘暗角」开/关按键（主人本轮：「边缘暗角的开关替换成开/关两个按键，UI 形式与其他
+     * 设置项保持一致」，并交待「只检测按键是否正常修改功能，是否可以正常点击按键互动」）。
+     * 所以这条只干一件事：点得到、点得动、点完设置**真的写进去了**。
+     *
+     * 判据用主进程读到的设置值（`services.getSettings()`，渲染层点一下就是走 IPC 写盘那条路），
+     * 不是看按钮高没高亮 —— 只看高亮的话，控件长得对但没接线也能过。
+     * 起点是主人的偏好（可能本来就是「关」），所以最后**按原值点回去**。
+     */
+    const edgeBefore = (await services.getSettings()).edgeVignette !== false;
+    const clickEdge = async (label: string): Promise<boolean> => {
+      const clicked = (await win.webContents.executeJavaScript(
+        `(() => {
+           const row = document.querySelector('[data-edge-vignette-setting]');
+           if (row === null) return false;
+           const wanted = ${JSON.stringify(label)};
+           for (const item of row.querySelectorAll('.pi-seg__item')) {
+             if (item.textContent.trim() === wanted) { item.click(); return true; }
+           }
+           return false;
+         })()`,
+        true,
+      )) as boolean;
+      await delay(700);
+      return clicked;
+    };
+    const edgeOffClicked = await clickEdge('关');
+    const edgeAfterOff = (await services.getSettings()).edgeVignette !== false;
+    const edgeOnClicked = await clickEdge('开');
+    const edgeAfterOn = (await services.getSettings()).edgeVignette !== false;
+    if (!edgeBefore) await clickEdge('关');
+    const edgeAfterRestore = (await services.getSettings()).edgeVignette !== false;
+    const edgeButtonOk =
+      edgeOffClicked &&
+      edgeOnClicked &&
+      edgeAfterOff === false &&
+      edgeAfterOn === true &&
+      edgeAfterRestore === edgeBefore;
+    console.info(
+      `[pi/smoke] 设置页「边缘暗角」开/关按键（本轮）：起点=${edgeBefore ? '开' : '关'}` +
+        `｜点「关」→存盘=${edgeAfterOff ? '开' : '关'}｜点「开」→存盘=${edgeAfterOn ? '开' : '关'}` +
+        `｜还原=${edgeAfterRestore === edgeBefore ? `${edgeBefore ? '开' : '关'} ✓` : '✗'}` +
+        ` → ${edgeButtonOk ? '✓' : '✗'}`,
     );
     /*
      * **用户第 7 轮第 3 条**（原话：「音源页……的两个按键太丑了要修改」「界面页……有一个很丑的
@@ -20036,6 +20252,8 @@ async function runSettingsSmoke(win: BrowserWindow): Promise<void> {
 
     // 第十轮第 1 条（用户 m02362）：设置框顶部那张大封面 + 黑胶已经删掉。探针只断言文字与
     // 输入框，看不出「顶部还有没有那块」，所以这里补一张「刚打开设置框」的截图当证据。
+    // 本轮（扁平化 + 田字格）之后这张图拍的是**「界面」tab**：上面量外观时切过来的，
+    // 这一轮的改动也集中在这一页。
     const frameShot = smokeShotPath(
       process.env.PI_SMOKE_SETTINGS_SHOT,
       path.resolve(here, '../../../docs/m3-settings-frame.png'),
@@ -20346,12 +20564,15 @@ async function runSettingsSmoke(win: BrowserWindow): Promise<void> {
       themeOk &&
       tuningOk &&
       tuningToggleOk &&
-      polaroidOk &&
+      flatLookOk &&
+      avantOk &&
+      edgeButtonOk &&
       settingsSwitchOk;
     console.info(
       `[pi/smoke] M2.5 渲染层验收：设置页 ${settingsPass ? '✓' : '✗'}｜音质日志页 ${logPass ? '✓' : '✗'}` +
         `｜分类边框页与歌词主题 ${themeOk ? '✓' : '✗'}｜歌词动效参数卡 ${tuningOk ? '✓' : '✗'}` +
-        `｜逐字旋转开关 ${tuningToggleOk ? '✓' : '✗'}｜拍立得外观 ${polaroidOk ? '✓' : '✗'}` +
+        `｜逐字旋转开关 ${tuningToggleOk ? '✓' : '✗'}｜扁平外观+田字格（本轮）${flatLookOk ? '✓' : '✗'}` +
+        `｜先锋风格格 ${avantOk ? '✓' : '✗'}｜边缘暗角开关键 ${edgeButtonOk ? '✓' : '✗'}` +
         `｜开关不再是原生控件（第 7 轮第 3 条）${settingsSwitchOk ? '✓' : '✗'}` +
         ` → ${ok ? '通过' : '未通过'}`,
     );

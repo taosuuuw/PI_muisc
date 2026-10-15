@@ -29,38 +29,156 @@
  * `data-lyric-theme-option`、`data-lyric-tuning`、`.pi-srcrow`、`input.pi-input`）
  * 全在 JSX 里，这一轮没动结构，也不动它们的类名。 */
 
+/* 本轮（用户参考图 2 + 「田字格」）：设置页继续做减法，上半区改排布。
+ *
+ * 用户原话：「把图 1 所示的详情设置页的 UI 风格往图 2 上靠近，做到视觉上的简化」，
+ * 随后又明确了这一版的形态：「去掉功能标题下的文字注释，只留下标题和开关，
+ * 并且不是一行一行的排列，而是在上面这块区域里类似田字格式的分布」。
+ *
+ * 所以这一版两件事：
+ *   ① 继续拆壳 —— 外壳、拍立得卡面、每行的浅底胶囊都不画了（控件自己画实）；
+ *   ② 「界面」tab 的第一节挂 `pi-tilegrid`：一行一行改成**两列的格子**（田字格），
+ *      格子里只有标题 + 控件，标题下那行说明**不显示**。
+ *
+ * 设置项一个没增没减，改的全是外观与排布。 */
+
 .pi-settings-frame {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 4px;
   max-width: 760px;
-  padding: 14px;
-  border: 1px solid var(--pi-divider);
-  border-radius: var(--pi-glass-radius);
-  background: var(--pi-glass-bg);
-  backdrop-filter: var(--pi-glass-blur);
-  -webkit-backdrop-filter: var(--pi-glass-blur);
-  box-shadow: var(--pi-glass-edge), var(--pi-shadow-card);
-}
-
-/* ---------------------------- 拍立得卡面 ---------------------------- */
-/* 一张卡 = 一张拍立得：白底、大圆角、柔和落影，四边留白里**底部更厚**
-   （左右 16px / 上 14px / 下 24px），所以第一眼像照片而不是表单。
-   还顺手把卡内标题与正文的行距放松一点，减少「表单感」。 */
-
-.pi-settings-frame .pi-card {
-  padding: 14px 16px 24px;
-  border: 1px solid var(--pi-divider);
-  border-radius: 18px;
-  background: var(--pi-surface);
-  box-shadow: var(--pi-glass-edge), var(--pi-shadow-float);
-}
-.pi-settings-frame .pi-card > .pi-card {
-  /* 保险丝：设置框里目前没有卡中套卡，万一以后套上，别让白边叠白边。 */
-  padding: 12px 12px 16px;
-  border-radius: 14px;
+  padding: 12px 16px 14px;
+  border: 0;
+  border-radius: 16px;
+  /* 外框自己不画边与落影（那层壳拆掉了）。**底色也留空**：设置页是长在浮层里的，
+     真正的面来自 `.pi-settings-overlay__box` 那层玻璃（`overlays.css` 已经把它自带的
+     描边/底色/模糊剥掉了，见那边的注释）—— 这里再刷一层就是玻璃套玻璃。 */
+  background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
   box-shadow: none;
 }
+
+/* ---------------------------- 平铺小节 ---------------------------- */
+/* 一张卡 = 一个小节，不再是拍立得：无底、无框、无落影，只有标题与若干行/格子。
+   小节之间用**一条发丝线 + 一段留白**分开。 */
+
+.pi-settings-frame .pi-card {
+  padding: 8px 0 10px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.pi-settings-frame .pi-card + .pi-card {
+  margin-top: 6px;
+  padding-top: 14px;
+  border-top: 1px solid var(--pi-divider);
+}
+.pi-settings-frame .pi-card > .pi-card {
+  /* 保险丝：设置框里目前没有卡中套卡；真套上了也照样平铺，别叠出第二层边。 */
+  padding: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+/* ------------------------------ 田字格 ------------------------------ */
+/*
+ * 「界面」tab 的第一节（外观 / 关闭窗口 / 边缘暗角 / 应用主题色 / 界面语言 + 自定义主色面板）。
+ *
+ * 原来是一行一条的竖排：左边「标题 + 一行说明」、右边控件，五行下来很长。
+ * 现在改成**两列格子**（用户说的「田字格」）：每个格子 = 标题一行 + 控件一块，
+ * 标题下那行说明不显示（全文仍在 `title` 悬停提示里，DOM 也没删，无障碍与冒烟还读得到）。
+ *
+ * 为什么只给这一节上格子：用户点名的是「上面这块区域」；下面那些小节（上报听歌记录 /
+ * 快捷键 / 播放页背景 / 使用指引）行内信息多，竖排更好读，不动。
+ */
+/*
+ * 格子怎么排（用户：「上下左右边框的设置项对齐并且没有空白，每个设置项不一定要一样的
+ * 长度大小，可以有长有短，尽量使内容填充满边框」）：
+ *
+ * 用**六栏**网格 + 让格子跨列，把这一块矩形**铺满、不留空格子**：
+ *   · 第 1、2 格（外观 / 关闭窗口）各跨 3 栏 = 各占一半 —— 它们的分段控件块多，需要宽度；
+ *   · 第 3 格起各跨 2 栏 = 各占三分之一 —— 这一档放边缘暗角（只有一颗开关）、
+ *     应用主题色、界面语言（两块）；行内加起来正好 3+3+2+2+2 = 12 = 两行六栏，四边齐平。
+ *   · 以后「先锋风格」那一格接回来（它会插在第 2 格位置），第 3 格起还是各跨 2 栏：
+ *     3+3+2+2+2+2 = 两行，照样铺满。
+ * 跨列用 `nth-child` 而不是逐格写类名：这几格是同一个列表里的兄弟节点，加一减一都不用改 CSS。
+ */
+.pi-settings-frame .pi-tilegrid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 10px;
+}
+.pi-settings-frame .pi-tilegrid > .pi-setting:nth-child(1),
+.pi-settings-frame .pi-tilegrid > .pi-setting:nth-child(2) {
+  grid-column: span 3;
+}
+.pi-settings-frame .pi-tilegrid > .pi-setting:nth-child(n + 3) {
+  grid-column: span 2;
+}
+/* 取色面板（自定义主色）整块要横着铺，占满一行 —— 三分之一格里拖不了手柄。 */
+.pi-settings-frame .pi-tilegrid > .pi-setting--stack {
+  grid-column: 1 / -1;
+}
+/*
+ * 格子：有底有边的小方块（跟图 2 里那种「一块块控件」同源），标题在上、控件在下。
+ * 选择器带上 `.pi-settings-frame` 并把伪类档写全：下面「设置行」那组同特异性规则在文件里
+ * 更靠后，不带前缀时会把格子的排布盖回「左右分栏」。
+ */
+.pi-settings-frame .pi-tilegrid .pi-setting,
+.pi-settings-frame .pi-tilegrid .pi-setting:first-child,
+.pi-settings-frame .pi-tilegrid .pi-setting:last-child {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 9px;
+  padding: 12px 13px;
+  border: 1px solid var(--pi-divider);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--pi-text) 4%, transparent);
+}
+.pi-settings-frame .pi-tilegrid .pi-setting + .pi-setting {
+  margin-top: 0;
+}
+/* 取色面板（自定义主色）整块要横着铺，占满一行 —— 见上面那段跨列说明。 */
+
+/* 「标题下的说明」整块不显示：用户原话「去掉功能标题下的文字注释，只留下标题和开关」。
+   **只作用于格子**（用户点名的就是上面这块区域）：下面的快捷键说明、使用指引正文、
+   播放页背景说明都不是「标题下的注释」，照旧显示。 */
+.pi-settings-frame .pi-tilegrid .pi-setting__hint {
+  display: none;
+}
+/*
+ * **例外**：渲染方式被自动降级成软件渲染时那一格是**故障告警**（红字），不是「说明」——
+ * 那种情况下用户必须看得见「卡是因为什么」。所以这一格的提示照旧显示。
+ * （平时这一格根本不渲染，见 `SettingsPage.tsx` 的 `softwareRendering` 分支。）
+ */
+.pi-settings-frame .pi-tilegrid .pi-setting[data-hwaccel-setting] .pi-setting__hint {
+  display: block;
+}
+.pi-settings-frame .pi-tilegrid .pi-setting__title {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--pi-text-sub);
+}
+/* 格子里的控件铺满整格；分段控件因此是「几块等宽」的样子。
+   三分之一格里三块并排本来就窄，所以格内把那圈横向留白收紧（`padding: 6px 8px`），
+   文字仍然不换行 —— 不然「自定义」这种三字块会被挤掉。 */
+.pi-settings-frame .pi-tilegrid .pi-seg {
+  display: flex;
+  width: 100%;
+}
+.pi-settings-frame .pi-tilegrid .pi-seg__item {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 6px 8px;
+}
+/*
+ * 这里原来还有两条「只有一颗开关的格子」规则（`:has(.pi-check)` → 标题左、开关右）：
+ * 那种格子只在「边缘暗角」用勾选框时存在过。主人本轮把边缘暗角换成了开/关两个按键，
+ * 格子里已经没有一个 `.pi-check` 了，所以那两条**删掉**——不留选不中的死规则。
+ */
 
 /* 第十轮第 1 条（用户 m02362）：顶部「当前播放大封面 + 黑胶 + 歌名/歌手」
    整块删掉了（原来这里是 `.pi-settings-frame__head/__art/__cover/__meta/__song/__artist`
@@ -226,26 +344,30 @@
 
 /* ---------------------- 精简后的行与行内控件 ---------------------- */
 
-/* 设置行：原来一行是「标题 + 两行长说明 + 右侧控件」，现在收成浅底圆角 pill 行，
-   只留「名字 + 一行短提示 + 右侧 pill 选择器」。长说明已经搬进 JSX 的 `title`。
+/* 设置行：胶囊底去掉，回到「左标题 + 右控件」的裸行（田字格那一节另有排布，见上）。
    注意 global.css 里 `.pi-setting:first-child/:last-child` 与这里同特异性，
    靠文件加载顺序（main.tsx 里本文件在 global.css 之后）胜出；三个选择器写全是为了稳。 */
 .pi-settings-frame .pi-setting,
 .pi-settings-frame .pi-setting:first-child,
 .pi-settings-frame .pi-setting:last-child {
   align-items: center;
-  gap: 12px;
-  padding: 9px 12px;
+  gap: 16px;
+  padding: 9px 0;
   border-top: 0;
-  border-radius: 14px;
-  background: var(--pi-bg-subtle);
+  border-radius: 0;
+  background: transparent;
 }
 .pi-settings-frame .pi-setting + .pi-setting {
-  margin-top: 6px;
+  margin-top: 0;
+}
+/* 左栏（标题 + 提示）得能缩：提示长起来会把右边的控件挤走。 */
+.pi-settings-frame .pi-setting:not(.pi-setting--stack) > span:first-child {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 .pi-settings-frame .pi-setting__title {
-  font-size: 13.5px;
-  font-weight: 600;
+  font-size: 13px;
+  font-weight: 500;
 }
 .pi-settings-frame .pi-setting__hint {
   margin-top: 2px;
@@ -253,20 +375,22 @@
   line-height: 1.45;
 }
 
-/* 下拉 / 输入框 / 按钮统一成 pill，跟参考图右侧那几个小胶囊对齐。 */
+/* 下拉 / 输入框 / 按钮：不再做成「胶囊」，统一成图 2 那种 10px 圆角的实心小块 ——
+   圆角一小，控件的「面」就显出来了，整页看着是「几个控件 + 一堆留白」而不是「一堆药丸」。 */
 .pi-settings-frame .pi-select {
   flex: none;
   border: 1px solid var(--pi-divider);
-  border-radius: 999px;
-  background: var(--pi-surface);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--pi-text) 6%, transparent);
   padding: 0 12px;
 }
 .pi-settings-frame .pi-input {
-  border-radius: 12px;
-  background: var(--pi-surface);
+  border: 1px solid var(--pi-divider);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--pi-text) 6%, transparent);
 }
 .pi-settings-frame .pi-btn {
-  border-radius: 999px;
+  border-radius: 10px;
 }
 
 /* 勾选框改成开关外观：参考图里这一排没有方框勾选，都是胶囊。
@@ -296,8 +420,8 @@
   padding: 0;
   border: 0;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--pi-text) 18%, transparent);
-  box-shadow: inset 0 1px 2px rgb(0 0 0 / 12%);
+  background: color-mix(in srgb, var(--pi-text) 14%, transparent);
+  box-shadow: none;
   cursor: pointer;
   transition: background 0.18s ease;
 }
@@ -310,12 +434,12 @@
   height: 16px;
   border-radius: 50%;
   background: #fff;
-  box-shadow: 0 1px 3px rgb(0 0 0 / 30%);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 22%);
   transition: transform 0.18s cubic-bezier(0.22, 1, 0.36, 1);
 }
 .pi-settings-frame .pi-check:checked {
   background: var(--pi-primary);
-  box-shadow: inset 0 1px 2px rgb(0 0 0 / 16%);
+  box-shadow: none;
 }
 .pi-settings-frame .pi-check:checked::after {
   transform: translateX(18px);
@@ -336,38 +460,45 @@
   background: color-mix(in srgb, var(--pi-text) 22%, transparent);
 }
 
-/* 分段控件（播放模式 / 外观 / 界面语言）：浅底胶囊容器 + 选中项白底小胶囊。 */
+/* 分段控件（播放模式 / 外观 / 关闭窗口 / 应用主题色 / 界面语言）——
+   本轮改成图 2 那种**几块并排的实心小方块**：各自有底、有边、8px 圆角，块间留 8px 缝，
+   选中那块吃主色（暗档算出来正是「深蓝底 + 浅蓝字」，跟图 2 里选中块一个味道）。
+   改动前是「一颗浅底胶囊里嵌一颗白底胶囊 + 落影」：两层壳、两种圆角，是全页最吵的一处。
+   抓手没动：`.pi-seg` / `.pi-seg__item[data-active]` 还是原来的类名（冒烟照旧能查）。 */
 .pi-seg {
   display: inline-flex;
   flex: none;
-  gap: 2px;
-  padding: 3px;
-  border-radius: 999px;
-  background: var(--pi-bg-subtle);
+  gap: 8px;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
 }
 .pi-seg__item {
-  padding: 5px 14px;
-  border: 0;
-  border-radius: 999px;
-  background: transparent;
+  min-width: 68px;
+  padding: 6px 14px;
+  border: 1px solid var(--pi-divider);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--pi-text) 6%, transparent);
   color: var(--pi-text-sub);
   font: inherit;
-  font-size: 13px;
+  font-size: 12.5px;
+  text-align: center;
   white-space: nowrap;
   cursor: pointer;
   transition:
     background 0.15s ease,
-    color 0.15s ease,
-    box-shadow 0.15s ease;
+    border-color 0.15s ease,
+    color 0.15s ease;
 }
 .pi-seg__item:hover:not([data-active='true']) {
   color: var(--pi-text);
 }
 .pi-seg__item[data-active='true'] {
-  background: var(--pi-surface);
-  color: var(--pi-text);
-  font-weight: 600;
-  box-shadow: var(--pi-shadow-card);
+  border-color: color-mix(in srgb, var(--pi-primary) 42%, transparent);
+  background: var(--pi-primary-weak);
+  color: var(--pi-primary-deep);
+  font-weight: 500;
+  box-shadow: none;
 }
 .pi-seg__item:disabled {
   cursor: default;
@@ -388,14 +519,15 @@
 
 /* ------------------------------ 同步按钮 ------------------------------ */
 
+/* 底部同步行：同样是「一条发丝线 + 留白」，不再是一块浅底药丸。 */
 .pi-settings-frame__foot {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 9px 12px;
-  border-top: 0;
-  border-radius: 16px;
-  background: var(--pi-bg-subtle);
+  padding: 12px 0 2px;
+  border-top: 1px solid var(--pi-divider);
+  border-radius: 0;
+  background: transparent;
 }
 .pi-syncbtn {
   display: inline-flex;
@@ -405,7 +537,7 @@
   min-width: 148px;
   padding: 9px 20px;
   border: 1px solid var(--pi-primary);
-  border-radius: var(--pi-radius-btn);
+  border-radius: 10px;
   background: var(--pi-primary);
   /* 主色底上的字读 `--pi-on-primary`（用户第二十一轮第 5 条：主色可换成黑白/自定义）。 */
   color: var(--pi-on-primary, #fff);
@@ -448,13 +580,13 @@
   gap: 4px;
   padding: 11px 13px;
   border: 1px solid var(--pi-divider);
-  border-radius: 16px;
-  background: var(--pi-surface);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--pi-text) 5%, transparent);
   color: var(--pi-text);
   font: inherit;
   text-align: left;
   cursor: pointer;
-  box-shadow: var(--pi-shadow-card);
+  box-shadow: none;
   transition:
     border-color 0.15s ease,
     background 0.15s ease,
@@ -591,12 +723,12 @@
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 9px 12px;
-  border-radius: 14px;
-  background: var(--pi-bg-subtle);
+  padding: 9px 0;
+  border-radius: 0;
+  background: transparent;
 }
 .pi-scut__row + .pi-scut__row {
-  margin-top: 6px;
+  margin-top: 0;
 }
 
 .pi-scut__meta {

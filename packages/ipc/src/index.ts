@@ -844,7 +844,6 @@ export const SettingsSchema = z.object({
   playMode: z.enum(['order', 'repeat-one', 'shuffle', 'sequence']),
   downloadDir: z.string(),
   localLibraryDir: z.string(),
-  locale: z.enum(['zh-CN', 'en']),
   /**
    * 歌词主题（用户 m08768 第 4 条）。键名与 folia-major 的目录名对齐：
    * `classic` 流光（我们的默认，也是最先复刻的那套）/ `fume` 浮名 / `cadenza` 心象 /

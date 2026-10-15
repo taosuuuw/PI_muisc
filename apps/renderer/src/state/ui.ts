@@ -110,6 +110,47 @@ function persistUiStyle(style: UiStyle): void {
 }
 
 /**
+ * 先锋档内部的**皮肤档位**。
+ *
+ * - `collage`「队列拼贴」：先锋档现在的样子（歌单 = 封面卡片流，歌曲 = 队列拼贴墙）；
+ * - `rhine`「莱茵风」：主人在设置页里给**第二套先锋皮肤**起的名字（选项文案就是这两个字）。
+ *   **本体尚未实现**，选了它只记偏好、界面不变 —— 这里只留位置与接法，不含任何实现：
+ *   ① 建皮肤组件（比如 `components/rhine/*`）；② 设置页「界面」tab 那一格已经在
+ *   （`data-avant-style-setting`，选项值就是这里的两个字符串）；③ `App.tsx` 按
+ *   `avantStyle` 分流，并把它写到 `.pi-app[data-avant-style]` 上，让 CSS 与冒烟探针读得到。
+ *
+ * 前情备注：这一档最早做过一套「玻璃 CD 盒架」（一整个架子，每盒一个歌单，点开拉近看曲目），
+ * 主人后来要求整套删掉，只留接口；本轮主人把这一档的目的地改叫「莱茵风」，所以那个
+ * 已经删掉的皮肤名不再出现在代码里（本机若还存着旧值，读出来会退回默认的队列拼贴）。
+ *
+ * 为什么先把字段与存储键定下来：这是**用户偏好**，与 `uiStyle` 同一个道理，纯前端偏好
+ * 不进 `packages/shared` 的 `Settings`，也就不必去动 `packages/ipc` 的通道白名单。
+ */
+export type AvantStyle = 'collage' | 'rhine';
+
+/** 先锋皮肤的本机键名（同 `UI_STYLE_KEY`：发出去就冻结）。 */
+const AVANT_STYLE_KEY = 'pi.avant-style';
+
+/** 读上次选的先锋皮肤；没有 / 存储不可用 / 存的是旧值都退回 `collage`（先锋档的老样子）。 */
+function readStoredAvantStyle(): AvantStyle {
+  if (typeof window === 'undefined') return 'collage';
+  try {
+    return window.localStorage.getItem(AVANT_STYLE_KEY) === 'rhine' ? 'rhine' : 'collage';
+  } catch {
+    return 'collage';
+  }
+}
+
+/** 写回先锋皮肤。写不进去也不该崩（同 `persistUiStyle`）。 */
+function persistAvantStyle(style: AvantStyle): void {
+  try {
+    window.localStorage.setItem(AVANT_STYLE_KEY, style);
+  } catch {
+    /* 隐私模式 / 配额满：本次会话仍然生效，只是下次打开回到默认 */
+  }
+}
+
+/**
  * 首次使用指引的 localStorage 键（用户第五轮第 1 条）。
  *
  * 存的是**版本号**而不是布尔：以后指引内容大改时把版本号抬一档，
@@ -378,6 +419,13 @@ interface UiState {
   uiStyle: UiStyle;
   setUiStyle: (style: UiStyle) => void;
   /**
+   * 先锋档内部的皮肤档位（`AvantStyle`）。设置页「界面」tab 的「先锋风格」那一格写它；
+   * `rhine`（莱茵风）那套皮肤**本体还没实现**，所以目前除了记偏好没有别的消费者 ——
+   * 详情见 `AvantStyle` 那段注释里的三步接法。
+   */
+  avantStyle: AvantStyle;
+  setAvantStyle: (style: AvantStyle) => void;
+  /**
    * 应用主题色（用户第二十一轮第 5 条）。`sky` = 默认天蓝、`mono` = 黑白、
    * `custom` = 用 `accentColor` 现算。真正落到 CSS 变量上的是 `App.tsx` 的 `useAccent`。
    */
@@ -613,6 +661,14 @@ export const useUi = create<UiState>((set) => ({
       persistUiStyle(uiStyle);
       return { uiStyle };
     }),
+
+  // 先锋皮肤的档位：设置页那一格直接写它（`AvantStyle` 那段注释里写了三步接法），
+  // 值持久化在本机，免得以后接实现时再动键名。
+  avantStyle: readStoredAvantStyle(),
+  setAvantStyle: (avantStyle) => {
+    persistAvantStyle(avantStyle);
+    set({ avantStyle });
+  },
 
   // 应用主题色（用户第二十一轮第 5 条）：初值从 localStorage 捞；改档位时顺手把「天蓝」
   // 那枚默认色填进 `accentColor`（第一次点「自定义」是从默认天蓝开始调的，不是从空白开始）。
