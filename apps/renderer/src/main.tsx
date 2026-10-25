@@ -45,6 +45,10 @@ import './styles/download-list.css';
 // 同样是新 class 前缀（`.pi-picker*`），没有历史取值要覆盖；放末尾只为顺序稳定——
 // 那条要压 `.pi-home__toast` 的规则自带两个类名（`.pi-home__toast.pi-picker-toast`），不吃顺序。
 import './styles/playlist-picker.css';
+// 先锋档的第二套皮「莱茵风」（`components/RhineLayer.tsx` + `src/rhine/*`）：
+// 波浪流动式 CD 盒阵列的外壳与三层浮层（列名牌 / 右侧详情栏 / 完整曲目单）。
+// 放在最后：它自带 `.pi-rhine*` 前缀（没有历史取值要盖），排末尾只为顺序稳定。
+import './styles/rhine.css';
 
 const container = document.getElementById('root');
 if (!container) {

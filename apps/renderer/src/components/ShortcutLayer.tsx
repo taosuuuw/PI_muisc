@@ -106,6 +106,12 @@ function advance(action: HoldAction, deltaMs: number, hold: Hold): void {
  */
 function exitCurrentLayer(): void {
   const ui = useUi.getState();
+  /*
+   * 先问「最上面那一层有没有人想自己处理 Esc」（莱茵风皮肤注册的钩子，见 `state/ui.ts` 的
+   * `escapeTop`）。它返回 true 就当场结束 —— 莱茵层在详情档按 Esc 要「退到近景」而不是
+   * 被这条链路直接把歌单浮层关掉。
+   */
+  if (ui.escapeTop !== null && ui.escapeTop()) return;
   if (ui.settingsOpen) {
     ui.closeSettings();
     return;

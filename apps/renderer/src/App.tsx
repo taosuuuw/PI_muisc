@@ -11,6 +11,7 @@ import { GuideOverlay } from './components/GuideOverlay';
 import { SongListOverlay } from './components/SongListOverlay';
 import { SongPageOverlay } from './components/SongPageOverlay';
 import { PlaylistCoverflowOverlay, type PlaylistNav } from './components/PlaylistCoverflowOverlay';
+import { RhineLayer, type RhineSource } from './components/RhineLayer';
 import { ShortcutLayer } from './components/ShortcutLayer';
 import { StyleToast } from './components/StyleToast';
 import { DynamicIsland } from './components/DynamicIsland';
@@ -22,7 +23,41 @@ import { HomePage } from './pages/HomePage';
 import { MinePage } from './pages/MinePage';
 import { PlaylistPage } from './pages/PlaylistPage';
 import { SearchPage } from './pages/SearchPage';
-import { useUi, type UiStyle } from './state/ui';
+import { useUi, type AvantStyle, type UiStyle } from './state/ui';
+
+/**
+ * 先锋皮肤（`avantStyle`）的两档对应的**歌单来源**。
+ *
+ * 为什么要有这个映射：莱茵层自己不知道「人是点哪个按键进来的」，它只知道要摆哪一路歌单。
+ * 挂钩就是 `nav` —— 但 `openPlaylist` 会把 `nav` 拨回 `home`（歌单浮层是盖在播放页上的），
+ * 所以来源必须在**进 `home` 之前**记下来（也就是下面那个只认歌单三档的 effect）。
+ */
+function rhineSourceOf(id: NavId): RhineSource | null {
+  if (id === 'mine:playlists') return 'mine';
+  if (id === 'playlist:star') return 'star';
+  if (id === 'playlist:recommend') return 'recommend';
+  return null;
+}
+
+/**
+ * 先锋档这一次要不要走「莱茵风」那套（用户 m00001 第 2 条那一档的第二套皮）。
+ *
+ * `data-avant-style` 挂在 `.pi-app` 上：CSS 与冒烟探针都从根节点读它，
+ * 与 `data-ui-style` 同一个道理（见 `state/ui.ts` 的 `AvantStyle` 注释里那三步接法）。
+ */
+function useRhineSkin(uiStyle: UiStyle, avantStyle: AvantStyle, nav: NavId): {
+  skin: boolean;
+  source: RhineSource;
+} {
+  const skin = uiStyle === 'avant' && avantStyle === 'rhine';
+  const [source, setSource] = useState<RhineSource>('mine');
+  useEffect(() => {
+    const next = rhineSourceOf(nav);
+    // 只在导航落在歌单三档上时记来源：进歌单之后 `nav` 是 `home`，这时候不能把来源改回去。
+    if (next !== null) setSource(next);
+  }, [nav]);
+  return { skin, source };
+}
 
 /**
  * M0 阶段刻意不引路由库：页面就是一个联合类型 + 一张表。
@@ -289,6 +324,15 @@ const PAGE_LEAVE_MS = 640;
  */
 export function App(): ReactNode {
   const nav = useUi((s) => s.nav);
+  /*
+   * 调试入口：把 UI store 挂到 window 上（`__piUiStore.getState()`）。
+   *
+   * 有些入口只能靠手势走到底（比如环形菜单的「播放列表」要先点空白出球、再上划、再点按键），
+   * 冒烟里没法稳定复现；直接拿到 store 就能一步验证「点了之后会渲染成什么」。
+   */
+  useEffect(() => {
+    (window as unknown as { __piUiStore?: typeof useUi }).__piUiStore = useUi;
+  }, []);
   /**
    * 无操作自动隐藏（第八轮第 1 条）：整棵树的 `data-idle` 由这里统一开关，
    * 具体藏谁、怎么唤醒写在 `global.css` 的 `[data-idle='true']` 规则里
@@ -307,6 +351,46 @@ export function App(): ReactNode {
    * 和 image 4 里那层磨砂后面的东西也对得上（不是歌单网格自己）。
    */
   const avantList = uiStyle === 'avant' && isPlaylistNav(nav);
+  /**
+   * 「莱茵风」那套皮（先锋档的第二套）。它替换掉三处界面：歌单封面卡片导航 → 图 1、
+   * 歌单页的歌曲选择导航 → 图 2、队列拼贴放大封面的界面 → 图 3。所以这一档下
+   * `PlaylistCoverflowOverlay` 与歌单/队列那两档 `SongListOverlay` 都不再渲染。
+   */
+  const avantStyle = useUi((s) => s.avantStyle);
+  const { skin: rhineSkin, source: rhineSource } = useRhineSkin(uiStyle, avantStyle, nav);
+  const openedPlaylist = useUi((s) => s.openedPlaylist);
+  const openPlaylist = useUi((s) => s.openPlaylist);
+  /*
+   * **队列档不接莱茵风**（主人 2026-10-25：「播放列表和最近听过这两个索引不接入莱茵风的
+   * 先锋风格，保持平凡风格的形式」）。
+   *
+   * 这两路都是「看一眼我放着什么」的日常操作，不该被拉进 CD 盒阵列那套相机运动里。
+   * 所以 `RhineLayer` 仍然保留 `queue` 这个 prop（它内部那三层界面还能用），但宿主**恒传 null**，
+   * 于是环形菜单点「播放列表」走的是平凡的歌曲卡片浮层（`SongListOverlay`）。
+   * 原来这里的 `rhineQueue` useMemo 已经删掉 —— 留着只会让人以为这一路还通着。
+   */
+  const rhineActive = rhineSkin && (avantList || openedPlaylist !== null);
+  /** 退出莱茵层：把盖在播放页上的两层浮层都收掉，回到播放页（Esc 到底 / 点「退出莱茵风」走这里）。 */
+  const rhineClose = (): void => {
+    const ui = useUi.getState();
+    if (ui.openedPlaylist !== null) ui.closePlaylist();
+    if (ui.openedSongs !== null) ui.closeSongs();
+    ui.navigate('home');
+  };
+  /**
+   * 「歌单曲目页 → 歌单总览」（Esc 逐级返回的第一级，2026-10-22）。
+   *
+   * 只 `closePlaylist()` 不够：那会让 `openedPlaylist` 变 null，而 `rhineActive` 依赖它
+   * （`avantList || openedPlaylist || queue`），于是整个莱茵层**直接失去激活状态**，
+   * 人就被弹回播放页了 —— 这正是主人说的「图 2 退出应该到图 1，却退到了播放页」。
+   * 所以还要把导航拨回歌单列表那一档，让 `avantList` 接住，画面才停在总览。
+   */
+  const rhineBack = (): void => {
+    const ui = useUi.getState();
+    if (ui.openedPlaylist !== null) ui.closePlaylist();
+    ui.navigate(rhineSource === 'star' ? 'playlist:star' : rhineSource === 'recommend' ? 'playlist:recommend' : 'mine:playlists');
+  };
+  const hideListOverlay = rhineSkin && openedPlaylist !== null;
   const arriving = useHomeArrival();
   /* `arriveHome` 那一下（底栏按下就声明）与它是哪一路 —— 换页副本要在**换页之前**挂上。 */
   const homeArriveAt = useUi((s) => s.homeArriveAt);
@@ -325,7 +409,7 @@ export function App(): ReactNode {
   useMediaSession();
 
   return (
-    <div className="pi-app" data-idle={idle} data-ui-style={uiStyle}>
+    <div className="pi-app" data-idle={idle} data-ui-style={uiStyle} data-avant-style={avantStyle}>
       {/* 用户 m00001 第 5 条：全局快捷键（Esc / Tab / Ctrl+A / Ctrl+S / 空格 / 方向键）。
           只监听、不渲染；九条绑定都能在设置页「界面」tab 里改（state/shortcuts.ts）。 */}
       <ShortcutLayer />
@@ -370,7 +454,7 @@ export function App(): ReactNode {
         由 `data-closing` 那条与歌曲页浮层**完全同一条**的 `pi-listoverlay-crossfade-out`
         淡出。同一个实例 ⇒ 不重新挂载、不重播卡片入场 ⇒ 真的只是淡出。
       */}
-      {avantList || leave.cover !== null ? (
+      {!rhineSkin && (avantList || leave.cover !== null) ? (
         <PlaylistCoverflowOverlay
           nav={avantList ? (nav as PlaylistNav) : (leave.cover as PlaylistNav)}
           closing={!avantList}
@@ -379,8 +463,24 @@ export function App(): ReactNode {
       <NavDrawer />
       <LoginDialog />
       <SearchOverlay />
-      {/* 第八轮第 6 条：歌单曲目不再跳页，改成盖在播放页上的磨砂卡片列表浮层。 */}
-      <SongListOverlay />
+      {/* 第八轮第 6 条：歌单曲目不再跳页，改成盖在播放页上的磨砂卡片列表浮层。
+          莱茵风那一档把「歌单曲目」与「当前播放」两路交给 `RhineLayer`（图 2 / 图 3），
+          所以这两路在这个皮肤下不渲染这一层；每日推荐 / 歌手 / 专辑那几档照旧。 */}
+      {hideListOverlay ? null : <SongListOverlay />}
+      {/* 「莱茵风」皮肤（先锋档第二套皮）：波浪流动式 CD 盒阵列 + 三层界面。
+          挂在根上是因为它要盖住整页（`inset: 0`），且进出场是它自己的相机运动；
+          `active` 为假时它只是一层待命的壳（场景留着，下次进来不用重建）。 */}
+      {rhineSkin ? (
+        <RhineLayer
+          active={rhineActive}
+          source={rhineSource}
+          focusPlaylistId={openedPlaylist?.id}
+          queue={null}
+          onClose={rhineClose}
+          onBack={rhineBack}
+          onOpenPlaylist={openPlaylist}
+        />
+      ) : null}
       {/* M4 剩余项（用户 m01402 第 3 条「把 M4 做了」）：歌手 / 专辑不再是卡片浮层或跳搜索页，
           而是一整页（玻璃页 + 大封面 + 曲目/专辑区）。挂在这里是为了让它的 backdrop-filter
           糊到整页（沉浸式背景与左下角名片）；自带 z-index 18，与 `.pi-listoverlay` 同层。 */}

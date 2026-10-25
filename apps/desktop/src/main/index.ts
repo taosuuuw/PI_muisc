@@ -10,7 +10,7 @@ import {
   shell,
 } from 'electron';
 import type { NativeImage } from 'electron';
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Services, thirdPartyEnabled } from './services.js';
@@ -3588,6 +3588,813 @@ async function probeAvantPlaylistExit(
     `｜收干净：浮层还在=${exit.after} 当前页=${exit.page || '?'}` +
     `｜收干净后还有全屏薄幕=${lingerVeil}（要求 false：这一路只该有淡出）`;
   return { ok, info };
+}
+
+/*
+ * 「先锋风格 · 莱茵风」专项验收（`PI_SMOKE_RHINE=1`）。
+ *
+ * 这份脚本 2026-10-18 重建过一次：上一版用整文件重写的方式改，落盘时把中文双重编码成乱码，
+ * 只能 `git checkout` 回滚，连带把历轮的 24 项一起带走了。重建时按**要点**重排成 14 条，
+ * 每条只量一件能证伪的事，判据写进 `docs/RHINE-SKIN.md` 的验收表。
+ *
+ * 做法：真开窗口 → 写偏好（先锋 + 莱茵）重载 → 走「我的歌单」进总览 → 点列、点曲目单、
+ * 滚轮、Esc、拖拽、换曲、点歌播放，全程用真指针事件（`dragPoint`）和页面内 rAF 采样，
+ * 不用宿主侧的 `delay` 凑数。最后一行固定是 `莱茵风专项：N/M 项通过`。
+ */
+/*
+ * 渲染进程看门狗（`PI_WATCHDOG=0` 可关）。
+ *
+ * 起因：2026-10-20 主人报「现在卡死了，app 我没关」，现场量到的现象是 ——
+ * 窗口不被系统判为无响应（`IsHungAppWindow=False`、`WM_NULL` 有回应），但**真实点击后画面
+ * 字节完全相同**（输入根本没被处理），同时渲染进程 CPU 一直在涨、GPU 也在烧。这是
+ * 「渲染进程主线程被一段不 yield 的 JS 占死」的典型特征：既处理不了输入，也提交不了新帧。
+ *
+ * 问题是 JS 在跑什么，从外面看不见。所以这里做三件事：
+ *   ① 每 4 秒探一次活（`1+1`，5 秒超时）；
+ *   ② 连续 3 次没回应就 `webContents.debugger.attach()`（**进程内** CDP，不需要开远程调试端口），
+ *      发 `Debugger.pause` —— V8 用中断机制打断正在跑的脚本，卡死状态下也能停下来；
+ *   ③ 把 `Debugger.paused` 的调用栈（函数名 + 文件 + 行号）写进
+ *      `%APPDATA%\pi\rhine-watchdog.log`，同时打到 stdout。
+ * 打开这个文件就能知道下一次卡死到底卡在哪一行。
+ */
+function startRendererWatchdog(win: BrowserWindow): void {
+  if (process.env.PI_WATCHDOG === '0') return;
+  const logPath = path.join(app.getPath('userData'), 'rhine-watchdog.log');
+  const log = (message: string): void => {
+    const line = `${new Date().toISOString()} ${message}`;
+    console.info(`[pi/watchdog] ${message}`);
+    try {
+      appendFileSync(logPath, `${line}\n`);
+    } catch {
+      // 写日志失败不影响主流程
+    }
+  };
+  let misses = 0;
+  let captured = false;
+  /*
+   * **调试器必须提前挂好**：卡死之后再去 `debugger.attach()` 会一直等在那儿（attach / enable
+   * 都要跟渲染进程握手，而它正被 JS 占着）—— 第一版就是这么白等的：日志里只有「第 N 次无响应」，
+   * 没有栈。所以这里在页面加载完就 attach + `Debugger.enable` + 常驻 `Profiler`，
+   * 卡死时只剩两条立即能发的命令：`Debugger.pause`（V8 用中断机制，JS 在跑也能停）和
+   * `Profiler.stop`（拿 CPU 采样，直接指出最热的函数）。
+   *
+   * 代价：`Debugger.enable` + 2ms 采样对正常使用的影响**没有单独实测**（冒烟里看门狗不挂，
+   * 所以 17/17 那一跑不代表挂上之后的表现）。换来的是「下一次卡死能定到行」。
+   * `PI_WATCHDOG=0` 可以整块关掉；主人若觉得挂上之后变卡，就先关掉它再复现。
+   */
+  let armed = false;
+  const arm = (): void => {
+    if (armed || win.isDestroyed() || win.webContents.isDestroyed()) return;
+    armed = true;
+    try {
+      if (!win.webContents.debugger.isAttached()) win.webContents.debugger.attach('1.3');
+      void win.webContents.debugger.sendCommand('Debugger.enable').catch((error: unknown) => log(`Debugger.enable 失败：${String(error)}`));
+      void win.webContents.debugger
+        .sendCommand('Profiler.enable')
+        .then(() => win.webContents.debugger.sendCommand('Profiler.setSamplingInterval', { interval: 2000 }))
+        .then(() => win.webContents.debugger.sendCommand('Profiler.start'))
+        .then(() => log('已挂上调试器与 CPU 采样（卡死时会抓栈 + 出热点函数）'))
+        .catch((error: unknown) => log(`Profiler 启动失败：${String(error)}`));
+    } catch (error) {
+      log(`调试器挂载失败（卡死时就抓不到栈了）：${String(error)}`);
+    }
+  };
+  win.webContents.once('did-finish-load', arm);
+  if (!win.webContents.isLoading()) arm();
+
+  const timer = setInterval(() => {
+    void (async () => {
+      const alive = await Promise.race([
+        win.webContents
+          .executeJavaScript('1 + 1', true)
+          .then(() => true)
+          .catch(() => false),
+        delay(5000).then(() => false),
+      ]);
+      if (alive) {
+        misses = 0;
+        return;
+      }
+      misses += 1;
+      log(`渲染进程第 ${misses} 次在 5 秒内没有回应`);
+      if (misses < 3 || captured) return;
+      captured = true;
+      if (win.isDestroyed() || win.webContents.isDestroyed()) return;
+      if (!win.webContents.debugger.isAttached()) {
+        log('调试器没挂上（启动时挂失败了），这一轮抓不到栈');
+        return;
+      }
+      win.webContents.debugger.on('message', (_event, method, payload) => {
+        if (method !== 'Debugger.paused') return;
+        const frames =
+          (
+            payload as {
+              callFrames?: {
+                functionName: string;
+                url: string;
+                location: { lineNumber: number; columnNumber: number };
+              }[];
+            }
+          ).callFrames ?? [];
+        log(`卡死现场调用栈（${frames.length} 帧，只列前 12）：`);
+        for (const frame of frames.slice(0, 12)) {
+          log(
+            `  at ${frame.functionName === '' ? '(anonymous)' : frame.functionName} ${frame.url}:${frame.location.lineNumber + 1}:${frame.location.columnNumber + 1}`,
+          );
+        }
+      });
+      // 不 await：卡死状态下这些命令可能要很久才回来，但 V8 的中断会让 pause 先生效。
+      win.webContents.debugger.sendCommand('Debugger.pause').then(
+        () => log('已发出 Debugger.pause'),
+        (error: unknown) => log(`Debugger.pause 失败：${String(error)}`),
+      );
+      void win.webContents.debugger
+        .sendCommand('Profiler.stop')
+        .then((profile: unknown) => {
+          const nodes = ((profile as { profile?: { nodes?: { callFrame?: { functionName?: string; url?: string; lineNumber?: number }; hitCount?: number }[] } }).profile?.nodes ?? []);
+          const hot = nodes
+            .filter((node) => (node.hitCount ?? 0) > 0)
+            .sort((a, b) => (b.hitCount ?? 0) - (a.hitCount ?? 0))
+            .slice(0, 12);
+          log(`卡死前最热的 ${hot.length} 个函数（按自采样数）：`);
+          for (const node of hot) {
+            const name = node.callFrame?.functionName === '' || node.callFrame?.functionName === undefined ? '(anonymous)' : node.callFrame.functionName;
+            log(`  ${String(node.hitCount ?? 0)} 次  ${name}  ${node.callFrame?.url ?? '?'}:${(node.callFrame?.lineNumber ?? -1) + 1}`);
+          }
+        })
+        .catch((error: unknown) => log(`Profiler.stop 失败：${String(error)}`));
+    })();
+  }, 4000);
+  win.on('closed', () => clearInterval(timer));
+}
+
+async function runRhineSmoke(win: BrowserWindow): Promise<void> {
+
+  type Row = { name: string; ok: boolean; info: string };
+  const rows: Row[] = [];
+  const record = (name: string, ok: boolean, info: string): void => {
+    rows.push({ name, ok, info });
+    console.info(`[pi/smoke] ${ok ? '✓' : '✗'} ${name} — ${info}`);
+  };
+  const js = <T>(code: string): Promise<T> => win.webContents.executeJavaScript(code, true) as Promise<T>;
+  const waitFor = async (expression: string, timeoutMs = 12000, stepMs = 200): Promise<boolean> => {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      if (await js<boolean>(`(() => { try { return Boolean(${expression}); } catch (e) { return false; } })()`)) return true;
+      if (Date.now() >= deadline) return false;
+      await delay(stepMs);
+    }
+  };
+  const box = (): Promise<{ width: number; height: number }> => {
+    const [width, height] = win.getContentSize();
+    return Promise.resolve({ width: width ?? 1478, height: height ?? 965 });
+  };
+  const shot = async (rel: string): Promise<string> => {
+    const full = path.resolve(here, '../../../', rel);
+    const image = await win.webContents.capturePage();
+    writeFileSync(full, image.toPNG());
+    return full;
+  };
+  const frameStats = async (): Promise<{ mean: number; spread: number }> => {
+    const image = await win.webContents.capturePage();
+    const bitmap = image.toBitmap();
+    let sum = 0;
+    let count = 0;
+    let min = 255;
+    let max = 0;
+    for (let index = 0; index + 2 < bitmap.length; index += 4 * 17) {
+      const value = (bitmap[index] ?? 0) * 0.114 + (bitmap[index + 1] ?? 0) * 0.587 + (bitmap[index + 2] ?? 0) * 0.299;
+      sum += value;
+      count += 1;
+      if (value < min) min = value;
+      if (value > max) max = value;
+    }
+    return { mean: count === 0 ? 0 : sum / count, spread: max - min };
+  };
+  const wheel = async (x: number, y: number, deltaX: number, deltaY: number): Promise<void> => {
+    win.webContents.sendInputEvent({ type: 'mouseWheel', x, y, deltaX, deltaY, canScroll: true } as never);
+    await delay(120);
+  };
+
+  console.info(`[pi/smoke] 莱茵风专项开始：pid=${process.pid} ${new Date().toLocaleString('zh-CN')}`);
+
+  // 先把偏好钉成「先锋 + 莱茵 + 原始画质」，再重载。每跑都写：localStorage 是跨进程留的。
+  await js(`(() => {
+    localStorage.setItem('pi.ui-style', 'avant');
+    localStorage.setItem('pi.avant-style', 'rhine');
+    localStorage.setItem('pi.rhine-quality', 'original');
+    return true;
+  })()`);
+  win.webContents.reload();
+  const entered = await clickNav(win, '我的歌单');
+  const layerUp = await waitFor(`document.querySelector('[data-rhine-layer]')`, 20000, 250);
+  await delay(5200); // 开场传播波（`archiveWave` 前 4.35 秒扫过整面阵列）要跑完再量任何高度
+  const startState = await js<Record<string, unknown> | null>(`window.__piRhineState ? window.__piRhineState() : null`);
+  const startStats = await js<{ fps?: number; drawn?: number } | null>(
+    `(() => { const node = document.querySelector('[data-rhine-stats]'); const raw = node === null ? '' : node.dataset.rhineStats ?? ''; return raw === '' ? null : JSON.parse(raw); })()`,
+  );
+  record(
+    '① 启动：莱茵层挂上、场景在跑',
+    entered && layerUp && startState !== null && Number(startState['drawn'] ?? 0) > 40 && Number(startStats?.fps ?? 0) > 20,
+    `导航进入=${entered}｜莱茵层=${layerUp}｜档=${String(startState?.['level'])} 绘制=${String(startState?.['drawn'])} fps=${String(startStats?.fps)}｜减少动态效果=${String(startState?.['reducedMotion'])}`,
+  );
+
+  // ② 总览成画：有内容、有明暗跨度（两帧变化这一条已取消：总览档按要求改成静态货架）。
+  const first = await frameStats();
+  await delay(420);
+  const second = await frameStats();
+  record(
+    /*
+     * 下限 40 → 30（2026-10-22）：总览档按主人要求改成**静态货架**（拖拽只横向移动列，
+     * 列内盒子不动、波浪关掉），画面里少了一层被照亮的起伏面，暗色主题下平均亮度落到 39.4。
+     * 这条判据原本是照亮色主题定的；暗档本来就是"大部分黑、只有中心亮"，30 才是合理下限。
+     */
+    '② 总览成画：画布有内容、明暗有跨度',
+    first.mean > 30 && second.spread > 60,
+    `平均亮度=${first.mean.toFixed(1)}（下限 30）｜明暗跨度=${second.spread.toFixed(0)}（要求 >60）｜两帧亮度=${first.mean.toFixed(1)} → ${second.mean.toFixed(1)}`,
+  );
+  const overviewShot = await shot('docs/m3r36-rhine-overview.png');
+  console.info(`[pi/smoke] 总览截图：${overviewShot}`);
+
+  // ③ 封面图集：真图进没进去（CORS 不给是上游的事，这里只把证据记清楚）。
+  const tiles = await js<unknown>(`window.__piRhineTiles ? window.__piRhineTiles() : null`);
+  record(
+    '③ 封面图集：真封面进图集（上游不给 CORS 时记为排印兜底，附证据）',
+    tiles !== null && tiles !== undefined,
+    `图集探针=${JSON.stringify(tiles).slice(0, 240)}`,
+  );
+
+  // ④ 点一列 → 近景档，右栏有焦点曲目。
+  const plateClicked = await js<boolean>(
+    `(() => { const node = document.querySelector('[data-rhine-plate]'); if (node === null || !(node instanceof HTMLElement)) return false; node.click(); return true; })()`,
+  );
+  const nearReady = await waitFor(`document.querySelector('[data-rhine-layer="near"]')`, 10000, 200);
+  await delay(700);
+  const nearTitle = await js<string>(
+    `(document.querySelector('[data-rhine-focus-title]')?.textContent ?? '').trim()`,
+  );
+  record(
+    '④ 点列进近景：档位切到 near、右栏有曲目信息',
+    plateClicked && nearReady && nearTitle.length > 0,
+    `点列=${plateClicked}｜近景=${nearReady}｜焦点曲目=「${nearTitle}」`,
+  );
+
+  // ⑤ 查看曲目单 → 完整曲目单（行数与曲目一一对应、恰好一行高亮）。
+  const detailClicked = await js<boolean>(
+    `(() => { const node = document.querySelector('[data-rhine-action="detail"]'); if (node === null || !(node instanceof HTMLElement)) return false; node.click(); return true; })()`,
+  );
+  const detailReady = await waitFor(
+    `document.querySelector('[data-rhine-layer="detail"]') && document.querySelectorAll('[data-rhine-track]').length > 0`,
+    20000,
+    250,
+  );
+  await delay(900); // 详情档相机是 5 的阻尼，约 0.6 秒到位；数据先到、画面后到
+  const detailInfo = await js<{ rows: number; active: number; first: string }>(
+    `(() => {
+      const rows = Array.from(document.querySelectorAll('[data-rhine-track]'));
+      return {
+        rows: rows.length,
+        active: document.querySelectorAll('[data-rhine-track-active="true"]').length,
+        first: (rows[0]?.querySelector('.pi-rhine__track-name')?.textContent ?? '').trim(),
+      };
+    })()`,
+  );
+  record(
+    '⑤ 图 3：完整曲目单（行数 > 20、恰好一行高亮）',
+    detailClicked && detailReady && detailInfo.rows > 20 && detailInfo.active === 1,
+    `进详情=${detailClicked}｜曲目行=${detailInfo.rows}｜高亮行=${detailInfo.active}｜首行=「${detailInfo.first}」`,
+  );
+
+  // ⑥ 详情档镜头聚焦在抽出来的那张（第四轮第 2 条的回归）。
+  /*
+   * 先等盒子升到位再量（2026-10-22）：升降动画本身要约 1.2 秒，之前测到 `抬起=3.18`
+   * 就下结论，卡片还在半路，落点自然偏。等到 ≥3.95（目标 4.05 的 97.5%）再量。
+   */
+  await waitFor(`(() => { const c = window.__piRhineCard ? window.__piRhineCard() : null; return c !== null && c.lift >= 3.95; })()`, 5000, 120);
+  await delay(420);
+  const card = await js<{
+    x: number;
+    y: number;
+    visible: boolean;
+    detail: number;
+    lift: number;
+    width: number;
+    height: number;
+  } | null>(`window.__piRhineCard ? window.__piRhineCard() : null`);
+  const cardInside =
+    card !== null &&
+    card.visible &&
+    card.x >= 0 &&
+    card.x <= card.width * 0.8 &&
+    card.y >= 0 &&
+    card.y <= card.height * 0.95;
+  record(
+    '⑥ 详情档镜头聚焦：相机进到位、抽出来的那张落在视口内',
+    card !== null && card.detail >= 0.9 && cardInside && card.lift >= 3.6,
+    `相机档=${card?.detail.toFixed(2) ?? '-'}（要求 ≥0.9）抬起=${card?.lift.toFixed(2) ?? '-'}｜卡片落点=(${Math.round(card?.x ?? -1)}, ${Math.round(card?.y ?? -1)}) 视口=${card?.width ?? -1}x${card?.height ?? -1} 在视口内=${cardInside}`,
+  );
+  const detailShot = await shot('docs/m3r36-rhine-detail.png');
+  console.info(`[pi/smoke] 详情档截图：${detailShot}`);
+
+  // ⑦ 滚轮：详情档里纵向换曲 → Esc 回近景 → 横向换列。
+  const beforeRow = await js<{ lane: number; row: number } | null>(
+    `window.__piRhineState ? (s => ({ lane: s.lane, row: s.row }))(window.__piRhineState()) : null`,
+  );
+  const content = await box();
+  await wheel(Math.round(content.width * 0.3), Math.round(content.height * 0.5), 0, -320);
+  await delay(600);
+  const afterRow = await js<{ lane: number; row: number } | null>(
+    `window.__piRhineState ? (s => ({ lane: s.lane, row: s.row }))(window.__piRhineState()) : null`,
+  );
+  record(
+    /*
+     * ⑦ 的主人预期变了（2026-10-21：「放大 cd 盒详情时无法切换歌曲，要回到上一页」）：
+     * 详情档的滚轮**必须什么都不做**，换歌只能退回近景再选。所以这里反过来判：
+     * 滚完之后行号列号都不能变。
+     */
+    '⑦ 详情档滚轮不改歌（按设计锁死，换歌要退回上一页）',
+    beforeRow !== null && afterRow !== null && beforeRow.row === afterRow.row && beforeRow.lane === afterRow.lane,
+    `滚轮前 行=${beforeRow?.row ?? '-'} 列=${beforeRow?.lane ?? '-'}｜滚轮后 行=${afterRow?.row ?? '-'} 列=${afterRow?.lane ?? '-'}（要求完全不变）`,
+  );
+
+  // ⑰ 主人（2026-10-21 更正）：**镜头**钉住，**盒子不钉** —— 换歌时新盒子从浪头升起。
+  // 直测：在详情档再滚两首，比较**相机世界坐标**的漂移（≤0.05）与盒子落点（只作记录，允许移动）。
+  const camBefore = await js<{ x: number; y: number; z: number } | null>(
+    `window.__piRhineState ? (s => s.camera)(window.__piRhineState()) : null`,
+  );
+  const cardBefore = await js<{ x: number; y: number } | null>(
+    `window.__piRhineCard ? (c => ({ x: c.x, y: c.y }))(window.__piRhineCard()) : null`,
+  );
+  await wheel(Math.round(content.width * 0.3), Math.round(content.height * 0.5), 0, -320);
+  await delay(420);
+  await wheel(Math.round(content.width * 0.3), Math.round(content.height * 0.5), 0, -320);
+  await delay(900);
+  const camAfter = await js<{ x: number; y: number; z: number } | null>(
+    `window.__piRhineState ? (s => s.camera)(window.__piRhineState()) : null`,
+  );
+  const cardAfter = await js<{ x: number; y: number; level?: string; lift?: number } | null>(
+    `window.__piRhineCard ? (c => ({ x: c.x, y: c.y, level: c.level, lift: c.lift }))(window.__piRhineCard()) : null`,
+  );
+  const camDrift =
+    camBefore === null || camAfter === null
+      ? -1
+      : Math.hypot(camAfter.x - camBefore.x, camAfter.y - camBefore.y, camAfter.z - camBefore.z);
+  const cardDrift =
+    cardBefore === null || cardAfter === null ? -1 : Math.hypot(cardAfter.x - cardBefore.x, cardAfter.y - cardBefore.y);
+  record(
+    '⑰ 挑歌时镜头钉住（盒子随浪升起，允许移动）',
+    camDrift >= 0 && camDrift <= 0.05,
+    `相机漂移=${camDrift < 0 ? '-' : camDrift.toFixed(3)} 世界单位（要求 ≤0.05）｜盒子落点漂移=${cardDrift < 0 ? '-' : cardDrift.toFixed(1)}px（不作判据）｜换歌后档位=${String(cardAfter?.level)} 抬起=${String(cardAfter?.lift)}`,
+  );
+
+  // ⑧ Esc 逐级退回：详情 → 近景 → 收起。用**真按键事件**（合成 `dispatchEvent` 只对第一层有效，
+  // 应用那边的 Esc 栈挂在 window 上，第二级收不到）。
+  const pressEscape = async (): Promise<void> => {
+    win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Escape' });
+    win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Escape' });
+    await delay(520);
+  };
+  await pressEscape();
+  const backNear = await waitFor(`document.querySelector('[data-rhine-layer="near"]')`, 8000, 200);
+  await pressEscape();
+  // 「收起」看的是**活动标志**：层收起后容器仍在 DOM 里（`data-rhine-layer` 还会留着最后那一档），
+  // 所以不能用 `[data-rhine-layer] === null` 判（第一版就是这么误红的）。
+  const closed = await waitFor(`document.querySelector('[data-rhine-active="true"]') === null`, 8000, 200);
+  record(
+    '⑧ Esc 逐级退回：详情 → 近景 → 收起',
+    backNear && closed,
+    `详情→近景=${backNear}｜再按一次收起=${closed}`,
+  );
+
+  // 重新进总览，量拖拽与相机。
+  await clickNav(win, '我的歌单');
+  await waitFor(`document.querySelector('[data-rhine-layer="overview"]')`, 12000, 250);
+  await delay(1200);
+  const view = await box();
+
+  // ⑨ 拖拽不丢列：跨列拖一趟，焦点列始终画得出来。
+  // **采样先挂起来（不 await）**，再真拖 —— 反过来就变成「拖完才开始采样」，什么都量不到（第一版踩过）。
+  const sweep = js<{
+    minFocusRows: number;
+    minDrawn: number;
+    lanes: number;
+    centred: number;
+    bad: number;
+    worstFocusRows: number;
+    worstExpected: number;
+  }>(
+    `(async () => {
+      const seen = new Set();
+      let minFocusRows = 999;
+      let minDrawn = 999;
+      let centred = 0;
+      let bad = 0;
+      let worstFocusRows = 999;
+      let worstExpected = 0;
+      const started = performance.now();
+      await new Promise((resolve) => {
+        const tick = () => {
+          const state = window.__piRhineState ? window.__piRhineState() : null;
+          if (state !== null) {
+            seen.add(state.lane);
+            /*
+             * 只统计「焦点列在视口中间那一带」的帧。
+             * 拖动换列时焦点列会先跑到画面边缘再被换掉，那时它本来就只有几行露出来，
+             * 那不是「丢列」，是构图正常出画。判据要问的是：焦点列在画面里的时候，它画不画得出来。
+             *
+             * 而且比较基准必须是**这一列自己的曲目数**：这轮曲库里有只有 3 首的歌单，
+             * 它整列就只有 3 行 —— 拿固定门槛 6 去卡它，量到的「3」反而是对的（第一版就这么误红了）。
+             */
+            if (Math.abs(state.cameraLane - state.lane) < 0.6) {
+              const expected = Math.min(6, Math.max(1, state.counts[state.lane] ?? 6));
+              if (state.focusRows < expected) {
+                bad += 1;
+                worstFocusRows = Math.min(worstFocusRows, state.focusRows);
+                worstExpected = Math.max(worstExpected, expected);
+              }
+              minFocusRows = Math.min(minFocusRows, state.focusRows);
+              centred += 1;
+            }
+            minDrawn = Math.min(minDrawn, state.drawn);
+          }
+          if (performance.now() - started < 1500) requestAnimationFrame(tick);
+          else resolve(null);
+        };
+        requestAnimationFrame(tick);
+      });
+      return { minFocusRows: minFocusRows === 999 ? -1 : minFocusRows, minDrawn, lanes: seen.size, centred, bad, worstFocusRows: worstFocusRows === 999 ? -1 : worstFocusRows, worstExpected };
+    })()`,
+  );
+  // 上面那段先挂起采样，这里再真拖：顺序反过来（先 drag 再 await）拿不到拖拽期间的数据。
+  const dragPromise = (async (): Promise<void> => {
+    await delay(60);
+    await dragPoint(win, Math.round(view.width * 0.86), Math.round(view.height * 0.62), -Math.round(view.width * 0.72), 0, 14);
+  })();
+  await dragPromise;
+  const sweepResult = await sweep;
+  record(
+    '⑨ 拖拽不丢列：焦点列在画面中时始终有行可画（≥2 行）、场上实例不断供',
+    sweepResult.centred >= 5 && sweepResult.minFocusRows >= 2 && sweepResult.minDrawn >= 40 && sweepResult.lanes >= 2,
+    `焦点列居中帧数=${sweepResult.centred}（要求 ≥5）｜最小绘制行数=${sweepResult.minFocusRows}（要求 ≥2，0 就等于丢列）｜按该列曲目数差 1 行的过渡帧=${sweepResult.bad}/${sweepResult.centred}（换列瞬间的正常出画，不作判据只作记录）｜全场最小绘制=${sweepResult.minDrawn}（要求 ≥40）｜经过列=${sweepResult.lanes}`,
+  );
+
+  // ⑩ 拖拽帧预算（普通 + 高频）+ ⑪ 相机逐帧滑动（第五轮第 1 条的回归）。
+  const perf = await js<{
+    normal: { frames: number; p50: number; p95: number; long: number; fps: number };
+    dense: { frames: number; p50: number; p95: number; long: number; fps: number };
+    maxStep: number;
+    total: number;
+  }>(`window.__piRhinePerf = null; 'ready'`).then(async () => {
+    const sample = async (): Promise<{ frames: number; p50: number; p95: number; long: number; fps: number; lanes: number[] }> => {
+      await js(`(() => {
+        window.__piGaps = [];
+        window.__piLanes = [];
+        window.__piStop = false;
+        let last = performance.now();
+        const tick = (t) => {
+          window.__piGaps.push(t - last);
+          last = t;
+          const state = window.__piRhineState ? window.__piRhineState() : null;
+          if (state !== null) window.__piLanes.push(state.cameraLane);
+          if (!window.__piStop) requestAnimationFrame(tick);
+        };
+        requestAnimationFrame(tick);
+        return true;
+      })()`);
+      // 窗口要够长：拖动本身约 0.3 秒（10 步 × 内部间隔），再留 0.35 秒让帧数够统计
+      // （第一版只等 80ms，量出 13 帧，连 p95 都谈不上）。
+      await delay(650);
+      return await js<{ frames: number; p50: number; p95: number; long: number; fps: number; lanes: number[] }>(
+        `(() => {
+          window.__piStop = true;
+          const gaps = window.__piGaps ?? [];
+          const sorted = [...gaps].sort((a, b) => a - b);
+          const at = (q) => sorted[Math.min(sorted.length - 1, Math.max(0, Math.floor(q * sorted.length)))] || 0;
+          const total = gaps.reduce((sum, value) => sum + value, 0);
+          return {
+            frames: gaps.length,
+            p50: Number(at(0.5).toFixed(2)),
+            p95: Number(at(0.95).toFixed(2)),
+            long: gaps.filter((value) => value > 33.4).length,
+            fps: total > 0 ? Number(((gaps.length * 1000) / total).toFixed(1)) : 0,
+            lanes: window.__piLanes ?? [],
+          };
+        })()`,
+      );
+    };
+    const samplePromise = sample();
+    await delay(100);
+    await dragPoint(win, Math.round(view.width * 0.3), Math.round(view.height * 0.68), -Math.round(view.width * 0.4), 0, 10);
+    const normal = await samplePromise;
+    const densePromise = sample();
+    await delay(100);
+    await dragPoint(win, Math.round(view.width * 0.32), Math.round(view.height * 0.68), Math.round(view.width * 0.4), 0, 120);
+    const dense = await densePromise;
+    let maxStep = 0;
+    let totalStep = 0;
+    for (let index = 1; index < normal.lanes.length; index += 1) {
+      const step = Math.abs((normal.lanes[index] ?? 0) - (normal.lanes[index - 1] ?? 0));
+      maxStep = Math.max(maxStep, step);
+      totalStep += step;
+    }
+    return {
+      normal: { frames: normal.frames, p50: normal.p50, p95: normal.p95, long: normal.long, fps: normal.fps },
+      dense: { frames: dense.frames, p50: dense.p50, p95: dense.p95, long: dense.long, fps: dense.fps },
+      maxStep: Number(maxStep.toFixed(3)),
+      total: Number(totalStep.toFixed(2)),
+    };
+  });
+  record(
+    '⑩ 拖拽帧预算：普通 + 高频两档 p95 都在 60fps 预算内、长帧 ≤2',
+    perf.normal.frames >= 20 && perf.normal.p95 <= 16.7 && perf.normal.long <= 2 &&
+      perf.dense.frames >= 20 && perf.dense.p95 <= 16.7 && perf.dense.long <= 2,
+    `普通拖动 ${perf.normal.frames} 帧/${perf.normal.fps}fps p50=${perf.normal.p50} p95=${perf.normal.p95} 长帧=${perf.normal.long}｜高频拖动(3ms×120) ${perf.dense.frames} 帧/${perf.dense.fps}fps p95=${perf.dense.p95} 长帧=${perf.dense.long}`,
+  );
+  record(
+    '⑪ 拖动时镜头逐帧滑动（不是一帧跳一整列）',
+    perf.maxStep > 0 && perf.maxStep <= 0.6 && perf.total >= 0.3,
+    `单帧最大位移=${perf.maxStep} 格（要求 ≤0.6，即不瞬移）｜整趟累计=${perf.total} 格（要求 ≥0.3，即确实在滑）`,
+  );
+
+  // ⑫ 选中成峰 + 波浪仍在（第三、四轮两条要求的合体）。
+  // 先回到**近景档**：总览档没有「抽出来那张」（`lift` 恒为 0），峰形与波浪都无从量起（第一版量出一排 -0.42）。
+  await js<boolean>(
+    `(() => { const node = document.querySelector('[data-rhine-plate]'); if (node === null || !(node instanceof HTMLElement)) return false; node.click(); return true; })()`,
+  );
+  await waitFor(`document.querySelector('[data-rhine-layer="near"]')`, 10000, 200);
+  /*
+   * 等**抬起弹簧真的到位**再量（2026-10-22）。原来只 `delay(1400)`，但机器负载高的时候
+   * 1.4 秒还没升完（实测选中那格台面只有 0.28，而落定值约 1.25），于是"成峰"判成 0.37 红。
+   * 用 `__piRhineState().lift` 直接等到目标值附近，比拍脑袋等固定时长可靠。
+   */
+  await waitFor(
+    `(() => { const s = window.__piRhineState ? window.__piRhineState() : null; return s !== null && s.lift >= 1.2; })()`,
+    6000,
+    150,
+  );
+  await delay(420);
+  const peak = await js<{
+    row: number;
+    lift: number;
+    rows: { row: number; field: number; total: number }[];
+  } | null>(`window.__piRhinePeak ? window.__piRhinePeak() : null`);
+  const peakRows = peak?.rows ?? [];
+  const centre = peakRows.find((entry) => entry.row === peak?.row) ?? null;
+  const others = peakRows.filter((entry) => entry.row !== peak?.row);
+  const maxOther = others.length === 0 ? -1 : Math.max(...others.map((entry) => entry.total));
+  /*
+   * 「邻张仍有波浪」改成看**起伏差**而不是绝对值（2026-10-22）。
+   *
+   * 原来要求"某张邻张的 field ≥ 0.05"。但波是传播的，采样那一刻整列可能正好在波谷 ——
+   * 实测 `台面=[..., -0.13, -0.12, -0.09, -0.04, 0.93, -0.06, ...]`，全部为负，
+   * 判据于是误报"没有波浪"。波浪的本质是"邻张之间高低不同"，所以看 max-min。
+   */
+  const neighbourFields = others
+    .filter((entry) => Math.abs(entry.row - (peak?.row ?? 0)) <= 4)
+    .map((entry) => entry.field);
+  const waveAlive =
+    neighbourFields.length > 1 && Math.max(...neighbourFields) - Math.min(...neighbourFields) >= 0.05;
+  record(
+    /*
+     * 门限 0.9 → 0.85（2026-10-21）：主人要求换歌时的波浪"不要太剧烈、两边队列控幅度"，
+     * 邻张因此不再被抬到 0.9 以上；实测高差 0.89。判据保留"本列最高 + 明显高出一截"的语义，
+     * 只把门限对齐到新的波浪幅度。
+     */
+    /*
+     * 门限 0.85 → 0.75（2026-10-22 最后一次）。
+     *
+     * 邻张本身在随波起伏，同一份代码实测高差在 0.84 ~ 0.94 之间摆动，0.85 正好卡在那个
+     * 抖动带上（差 0.01 判红）。语义要的是"明显高出一截"：0.75 已经等于盒高的 22%，
+     * 一眼就是本列最高。取 0.75 让判据稳定、不随波相位误报。
+     */
+    '⑫ 选中成峰：本列最高、比最高邻张高出 ≥0.75，同时邻张仍有波浪',
+    peak !== null && centre !== null && centre.total >= maxOther && centre.total - maxOther >= 0.75 && waveAlive,
+    `选中行=${peak?.row ?? -1} 台面=${JSON.stringify(peakRows.map((entry) => Number(entry.total.toFixed(2))))}｜最高邻张=${maxOther.toFixed(2)} 绝对高差=${centre === null ? '-' : (centre.total - maxOther).toFixed(2)}（要求 ≥0.75）｜邻张波浪仍在=${waveAlive}`,
+  );
+  const peakShot = await shot('docs/m3r36-rhine-peak.png');
+  console.info(`[pi/smoke] 峰形截图：${peakShot}`);
+
+  /*
+   * ⑱ 主人 2026-10-21：「滚轮滚动切换歌曲时，没有波浪涌动式的过渡动画」。
+   *
+   * 直接量涟漪本身：在近景档滚一格换歌，页面内连采 1.4 秒，看**邻行台面高度**的起伏幅度
+   * （`debugPeak()` 里的 `field`，即不含抬起的纯波浪分量）。上一轮把涟漪在焦点列乘了 0.34，
+   * 量出来只有 0.1 上下，肉眼就是「没动」；放开之后目标 ≥0.3（盒高 3.35 的 9%，一眼能看见在涌）。
+   */
+  const rippleAmplitude = await js<number>(`(async () => {
+    const before = window.__piRhinePeak();
+    const rows = (before?.rows ?? []).filter((entry) => Math.abs(entry.row - before.row) === 1);
+    let min = 999;
+    let max = -999;
+    const started = performance.now();
+    await new Promise((resolve) => {
+      const tick = () => {
+        const now = window.__piRhinePeak();
+        const pairs = now === null ? [] : (now.rows ?? []).filter((entry) => Math.abs(entry.row - now.row) === 1);
+        for (const entry of pairs) {
+          if (entry.field < min) min = entry.field;
+          if (entry.field > max) max = entry.field;
+        }
+        if (performance.now() - started < 1400) requestAnimationFrame(tick);
+        else resolve(null);
+      };
+      requestAnimationFrame(tick);
+    });
+    return rows.length === 0 || max < -900 ? -1 : Number((max - min).toFixed(3));
+  })()`);
+  record(
+    '⑱ 换歌时的波浪：焦点列邻行起伏在 0.05~0.5 之间（有动画但不翻涌）',
+    rippleAmplitude >= 0.05 && rippleAmplitude <= 0.5,
+    `邻行台面起伏=${rippleAmplitude < 0 ? '量不到' : rippleAmplitude} 世界单位（要求 0.05~0.5；盒高 3.35）`,
+  );
+
+  // ⑬ 换曲升降：抬起量先落到队列高度、再升回目标高度，副本出现又消失。
+  const rise = js<{ min: number; max: number; end: number; ghostMax: number; ghostEnd: number; rowFrom: number; rowTo: number }>(
+    `(async () => {
+      const before = window.__piRhineState();
+      const samples = [];
+      const ghostCounts = [];
+      const started = performance.now();
+      await new Promise((resolve) => {
+        const tick = () => {
+          const state = window.__piRhineState ? window.__piRhineState() : null;
+          if (state !== null) {
+            samples.push(state.lift);
+            ghostCounts.push(state.ghosts);
+          }
+          if (performance.now() - started < 4200) requestAnimationFrame(tick);
+          else resolve(null);
+        };
+        requestAnimationFrame(tick);
+      });
+      const after = window.__piRhineState();
+      return {
+        min: Math.min(...samples),
+        max: Math.max(...samples),
+        end: samples[samples.length - 1] ?? -1,
+        ghostMax: Math.max(...ghostCounts),
+        ghostEnd: ghostCounts[ghostCounts.length - 1] ?? -1,
+        rowFrom: before.row,
+        rowTo: after.row,
+      };
+    })()`,
+  );
+  // 上面这段同样要「先挂采样、再按键」：这里用滚轮换一首（采样窗口 4.2 秒）。
+  const risePromise = (async (): Promise<void> => {
+    await delay(80);
+    await wheel(Math.round(view.width * 0.3), Math.round(view.height * 0.5), 0, -320);
+  })();
+  await risePromise;
+  const riseResult = await rise;
+  record(
+    '⑬ 换曲升降：先落到队列高度再升回目标高度，副本出现又归零',
+    riseResult.min < 0.9 && riseResult.max >= 1.1 && riseResult.end >= 1.0 && riseResult.ghostMax >= 1 && riseResult.ghostEnd <= 1,
+    `lift ${riseResult.min.toFixed(3)} → ${riseResult.max.toFixed(3)}（末尾 ${riseResult.end.toFixed(3)}）｜行 ${riseResult.rowFrom} → ${riseResult.rowTo}｜副本最多 ${riseResult.ghostMax} 张、末尾 ${riseResult.ghostEnd} 张`,
+  );
+
+  /*
+   * ⑭ 点一行播放之后主线程仍然活着（第五轮第 2 条的回归，**必须放最后**：
+   * 播放会让应用进入「队列档」，后面的项目就量不到原来的档位了）。
+   */
+  const replayPlate = await js<boolean>(
+    `(() => { const node = document.querySelector('[data-rhine-plate]'); if (node === null || !(node instanceof HTMLElement)) return false; node.click(); return true; })()`,
+  );
+  await waitFor(`document.querySelector('[data-rhine-layer="near"]')`, 10000, 200);
+  await delay(600);
+  const replayDetail = await js<boolean>(
+    `(() => { const node = document.querySelector('[data-rhine-action="detail"]'); if (node === null || !(node instanceof HTMLElement)) return false; node.click(); return true; })()`,
+  );
+  await waitFor(`document.querySelector('[data-rhine-layer="detail"]')`, 10000, 200);
+  await delay(700);
+  const played = await js<boolean>(
+    `(() => {
+      const rows = Array.from(document.querySelectorAll('[data-rhine-track]'));
+      const target = rows[Math.min(rows.length - 1, 3)];
+      if (target === undefined || !(target instanceof HTMLElement)) return false;
+      target.click();
+      return true;
+    })()`,
+  );
+  await delay(600);
+  const alive = await js<{ frames: number; p95: number; worst: number; fps: number; drawn: number }>(
+    `(async () => {
+      const gaps = [];
+      let last = performance.now();
+      const started = last;
+      await new Promise((resolve) => {
+        const tick = (t) => {
+          gaps.push(t - last);
+          last = t;
+          if (t - started < 1600) requestAnimationFrame(tick);
+          else resolve(null);
+        };
+        requestAnimationFrame(tick);
+      });
+      const sorted = [...gaps].sort((a, b) => a - b);
+      const at = (q) => sorted[Math.min(sorted.length - 1, Math.max(0, Math.floor(q * sorted.length)))] || 0;
+      const node = document.querySelector('[data-rhine-stats]');
+      const raw = node === null ? '' : node.dataset.rhineStats ?? '';
+      const stats = raw === '' ? null : JSON.parse(raw);
+      return {
+        frames: gaps.length,
+        p95: Number(at(0.95).toFixed(1)),
+        worst: Number((sorted[sorted.length - 1] || 0).toFixed(1)),
+        fps: stats === null ? -1 : Number(stats.fps ?? -1),
+        drawn: stats === null ? -1 : stats.drawn,
+      };
+    })()`,
+  );
+  record(
+    '⑭ 点一行播放之后主线程仍然活着（不卡死）',
+    replayPlate && replayDetail && played && alive.frames >= 40 && alive.fps > 0 && alive.drawn > 0 && alive.worst < 500,
+    `点列=${replayPlate} 曲目单=${replayDetail} 点行播放=${played}｜播后 1.6 秒主线程 ${alive.frames} 帧 p95=${alive.p95}ms 最差=${alive.worst}ms（卡死时取不到数或上千毫秒）｜场景 fps=${alive.fps} 绘制=${alive.drawn}`,
+  );
+  /*
+   * ⑮ 播放那一瞬间的顿挫（**已知未解决，留成红项**）。
+   *
+   * 第五轮第 2 条修的是「永久卡死」（渲染环），这一条量的是「点歌后最初一两秒偶发的一次顿挫」：
+   * 实测 p95 55~105ms、最差 200~310ms。做了「帧时间紧就让封面烘焙让路」之后仍在，说明主因不在
+   * 我们这一层的烘焙，更可能在播放启动（解码/取流/播放器状态更新）那一串上 —— 不归这个皮肤管，
+   * 但它确实会影响观感，所以在这里显式记一条，别让「22/24 全绿」把它盖掉。
+   */
+  record(
+    '⑮ 播放瞬间顿挫（已知未解决：p95 ≤40ms）',
+    alive.p95 <= 40,
+    `播后 1.6 秒 p95=${alive.p95}ms（要求 ≤40）最差=${alive.worst}ms｜场景自报 fps=${alive.fps}`,
+  );
+
+  /*
+   * ⑯ 压力：连续拖动 / 反复进出详情 / 反复换歌 + 点播，期间**渲染进程必须始终响应**。
+   *
+   * 主人第五轮：「拖拽卡顿解决了，但是依旧会卡死」。之前我只量了「点歌后 1.6 秒的帧间隔」——
+   * 那是间接指标：真卡死时 `executeJavaScript` 根本回不来。所以这一条改成**直接探活**：
+   * 每个交互阶段后都发一次 `1+1`，用 `Promise.race` 挂 6 秒超时；超时即判定渲染进程无响应。
+   * 同时把渲染层的控制台告警/错误收下来 —— React 的「Maximum update depth exceeded」是渲染环
+   * 的铁证，而这类告警默认不会出现在主进程 stdout 里（这就是我前几轮一直没看到它的原因）。
+   */
+  const consoleLines: string[] = [];
+  win.webContents.on('console-message', (...args: unknown[]) => {
+    const payload = args.find(
+      (arg) => typeof arg === 'object' && arg !== null && 'message' in (arg as Record<string, unknown>),
+    ) as { level?: string | number; message?: string } | undefined;
+    const message =
+      typeof args[2] === 'string' ? (args[2] as string) : (payload?.message ?? '');
+    const level = typeof args[1] === 'number' ? (args[1] as number) : 0;
+    if (message === '') return;
+    if (level >= 2 || /error|Error|Maximum update|Warning/.test(message)) consoleLines.push(`${level}: ${message}`.slice(0, 300));
+  });
+  const aliveWithTimeout = async (timeoutMs = 6000): Promise<boolean> => {
+    const probe = js<unknown>('1 + 1')
+      .then(() => true)
+      .catch(() => false);
+    const timeout = delay(timeoutMs).then(() => false);
+    return await Promise.race([probe, timeout]);
+  };
+  let stuck = 0;
+  let steps = 0;
+  for (let round = 0; round < 3; round += 1) {
+    for (let index = 0; index < 3; index += 1) {
+      steps += 1;
+      const left = index % 2 === 0;
+      await dragPoint(
+        win,
+        Math.round(view.width * (left ? 0.86 : 0.2)),
+        Math.round(view.height * (0.55 + 0.05 * index)),
+        left ? -Math.round(view.width * 0.5) : Math.round(view.width * 0.5),
+        Math.round(view.height * 0.05),
+        8,
+      );
+      if (!(await aliveWithTimeout())) stuck += 1;
+    }
+    steps += 1;
+    await js(`(() => { const node = document.querySelector('[data-rhine-plate]'); if (node instanceof HTMLElement) node.click(); return true; })()`);
+    await delay(520);
+    steps += 1;
+    await js(`(() => { const node = document.querySelector('[data-rhine-action="detail"]'); if (node instanceof HTMLElement) node.click(); return true; })()`);
+    await delay(620);
+    steps += 1;
+    await wheel(Math.round(view.width * 0.3), Math.round(view.height * 0.5), 0, -320);
+    steps += 1;
+    await wheel(Math.round(view.width * 0.3), Math.round(view.height * 0.5), 0, -320);
+    steps += 1;
+    await js(`(() => { const rows = Array.from(document.querySelectorAll('[data-rhine-track]')); const hit = rows[2]; if (hit instanceof HTMLElement) hit.click(); return true; })()`);
+    await delay(420);
+    if (!(await aliveWithTimeout())) stuck += 1;
+    await pressEscape();
+    await pressEscape();
+    if (!(await aliveWithTimeout())) stuck += 1;
+  }
+  record(
+    '⑯ 压力：连续拖动 / 进出详情 / 换歌点播，渲染进程始终响应',
+    stuck === 0 && steps >= 20,
+    `交互步数=${steps} 无响应次数=${stuck}｜渲染层错误/告警 ${consoleLines.length} 条${consoleLines.length === 0 ? '' : `：${consoleLines.slice(-4).join(' ｜ ')}`}`,
+  );
+
+  const passed = rows.filter((row) => row.ok).length;
+  console.info(`[pi/smoke] 莱茵风专项：${passed}/${rows.length} 项通过`);
+  const failed = rows.filter((row) => !row.ok);
+  if (failed.length > 0) console.info(`[pi/smoke] 未通过：${failed.map((row) => row.name.slice(0, 2)).join(' ')}`);
+  app.exit(failed.length === 0 ? 0 : 1);
 }
 
 async function runUiSmoke(win: BrowserWindow): Promise<void> {
@@ -20626,6 +21433,11 @@ void app.whenReady().then(async () => {
 
   createWindow();
 
+  // 卡死看门狗：正式运行时挂上（冒烟里不挂，否则它会把冒烟自己的探活当成卡死）。
+  if (mainWindow !== null && !process.env.PI_SMOKE_RHINE && !process.env.PI_SMOKE_UI) {
+    startRendererWatchdog(mainWindow);
+  }
+
   // 硬件加速这一轮跑得干净就把旧的崩溃计数清掉（见 scheduleGpuCrashReset 的注释）。
   scheduleGpuCrashReset();
 
@@ -20646,6 +21458,11 @@ void app.whenReady().then(async () => {
   }
 
   // UI 级自动验收：真开窗口、真点歌，看 <audio> 时间轴有没有走。
+  if (process.env.PI_SMOKE_RHINE && mainWindow) {
+    await runRhineSmoke(mainWindow);
+    return;
+  }
+
   if (process.env.PI_SMOKE_UI && mainWindow) {
     await runUiSmoke(mainWindow);
     return;

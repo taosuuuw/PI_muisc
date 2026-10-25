@@ -37,7 +37,16 @@ export function SongListOverlay(): ReactNode {
    * 由 `overlays.css` 把拼贴从 `fixed inset:0` 收回正文格里（不然它会盖住浮层顶栏）。
    */
   const uiStyle = useUi((s) => s.uiStyle);
-  const collage = uiStyle === 'avant';
+  const avantStyle = useUi((s) => s.avantStyle);
+  /*
+   * **莱茵风下的「播放列表」不走队列拼贴**（主人 2026-10-25：「播放列表和最近听过这两个索引
+   * 不接入莱茵风的先锋风格，保持平凡风格的形式」）。
+   *
+   * 拼贴是先锋档的招牌，但它配的是"把整个队列铺成一整面封面墙"那种浏览方式；
+   * 主人这里要的是**平凡档那种老实的一行一首**。所以只有莱茵皮肤下的 queue 这一档退回去，
+   * 歌手 / 专辑 / 每日推荐仍然照旧走拼贴。
+   */
+  const collage = uiStyle === 'avant' && !(avantStyle === 'rhine' && songs?.kind === 'queue');
 
   /*
    * 退场相（用户第二十三轮第 2 条：「从歌曲页薄幕淡出回到歌曲播放页……表现都像闪了一下」）。
@@ -203,7 +212,9 @@ function SongsListOverlay({ target, onClose, closing }: SongsListProps): ReactNo
   const loading = kind !== 'queue' && query.isPending;
   const failure = kind === 'queue' ? null : query.error;
   /** 第十七轮第 ②③ 条：同一个浮层，平凡给竖排列表、先锋给队列拼贴。 */
-  const collage = useUi((s) => s.uiStyle) === 'avant';
+  const avantStyle = useUi((s) => s.avantStyle);
+  // 莱茵风下的队列档退回平凡列表（同 `SongListOverlay` 里那条注释）。
+  const collage = useUi((s) => s.uiStyle) === 'avant' && !(avantStyle === 'rhine' && kind === 'queue');
   // 用户第五轮第 9 条：边缘暗角（只在深色档真的画，见 song-collage.css）。
   const edgeVignette = useEdgeVignette();
 

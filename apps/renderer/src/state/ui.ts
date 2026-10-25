@@ -112,19 +112,17 @@ function persistUiStyle(style: UiStyle): void {
 /**
  * 先锋档内部的**皮肤档位**。
  *
- * - `collage`「队列拼贴」：先锋档现在的样子（歌单 = 封面卡片流，歌曲 = 队列拼贴墙）；
- * - `rhine`「莱茵风」：主人在设置页里给**第二套先锋皮肤**起的名字（选项文案就是这两个字）。
- *   **本体尚未实现**，选了它只记偏好、界面不变 —— 这里只留位置与接法，不含任何实现：
- *   ① 建皮肤组件（比如 `components/rhine/*`）；② 设置页「界面」tab 那一格已经在
- *   （`data-avant-style-setting`，选项值就是这里的两个字符串）；③ `App.tsx` 按
- *   `avantStyle` 分流，并把它写到 `.pi-app[data-avant-style]` 上，让 CSS 与冒烟探针读得到。
+ * - `collage`「队列拼贴」：先锋档的老样子（歌单 = 封面卡片流，歌曲 = 队列拼贴墙）；
+ * - `rhine`「莱茵风」：波浪流动式 CD 盒阵列（`components/RhineLayer.tsx` + `src/rhine/*`）。
+ *   列 = 歌单（有限、独立居中）、行 = 曲目，三层界面依次是**列名牌 / 右侧详情栏 / 完整曲目单**，
+ *   替代掉先锋档里的三处：歌单封面卡片导航、歌单页的歌曲选择导航、队列拼贴放大封面的界面。
+ *   数值来自开源项目 RhineLabUI（MIT）与它的音乐衍生版，逐条标了来源，见
+ *   `docs/RHINE-SKIN.md` 的「证据」一节。
  *
- * 前情备注：这一档最早做过一套「玻璃 CD 盒架」（一整个架子，每盒一个歌单，点开拉近看曲目），
- * 主人后来要求整套删掉，只留接口；本轮主人把这一档的目的地改叫「莱茵风」，所以那个
- * 已经删掉的皮肤名不再出现在代码里（本机若还存着旧值，读出来会退回默认的队列拼贴）。
- *
- * 为什么先把字段与存储键定下来：这是**用户偏好**，与 `uiStyle` 同一个道理，纯前端偏好
- * 不进 `packages/shared` 的 `Settings`，也就不必去动 `packages/ipc` 的通道白名单。
+ * 为什么住在 renderer 的 zustand 而不是 `Settings`（packages/shared）里：与 `uiStyle` 同一个道理
+ * （纯前端偏好，进 `Settings` 要动 `packages/ipc` 的通道白名单）。这里用 localStorage 持久化，
+ * 键是 `pi.avant-style`，`App.tsx` 再把它写到 `.pi-app[data-avant-style]` 上，
+ * 让 CSS 与冒烟探针都能读到。
  */
 export type AvantStyle = 'collage' | 'rhine';
 
@@ -320,6 +318,20 @@ interface UiState {
    */
   quickOrbHidden: boolean;
   setQuickOrbHidden: (hidden: boolean) => void;
+
+  /**
+   * **最上层浮层的 Esc 处理器**（莱茵风皮肤引入的扩展点）。
+   *
+   * 为什么需要它：`ShortcutLayer` 的 Esc 挂在 `window` 的**捕获**阶段，而且它在整棵树的
+   * 最前面渲染 ⇒ 它的监听注册得比任何后来者都早。同一个节点、同一个阶段，监听按注册顺序跑，
+   * 所以后来者无论怎么 `stopImmediatePropagation` 都追不上它 —— 莱茵层在详情档按 Esc 时，
+   * `exitCurrentLayer()` 会先把歌单浮层整个关掉（用户要的是「逐级退回」）。
+   *
+   * 于是把「上面有没有人想自己处理 Esc」做成一个可注册的钩子：`exitCurrentLayer` 先问它，
+   * 返回 `true` 就当场结束。莱茵层在活动期间注册、收起时注销（见 `components/RhineLayer.tsx`）。
+   */
+  escapeTop: (() => boolean) | null;
+  setEscapeTop: (handler: (() => boolean) | null) => void;
 
   /**
    * 从歌单封面环点开的歌单（用户第八轮第 6 条改法）。
@@ -557,6 +569,9 @@ export const useUi = create<UiState>((set) => ({
   setQuickPanel: (quickPanel) => set({ quickPanel }),
 
   openedPlaylist: null,
+  // 「最上层浮层的 Esc 处理器」：默认没人注册，`exitCurrentLayer` 照老规矩逐层关。
+  escapeTop: null,
+  setEscapeTop: (escapeTop) => set({ escapeTop }),
   // 「上一级」记的是打开它的那一页（主人第 10 轮第 5 条：退出键要回歌单选择页）。
   playlistOrigin: null,
   // 顺手回播放页：歌曲卡片列表浮层是「盖在正在听的歌上面」的一层，不是另一个页面。
