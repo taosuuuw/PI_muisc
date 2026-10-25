@@ -242,7 +242,21 @@ PI 的全屏歌词页在版式骨架、逐字三态（字号 / 透明度 / 缩�
 **只借鉴不受版权保护的数值、参数与做法思路，代码全部自行实现，不复制其源码**；
 其视觉设计与实现思路也给了我们很多启发。如果你也想参考它，请务必先读它的许可证。
 
-以上借鉴的逐条明细、我们**采纳了什么 / 没有采纳什么**，都如实登记在 [CREDITS.md](./docs/CREDITS.md)。
+**[RonaldDeng/Rhine-Music-Demo](https://github.com/RonaldDeng/Rhine-Music-Demo)** ——
+先锋档「莱茵风」皮肤（`apps/renderer/src/rhine/*`、`components/RhineLayer.tsx`）最直接的参照。
+
+这一档的核心是**一列列波浪流动的 CD 盒阵列**：真实有限列而不是无限重复、封面图集配实例 UV、
+音乐盒的尺寸与列距、没封面时的排印兜底、以及打在正面那条灯带——都是照这个 Demo 读出来再自己实现的。
+开场那段四通道关键帧轨道（yaw / elevation / distance / aimZ）也是逐帧比对它的
+`music-intro-motion.ts` 才调对的，包括收尾时波浪从凹转凸那一下。
+
+它的上游 [LBEILC/RhineLabUI](https://github.com/LBEILC/RhineLabUI)（阵列架构与数值：循环位置池、
+波浪场、抽取升降、相机编排、光照、画质档、自由平面拖拽与惯性）与
+[DuoJiuBetter/Rhine-Music-Windows](https://github.com/DuoJiuBetter/Rhine-Music-Windows)（性能侧参考）
+同样是这一档的地基。
+
+这三个项目均为 **MIT** 授权。PI 的做法与上一节一致：**只借鉴不受版权保护的数值、参数与做法思路，
+代码全部自行实现，不复制其源码**。逐条明细（采纳了什么、没有采纳什么）见 [CREDITS.md](./docs/CREDITS.md) §6。
 
 ### 其它致谢
 
