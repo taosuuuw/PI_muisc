@@ -1,6 +1,7 @@
 {
   "name": "@pi/renderer",
   "version": "0.9.5",
+  "license": "GPL-3.0-or-later",
   "private": true,
   "type": "module",
   "description": "PI 的渲染进程（React + Vite）",

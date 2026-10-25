@@ -11,6 +11,7 @@ Music, Reimagined // 拾音新境
 [![GitHub release](https://img.shields.io/github/v/release/taosuuuw/PI_muisc?label=release)](https://github.com/taosuuuw/PI_muisc/releases)
 [![GitHub stars](https://img.shields.io/github/stars/taosuuuw/PI_muisc?style=social)](https://github.com/taosuuuw/PI_muisc/stargazers)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D22.12-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
+[![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](./LICENSE)
 
 [项目简介](#项目简介)
 ·
@@ -204,7 +205,7 @@ pnpm installer          # 安装包 → release/PI-Setup-<版本>.exe
 - 「主题颜色」只有明 / 暗 / 跟随系统，**不能换主色**（主色由专辑封面提色而来）。
 - 本地曲库目前是「扫描文件夹 + 下载列表」，还没有更细的标签 / 专辑视图。
 - 目前只提供 Windows 桌面端；没有移动端与 Web 版。
-- 仓库内**没有 `LICENSE` 文件**，授权状况见下。
+- 采用 **GPL-3.0-or-later** 开源，详见文末「授权状况」。
 
 ## 文档与开发
 
@@ -276,5 +277,17 @@ folia-major 的致谢名单里点名的项目，本仓库同样登记在案：
 
 ## 授权状况
 
-本仓库**当前没有 `LICENSE` 文件**，即保留所有权利（All rights reserved）。
-在补充许可证之前，请不要将其用于再分发或商业用途。详见 [CREDITS.md](./docs/CREDITS.md) §4。
+PI 以 **GNU General Public License v3.0 或更高版本（GPL-3.0-or-later）** 授权，全文见仓库根目录的
+[LICENSE](./LICENSE)。
+
+通俗地说：你可以自由地使用、修改、分发它，也包括商用；但如果你把修改后的版本分发出去，
+**必须同样以 GPL 开源**，并保留原作者的署名与版权声明。协议原文是唯一准则，以下只是概述。
+
+有两点必须写清楚：
+
+- **PI 不包含任何被借鉴项目的源码。** folia-major（AGPL-3.0）与莱茵风那三个参考项目（MIT）
+  都是**只借鉴数值、参数与做法思路，代码全部自行实现**。其中 AGPL 与 GPL 并不兼容，所以
+  含 folia 源码原文摘录的研究笔记从来不入库——这条规矩在本次开源前后都成立，
+  明细见 [CREDITS.md](./docs/CREDITS.md) §4。
+- **代码许可不改变内容版权。** 应用运行时涉及的在线音乐流媒体、歌词、专辑封面等，
+  版权归对应权利人所有；GPL 授权只覆盖本仓库的源代码。
