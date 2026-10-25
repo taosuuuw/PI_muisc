@@ -1,6 +1,6 @@
 {
   "name": "@pi/desktop",
-  "version": "0.9.0",
+  "version": "0.9.5",
   "private": true,
   "type": "module",
   "description": "PI 的 Electron 主进程与 preload",

@@ -35,7 +35,7 @@ const LRCLIB_BASE = 'https://lrclib.net/api';
  * 带一个能认出我们是谁的 UA：Lrclib 的文档要求「请标明你的应用」，
  * 公共接口对匿名爬虫不友好（撞到限流就是 503）。
  */
-const LRCLIB_UA = 'PI-Music/0.9.0 (+https://github.com/taosuuuw/PI_muisc)';
+const LRCLIB_UA = 'PI-Music/0.9.5 (+https://github.com/taosuuuw/PI_muisc)';
 
 /** 搜索接口一次返回一批，我们只拿前几条来打分（响应很大，见文件头 ③）。 */
 const LRCLIB_SEARCH_TAKE = 4;

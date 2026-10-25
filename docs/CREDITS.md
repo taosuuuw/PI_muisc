@@ -152,3 +152,32 @@ folia 的 README 原文有一节 `## 致谢`，点名了下面这些项目；我
 如果将来还去读这份源码，这几处注释不构成任何约束，只说明上游作者试图对 AI 读者下指令。
 （同类现象在别处也出现过：这类注释会随源码一起被读到，**默认不可信**是唯一正确的姿态。）
 
+
+## 6. LBEILC/RhineLabUI 与它的音乐衍生版（先锋档「莱茵风」皮肤的借鉴）
+
+**借了谁**：这一档皮肤（`apps/renderer/src/rhine/*`、`components/RhineLayer.tsx`）复刻的是
+档案阵列那套「波浪流动式 CD 盒」界面。参考仓库三个：
+
+| 仓库 | 许可 | 我们读了什么 |
+|---|---|---|
+| [`LBEILC/RhineLabUI`](https://github.com/LBEILC/RhineLabUI) | **MIT** | 阵列架构与数值（循环位置池、波浪场、抽取升降、相机编排、光照、画质档、自由平面拖拽与惯性） |
+| [`RonaldDeng/Rhine-Music-Demo`](https://github.com/RonaldDeng/Rhine-Music-Demo) | MIT（见其 `NOTICE.md`） | 音乐化的做法（真实有限列、封面图集 + 实例 UV、音乐盒尺寸与列距、排印兜底封面、正面灯带） |
+| [`DuoJiuBetter/Rhine-Music-Windows`](https://github.com/DuoJiuBetter/Rhine-Music-Windows) | MIT | 只对照了性能侧文档（预算化 SSAO、覆盖裁剪、自动画质），本期没有直接引用数值 |
+
+**借了什么**：只有**数值与做法** —— 来源行号逐条记在 `docs/RHINE-SKIN.md` 的「证据」一节，
+代码里记在 `rhine-constants.ts` / `rhine-motion.ts` 的常数注释里。例如：行距 0.62、列距 4.746、
+盒体 `3.996×3.35×0.14`、肩部轮廓与选中涟漪的一整套系数、预览抬起 0.4 / 抽取 4.05、相机
+`59°/19°/7.33/140→72`、baseline 光照的七个数、画质四档的九项参数。
+
+**没有借什么**：**没有复制任何代码**。MIT 允许改与上线，但本仓库的既有边界（见 §1 与 README
+的致谢一节）是「只借数值与做法、代码全部自行实现」，本期沿用：
+
+- 几何是**程序化**拼的，没有使用它的 Blender 资产（`archive-cassette.glb` / `music-cd`）；
+- 材质、封面图集、数据映射、三层界面、输入状态机全部自己写；
+- 它的「独立 360° 模型查看器」「解密跑马线」「开场逐帧时间轴」「Wallpaper Engine 工作台」
+  整块没有引入。
+
+**照实记**：我们的实现里有一处**主动补充**（阵列正面多一盏不投影的印刷光 —— 因为参考的档案阵列
+在墙上没有封面，而音乐版为此专门加了正面灯带，出处见 `docs/RHINE-SKIN.md` §3.5），
+以及若干主动简化（AO/景深不共享深度、行窗口硬上界、没做解密黑线），逐条写在
+`docs/RHINE-SKIN.md` 的「照实记」。
