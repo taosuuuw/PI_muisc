@@ -867,6 +867,8 @@ export const SettingsSchema = z.object({
   lyricMinMatch: z.number().min(0).max(1),
   /** 队列拼贴页的边缘暗角（用户第五轮第 9 条）；只在深色档生效。 */
   edgeVignette: z.boolean(),
+  /** 播放页的「雨窗」效果（主人本轮）；纯装饰层，默认开。 */
+  rainWindow: z.boolean(),
   /** 点窗口关闭键时直接退出还是退到后台（主人本轮第 4 条）；见 `Settings.closeAction` 的注释。 */
   closeAction: z.enum(['quit', 'background']),
   /** 播放页自定义背景（主人本轮第 1 条）：`null` = 跟着当前歌曲的封面。 */

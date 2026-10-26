@@ -17,6 +17,7 @@ import type { NavId } from '../components/NavDrawer';
 import { LyricStage } from '../components/LyricStage';
 import { PiQuickOrb, QUICK_ORB_LEAVE_MS } from '../components/PiQuickOrb';
 import { PlaylistPickerOverlay } from '../components/PlaylistPickerOverlay';
+import { RainWindow } from '../components/RainWindow';
 import { UpNextCard } from '../components/UpNextCard';
 import { VolumeSlider } from '../components/VolumeSlider';
 import type { QuickSwipeDirection } from '../components/PiQuickOrb';
@@ -86,6 +87,14 @@ export function HomePage(): ReactNode {
    * - 当 `palette` prop 交给 `LyricStage` → 主题组件（canvas / SVG 里把颜色画死的那些只能读 prop）。
    */
   const palette = useSongPalette(song);
+
+  /*
+   * 「雨窗」效果（主人本轮）：设置 → 界面 → 播放页背景里那枚开关，字段是 `rainWindow`。
+   * 默认**开**（用户先提出来要这个效果），所以设置还没读回来时也按开算 —— 按关算的话，
+   * 进页第一秒会先没有雨、等查询回来再忽然下一场，那种闪一下比一直开着更扎眼。
+   * 它只是一层装饰层，关掉之后播放页与之前**一个像素都不差**。
+   */
+  const rainWindow = useSettings().data?.rainWindow ?? true;
 
   /**
    * 第十六轮第 3 条（用户 m07538）：「去掉切换歌曲的小名片，替代为显示播放页左下角的歌曲名片」。
@@ -228,6 +237,17 @@ export function HomePage(): ReactNode {
               }}
             />
           </div>
+          {/*
+            雨窗（主人本轮）：铺在**歌词舞台之上、玻璃 UI 之下**（`z-index: 2`）。
+
+            为什么不在它最初那层（沉浸式背景之上、页体之下）：莫奈 / 凝彩这些主题
+            是**整幅不透明的画面**，挂在页体下面时雨一滴都看不见（第一版就是这么被
+            真实截图否掉的）。现在它在歌词前面，于是「隔着湿玻璃看这一页」在九套
+            主题下都成立；而左下角名片（z-index 3）、进度条（9）、评论抽屉（8）仍压在
+            雨上面——玻璃上不该有水珠落在控件文字上。`seed` 用歌曲 id：同一首歌每次
+            进来都是同一场雨，切歌才换。
+          */}
+          {rainWindow ? <RainWindow seed={song.id} /> : null}
         </div>
       </div>
 

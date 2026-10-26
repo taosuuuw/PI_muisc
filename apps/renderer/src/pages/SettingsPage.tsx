@@ -755,7 +755,13 @@ function PlayerBackgroundSection(): ReactNode {
             保存裁切
           </button>
           {draft === null ? null : (
-            <button type="button" className="pi-btn" data-bg-cancel="true" disabled={busy} onClick={cancelDraft}>
+            <button
+              type="button"
+              className="pi-btn"
+              data-bg-cancel="true"
+              disabled={busy}
+              onClick={cancelDraft}
+            >
               取消
             </button>
           )}
@@ -953,6 +959,35 @@ function UiTab(): ReactNode {
         </div>
 
         {/*
+          主人：「雨窗选项怎么可以在播放页背景的标题下，应该移到最上面的几个选项那里」。
+          所以它不再挂在「播放页背景」卡里，而是跟外观 / 边缘暗角一样进顶部田字格。
+          字段仍是 `rainWindow`（`packages/shared` 的 `Settings`），默认开；关掉之后
+          `HomePage` 直接不挂 `RainWindow`，播放页与没加这个效果时**一个像素都不差**。
+          这一格的 hint 会被田字格样式隐藏，只留标题和开 / 关两颗按钮。
+        */}
+        <div className="pi-setting" data-rain-window-setting="true">
+          <span>
+            <span
+              className="pi-setting__title"
+              title="播放页玻璃上的那场雨：水汽、满窗大小不一的静态水珠、水痕与串珠；钉在玻璃上的大水珠会真实折射底下的页面，另有几颗会慢慢滑落并拖出湿痕。它铺在歌词舞台之上、名片与进度条之下，九套歌词主题下都看得见，也不接鼠标；窗口切到后台时会自己停住，系统开了「减少动态效果」时只留静止的水汽与水珠。"
+            >
+              雨窗
+            </span>
+            <span className="pi-setting__hint">满窗水珠，还有慢慢滑落的大水珠</span>
+          </span>
+          <Segmented
+            ariaLabel="雨窗"
+            value={value.rainWindow !== false ? 'on' : 'off'}
+            disabled={patch.isPending}
+            options={[
+              { value: 'on', label: '开' },
+              { value: 'off', label: '关' },
+            ]}
+            onChange={(next) => patch.mutate({ rainWindow: next === 'on' })}
+          />
+        </div>
+
+        {/*
           用户第五轮第 19 条：「这个开关直接去掉，默认硬件」。
           所以这里**没有开关**了，只留一行**状态**：平时是一句很轻的「当前用硬件加速」，
           真被自动降级成软件渲染时才变红——那种情况下用户得知道「卡」是因为什么。
@@ -1014,7 +1049,6 @@ function UiTab(): ReactNode {
             <AccentPicker value={accentColor} onChange={setAccentColor} />
           </div>
         ) : null}
-
       </section>
 
       <section className="pi-card">

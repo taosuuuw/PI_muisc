@@ -17,6 +17,8 @@ import './styles/song-collage.css';
 import './styles/settings-frame.css';
 // 用户 m08768 第 5 条：播放页的情绪背景（App 的播放页里由 `<StageMood>` 挂上）。
 import './styles/immersive-background.css';
+// 主人本轮：播放页的「雨窗」效果（`components/RainWindow.tsx`，开关在设置 → 界面 → 播放页背景）。
+import './styles/rain-window.css';
 // 用户 m08768 第 4 条：歌词舞台的另外五套主题（云阶/倾诉/时计 与 浮名/心象）。
 import './styles/lyric-themes.css';
 import './styles/lyric-moods.css';
