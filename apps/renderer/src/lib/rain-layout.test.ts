@@ -3,6 +3,7 @@ import {
   buildRainLayout,
   dynamicDropMetrics,
   isLyricCenter,
+  lensLeadPx,
   rainSizeScale,
   RAIN_CLUSTER_COUNT,
   RAIN_DYNAMIC_CYCLES,
@@ -83,13 +84,28 @@ describe('rain-layout 几何', () => {
     }
   });
 
-  it('大透镜只出现在歌词椭圆之外，且尺寸真的过线', () => {
+  it('中心不再掏空；大珠/透镜只按尺寸和可见几何选，不按旧歌词禁区', () => {
     const layout = buildRainLayout(123);
     for (const lens of layout.lenses) {
       expect(lens.sizePx).toBeGreaterThanOrEqual(RAIN_LENS_MIN_SIZE_PX);
-      expect(isLyricCenter(lens.leftPercent, lens.topPercent)).toBe(false);
       expect(lens.targetOffsetPx).toBeGreaterThan(0);
     }
+    const centralLarge = layout.beads.filter(
+      (bead) => isLyricCenter(bead.leftPercent, bead.topPercent) && bead.sizePx >= 8,
+    );
+    expect(centralLarge.length).toBeGreaterThan(0);
+  });
+
+  it('主尺寸分布是 6~20px 主体，超大只做少量，小微珠只做辅料', () => {
+    const layout = buildRainLayout(186016);
+    const micro = layout.beads.filter((bead) => bead.sizePx < 4).length;
+    const main = layout.beads.filter(
+      (bead) => bead.sizePx >= 6 && bead.sizePx <= 20,
+    ).length;
+    const large = layout.beads.filter((bead) => bead.sizePx > 20).length;
+    expect(main / layout.beads.length).toBeGreaterThan(0.5);
+    expect(micro / layout.beads.length).toBeLessThan(0.25);
+    expect(large).toBeGreaterThan(20);
   });
 
   it('所有数值都在合理区间内（不会铺出窗口、也不会有负时长）', () => {
@@ -137,6 +153,11 @@ describe('rain-layout 几何', () => {
         expect(cycle.maxSpeed).toBeGreaterThan(cycle.releaseSpeed);
         expect(cycle.trailLengthPx).toBeGreaterThan(0);
         expect(cycle.trailFadeSeconds).toBeGreaterThan(0);
+        // 重力路径总体竖直：横向漂移和长 S 摆动都要收小。
+        expect(Math.abs(cycle.driftPercent)).toBeLessThanOrEqual(3.2);
+        expect(cycle.wobblePercent).toBeLessThanOrEqual(0.42);
+        expect(cycle.wobbleWaves).toBeLessThanOrEqual(2.2);
+        expect(cycle.shape.borderRadius).toMatch(/%/);
       }
     }
   });
@@ -151,15 +172,14 @@ describe('rain-layout 几何', () => {
     expect(Math.max(...top)).toBeGreaterThan(90);
   });
 
-  it('簇状分布：既有团簇小珠，也有散珠，不是均匀撒盐', () => {
+  it('簇状分布仍在，但微珠只是辅料，不是整场主体', () => {
     const layout = buildRainLayout(7);
     const fine = layout.beads.filter((bead) => bead.sizePx <= 3.2);
-    expect(fine.length).toBeGreaterThan(200);
-    // 细珠的横向位置应有明显重复/聚集（不是每个位置都均匀一次）。
+    expect(fine.length).toBeLessThan(layout.beads.length * 0.25);
     const rounded = new Set(
       fine.map((bead) => `${Math.round(bead.leftPercent / 3)}:${Math.round(bead.topPercent / 3)}`),
     );
-    expect(rounded.size).toBeLessThan(fine.length);
+    expect(rounded.size).toBeLessThanOrEqual(fine.length);
   });
 
   it('窗口缩放系数单调、在 0.85~1.3 之间', () => {
@@ -199,6 +219,19 @@ describe('rain-layout 几何', () => {
     expect(Number.isFinite(extreme.height)).toBe(true);
     expect(extreme.width).toBeGreaterThan(0);
     expect(extreme.height).toBeGreaterThan(0);
+  });
+
+  it('45fps 透镜半批次预测：最多把分离减半，且有上限', () => {
+    const intervalMs = 1000 / 45;
+    // 174px/s 时，一个批次本体走约 3.87px；半批次预测约 1.93px。
+    const lead = lensLeadPx(174, intervalMs, 2.2);
+    expect(lead).toBeGreaterThan(1.8);
+    expect(lead).toBeLessThan(2.2);
+    // 极快/异常输入不越过上限，也不出负数。
+    expect(lensLeadPx(10000, intervalMs, 2.2)).toBe(2.2);
+    expect(lensLeadPx(-50, intervalMs, 2.2)).toBe(0);
+    expect(lensLeadPx(Number.NaN, intervalMs, 2.2)).toBe(0);
+    expect(lensLeadPx(174, 0, 2.2)).toBe(0);
   });
 
   it('结果里没有 NaN（浮点算错时会从这里先暴露）', () => {

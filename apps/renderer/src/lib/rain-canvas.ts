@@ -1,10 +1,18 @@
 import { rainSizeScale, type RainBead, type RainLayout, type RainTrail } from './rain-layout';
-import { mergeDirtyRects, type RainDirtyRect, type RainSimulationState } from './rain-simulation';
+import { rainBlobTracePoints } from './rain-shape';
+import {
+  dynamicTrailHeadGapPx,
+  dynamicTrailLengthForCycle,
+  mergeDirtyRects,
+  trimTrailPoints,
+  type RainDirtyRect,
+  type RainSimulationState,
+} from './rain-simulation';
 
 /**
  * 把雨画到两张 canvas 上：
  * - **静态层**：附着水珠 + 残留水痕 + 水痕串珠，换歌/改窗口尺寸/合并掉小珠时画一次；
- * - **动态层**：只有会滑落水珠身后的湿痕，每帧重画（1x，面积小、笔触少）。
+ * - **动态层**：活跃滑行湿痕 + 已交接的残留湿路，每帧重画（1x，路径分段批画）。
  *
  * 统一原则：**不把 blur 当折射**。canvas 只画水珠的暗边、极小高光和湿痕；真正弯折背景
  * 的是 SVG `feDisplacementMap`（见 `rain-refraction-map.ts` / `RainWindow.tsx`）。
@@ -13,7 +21,8 @@ import { mergeDirtyRects, type RainDirtyRect, type RainSimulationState } from '.
  * 1. 完整白圈（会读成肥皂泡）；
  * 2. 每颗小珠都点一个纯白高光（远看像雪）；
  * 3. 又直又长的亮线（像玻璃划痕）。
- * 新画法是不规则团块、偏心暗边 + 极小冷白高光，水痕短、弯、淡。
+ * 新画法是不规则团块、偏心暗边 + 极小冷白高光；静态旧水痕保持短、弯、淡，
+ * 动态滑行湿路则由 `paintDynamicTrails` 画成更长的湿润水路。
  */
 
 const COOL = '216, 238, 255';
@@ -60,8 +69,12 @@ function trailBounds(trail: RainTrail, size: RainCanvasSize, scale: number): Rai
 function beadBounds(bead: RainBead, size: RainCanvasSize, scale: number): RainDirtyRect {
   const x = (bead.leftPercent / 100) * size.width;
   const y = (bead.topPercent / 100) * size.height;
-  const radius = (bead.sizePx * scale) / 2 + 4;
-  return { x: x - radius, y: y - radius, width: radius * 2, height: radius * 2 };
+  const radius = (bead.sizePx * scale) / 2;
+  // 静态珠会 squash/tilt，还有 1.16r halo；脏区按最大可见范围留足。
+  const squash = Math.min(1.6, Math.max(0.6, bead.shape.squash));
+  const wobble = 1 + Math.min(0.12, Math.max(0, bead.shape.wobble));
+  const extent = radius * Math.max(1, squash) * wobble * 1.18 + 6;
+  return { x: x - extent, y: y - extent, width: extent * 2, height: extent * 2 };
 }
 
 function intersects(a: RainDirtyRect, b: RainDirtyRect): boolean {
@@ -80,25 +93,16 @@ function traceBlob(ctx: CanvasRenderingContext2D, radius: number, bead: RainBead
     ctx.ellipse(0, 0, radius, radius, 0, 0, Math.PI * 2);
     return;
   }
-  const count = radius > 5 ? 14 : 10;
-  const points: Point[] = [];
-  for (let index = 0; index < count; index += 1) {
-    const angle = (index / count) * Math.PI * 2;
-    const ripple =
-      Math.sin(angle * 3 + bead.shape.wobblePhase) * 0.55 +
-      Math.sin(angle * 5 - bead.shape.wobblePhase * 0.7) * 0.25;
-    const rr = radius * (1 + bead.shape.wobble * ripple);
-    points.push({ x: Math.cos(angle) * rr, y: Math.sin(angle) * rr });
-  }
+  const points = rainBlobTracePoints(bead.shape, radius, radius > 5 ? 14 : 10);
   const first = points[0];
   const second = points[1];
   if (!first || !second) return;
   const startX = (first.x + second.x) / 2;
   const startY = (first.y + second.y) / 2;
   ctx.moveTo(startX, startY);
-  for (let index = 1; index <= count; index += 1) {
-    const current = points[index % count];
-    const next = points[(index + 1) % count];
+  for (let index = 1; index <= points.length; index += 1) {
+    const current = points[index % points.length];
+    const next = points[(index + 1) % points.length];
     if (!current || !next) continue;
     ctx.quadraticCurveTo(current.x, current.y, (current.x + next.x) / 2, (current.y + next.y) / 2);
   }
@@ -127,28 +131,28 @@ function paintBead(
    * 只给 r>1.8 的中大珠，外圈用 0 收干净，不会连成一片黑。
    */
   if (r > 1.8) {
-    const halo = ctx.createRadialGradient(0, 0, r * 0.86, 0, 0, r * 1.16);
+    const halo = ctx.createRadialGradient(0, 0, r * 0.88, 0, 0, r * 1.12);
     halo.addColorStop(0, 'rgba(3, 8, 16, 0)');
-    halo.addColorStop(0.55, `rgba(3, 8, 16, ${0.11 * opacity})`);
+    halo.addColorStop(0.58, `rgba(3, 8, 16, ${0.045 * opacity})`);
     halo.addColorStop(1, 'rgba(3, 8, 16, 0)');
     ctx.beginPath();
-    ctx.arc(0, 0, r * 1.16, 0, Math.PI * 2);
+    ctx.arc(0, 0, r * 1.12, 0, Math.PI * 2);
     ctx.fillStyle = halo;
     ctx.fill();
   }
 
   traceBlob(ctx, r, bead);
 
-  // 本体：中心偏透（让真实/折射背景透出来），边缘压暗到能一眼看出轮廓。
-  const body = ctx.createRadialGradient(-r * 0.2, -r * 0.24, r * 0.04, 0, 0, r);
-  body.addColorStop(0, `rgba(232, 246, 255, ${0.1 * opacity})`);
-  body.addColorStop(0.45, `rgba(190, 222, 246, ${0.05 * opacity})`);
-  body.addColorStop(0.72, `rgba(${DARK}, ${0.1 * opacity})`);
-  body.addColorStop(0.89, `rgba(${DARK}, ${0.34 * opacity})`);
-  body.addColorStop(0.97, `rgba(${DARK}, ${0.48 * opacity})`);
-  body.addColorStop(1, `rgba(${DARK}, 0)`);
-  ctx.fillStyle = body;
-  ctx.fill();
+  // 只留一层几乎看不出的中心湿膜；真正的轮廓/体积交给共享法线场。
+  // 不再画完整暗环，完整灰环正是“肥皂泡/灰珍珠”的来源。
+  if (r > 0.75) {
+    const film = ctx.createRadialGradient(-r * 0.2, -r * 0.24, 0, 0, 0, r);
+    film.addColorStop(0, `rgba(232, 246, 255, ${0.035 * opacity})`);
+    film.addColorStop(0.6, `rgba(190, 222, 246, ${0.014 * opacity})`);
+    film.addColorStop(1, 'rgba(190, 222, 246, 0)');
+    ctx.fillStyle = film;
+    ctx.fill();
+  }
 
   /*
    * 上缘/左上只画一小段冷白，不画完整一圈。
@@ -156,25 +160,25 @@ function paintBead(
    */
   if (r > 1.4) {
     ctx.beginPath();
-    ctx.arc(0, 0, r * 0.86, Math.PI * 1.08, Math.PI * 1.52);
-    ctx.strokeStyle = `rgba(240, 250, 255, ${0.55 * opacity})`;
-    ctx.lineWidth = Math.max(0.5, r * 0.08);
+    ctx.arc(0, 0, r * 0.88, Math.PI * 0.98, Math.PI * 1.46);
+    ctx.strokeStyle = `rgba(240, 250, 255, ${0.28 * opacity})`;
+    ctx.lineWidth = Math.max(0.4, r * 0.055);
     ctx.stroke();
   }
 
-  // 右下暗边：给一点体积，也把折射层在边缘淡出时那圈接缝压住。
+  // 右下暗边：短、窄、不对称；只做局部体积，不闭合。
   if (r > 1.1) {
     ctx.beginPath();
-    ctx.arc(0, 0, r * 0.84, Math.PI * 0.04, Math.PI * 0.78);
-    ctx.strokeStyle = `rgba(${DARK}, ${0.4 * opacity})`;
-    ctx.lineWidth = Math.max(0.5, r * 0.12);
+    ctx.arc(0, 0, r * 0.86, Math.PI * 0.08, Math.PI * 0.68);
+    ctx.strokeStyle = `rgba(${DARK}, ${0.25 * opacity})`;
+    ctx.lineWidth = Math.max(0.4, r * 0.075);
     ctx.stroke();
   }
 
-  // 偏左上的一颗高光。小珠也画，但尺寸随之收小，不做「雪点」。
+  // 偏左上的一颗很小高光；不是固定白点，强度随尺寸压住。
   if (r > 0.85) {
-    const glintRadius = Math.max(0.4, r * (r < 2 ? 0.2 : 0.26));
-    const glintAlpha = (0.24 + 0.4 * Math.min(1, (r - 0.85) / 3.4)) * opacity;
+    const glintRadius = Math.max(0.35, r * (r < 2 ? 0.16 : 0.2));
+    const glintAlpha = (0.13 + 0.2 * Math.min(1, (r - 0.85) / 3.4)) * opacity;
     const glint = ctx.createRadialGradient(
       -r * 0.34,
       -r * 0.37,
@@ -302,7 +306,7 @@ export function paintStaticRain(
 }
 
 /**
- * 只重画被动态水珠吸走的小珠所在区域。
+ * 只重画被动态水珠吸走的静态珠所在区域。
  *
  * 合并一颗小珠就重画 700 颗渐变会卡一下；这里把脏区合并、裁剪，只碰落在框里的水珠/水痕。
  * 如果脏区和别的珠重叠，也会一起重画，不会擦出洞。
@@ -331,50 +335,248 @@ interface TrailPointLike {
   x: number;
   y: number;
   age: number;
+  size: number;
 }
 
-function paintTrailPoints(
+interface TrailSegment {
+  ax: number;
+  ay: number;
+  bx: number;
+  by: number;
+  nx: number;
+  ny: number;
+  /** 从水滴直径和稳定空间噪声推出的边缘宽度。 */
+  width: number;
+  /** 这一段的平均水珠直径，用于决定底膜带宽。 */
+  diameter: number;
+  /** 稳定空间噪声判定这里是湿斑；底膜只在这些区间画。 */
+  film: boolean;
+  dark: boolean;
+  light: boolean;
+  bead: boolean;
+  midX: number;
+  midY: number;
+}
+
+/** 按稳定湿膜值分 5 档批画；不是按路径相对头部比例。 */
+const TRAIL_BUCKETS = 5;
+/** 单条水迹参与路径构建的最大点数；更长的点列按步长抽样。 */
+const TRAIL_RENDER_POINTS = 140;
+/** 单条水迹最多画几颗极小残珠。 */
+const MAX_TRAIL_BEADS = 4;
+/** 一条水迹最多几段很淡的底膜带；避免把水迹画成荧光笔。 */
+const MAX_TRAIL_FILM_BANDS = 3;
+/** 每条水迹的 stroke 上限：5 档 × 暗/亮 + 底膜带 + 暗/亮残珠。 */
+export const TRAIL_MAX_STROKES_PER_PATH =
+  TRAIL_BUCKETS * 2 + MAX_TRAIL_FILM_BANDS + 2;
+
+/**
+ * 稳定空间噪声。输入的是世界坐标，不是“距头部多远”或帧号，所以：
+ * - 新点加入不会让已有花纹滑动；
+ * - 活跃转残留后坐标不变，花纹不变；
+ * - 不同水珠也不会用同一套节奏。
+ */
+function stableWet(x: number, y: number, phase: number): number {
+  const a = Math.sin(x * 0.041 + y * 0.067 + phase);
+  const b = Math.sin(x * 0.017 - y * 0.029 + phase * 0.63 + 1.9);
+  return Math.min(1, Math.max(0, 0.5 + 0.32 * a + 0.18 * b));
+}
+
+function buildTrailSegments(
+  points: readonly TrailPointLike[],
+  maxLengthPx: number,
+  headGapPx: number,
+): TrailSegment[] {
+  if (points.length < 2 || maxLengthPx <= 0) return [];
+  const visible = trimTrailPoints(points, maxLengthPx, headGapPx);
+  if (visible.length < 2) return [];
+
+  // 路径太长时等距抽样，保住首尾；140 个点足够一条 450px 的曲线。
+  const stride = Math.max(1, Math.ceil((visible.length - 1) / (TRAIL_RENDER_POINTS - 1)));
+  const sampled: TrailPointLike[] = [];
+  for (let index = 0; index < visible.length; index += stride) {
+    const point = visible[index];
+    if (point) sampled.push(point);
+  }
+  const last = visible[visible.length - 1];
+  if (last && sampled[sampled.length - 1] !== last) sampled.push(last);
+  if (sampled.length < 2) return [];
+
+  const segments: TrailSegment[] = [];
+  for (let index = 1; index < sampled.length; index += 1) {
+    const a = sampled[index - 1];
+    const b = sampled[index];
+    if (!a || !b) continue;
+    const length = Math.hypot(b.x - a.x, b.y - a.y);
+    if (length < 0.05) continue;
+    const midX = (a.x + b.x) / 2;
+    const midY = (a.y + b.y) / 2;
+    const wet = stableWet(midX, midY, 0.4);
+    const darkWet = stableWet(midX + 3.1, midY - 2.7, 1.7);
+    const lightWet = stableWet(midX - 2.9, midY + 4.4, 3.1);
+    const beadWet = stableWet(midX + 5.1, midY + 3.3, 4.2);
+    const averageSize = (a.size + b.size) / 2;
+    segments.push({
+      ax: a.x,
+      ay: a.y,
+      bx: b.x,
+      by: b.y,
+      nx: -(b.y - a.y) / length,
+      ny: (b.x - a.x) / length,
+      width: Math.min(
+        3.2,
+        Math.max(0.65, averageSize * 0.055 * (0.62 + 0.86 * wet)),
+      ),
+      diameter: averageSize,
+      // 只在稳定湿斑区间加底膜；干断处不加宽条。
+      film: wet >= 0.5,
+      // 暗边/亮边的出现位置用两套不同的稳定噪声：不再是一对等距平行线。
+      dark: darkWet > 0.32,
+      light: lightWet > 0.4,
+      bead: beadWet > 0.84,
+      midX,
+      midY,
+    });
+  }
+  return segments;
+}
+
+function strokeOffsetSegments(
+  ctx: CanvasRenderingContext2D,
+  segments: readonly TrailSegment[],
+  offset: number,
+  lineWidth: number,
+  color: string,
+  side: 1 | -1,
+): void {
+  if (segments.length === 0) return;
+  ctx.beginPath();
+  for (const segment of segments) {
+    const off = offset * side;
+    ctx.moveTo(segment.ax + segment.nx * off, segment.ay + segment.ny * off);
+    ctx.lineTo(segment.bx + segment.nx * off, segment.by + segment.ny * off);
+  }
+  ctx.strokeStyle = color;
+  ctx.lineWidth = lineWidth;
+  ctx.stroke();
+}
+
+/**
+ * 画“玻璃上的薄湿膜”：
+ * - 不再按 headness 做头宽尾细；宽窄来自稳定空间噪声，沿路径有湿斑和干断；
+ * - 暗边/亮边由两套不同噪声决定，且偏移量不同，不会形成两条等距平行线；
+ * - 中间不填充，背景能透出来；
+ * - 最多 5 档 × 2 条边 + 3 条底膜带 + 2 条残珠路径 = 15 次 stroke。
+ *
+ * `headGapPx` 让湿膜从水滴后方一小段之外才开始，避免“头 + 尾”连接。
+ */
+function paintTrailPath(
   ctx: CanvasRenderingContext2D,
   points: readonly TrailPointLike[],
-  fadeSeconds: number,
-  maxLength: number,
-  opacity: number,
-  width: number,
+  maxLengthPx: number,
+  headGapPx: number,
+  ageFraction: number,
 ): void {
-  if (points.length < 2) return;
-  // 从最新点往回取，累计路程超过最大长度就停；这样湿痕不会拖成一条长线。
-  const visible: TrailPointLike[] = [];
-  let distance = 0;
-  for (let index = points.length - 1; index >= 0; index -= 1) {
-    const point = points[index];
-    if (!point) continue;
-    const next = visible[0];
-    if (next) distance += Math.hypot(next.x - point.x, next.y - point.y);
-    if (distance > maxLength) break;
-    visible.unshift(point);
-  }
-  if (visible.length < 2) return;
+  if (ageFraction >= 1) return;
+  const segments = buildTrailSegments(points, maxLengthPx, headGapPx);
+  if (segments.length === 0) return;
+  // 前段保持清楚、最后一段自然收掉；5~8 秒的残留不会过早淡成看不见。
+  const ageAlpha = Math.max(0, 1 - ageFraction * ageFraction * ageFraction);
 
-  for (let index = 1; index < visible.length; index += 1) {
-    const a = visible[index - 1];
-    const b = visible[index];
-    if (!a || !b) continue;
-    const headness = index / visible.length;
-    const ageAlpha = Math.max(0, 1 - a.age / (fadeSeconds * 1.25));
-    const alpha = 0.17 * ageAlpha * (0.2 + 0.8 * headness) * opacity;
-    if (alpha <= 0.002) continue;
-    // 一条很淡的暗色底 + 一条更细的冷白线：深浅背景都能读出「湿」，但不会像亮划痕。
+  // 先在稳定湿斑区间铺一层很淡、较宽的透明底膜，再叠断续边缘。
+  // 只取前 3 段，透明度压得很低；它不是整条亮线，也不是荧光笔。
+  const filmBands: TrailSegment[][] = [];
+  let currentBand: TrailSegment[] = [];
+  for (const segment of segments) {
+    if (segment.film) {
+      currentBand.push(segment);
+    } else if (currentBand.length > 0) {
+      if (currentBand.length >= 2) filmBands.push(currentBand);
+      currentBand = [];
+    }
+  }
+  if (currentBand.length >= 2) filmBands.push(currentBand);
+  for (const band of filmBands.slice(0, MAX_TRAIL_FILM_BANDS)) {
+    const first = band[0];
+    if (!first) continue;
+    const filmWidth = Math.min(10, Math.max(2.5, first.diameter * 0.3));
     ctx.beginPath();
-    ctx.moveTo(a.x, a.y);
-    ctx.lineTo(b.x, b.y);
-    ctx.strokeStyle = `rgba(4, 10, 20, ${alpha * 0.5})`;
-    ctx.lineWidth = Math.max(0.8, 1.1 + width * 0.8);
+    ctx.moveTo(first.ax, first.ay);
+    for (const segment of band) ctx.lineTo(segment.bx, segment.by);
+    // 中性偏冷的灰蓝，低 alpha；亮/暗背景都能读到一层薄膜，但不会像荧光笔。
+    ctx.strokeStyle = `rgba(170, 198, 214, ${0.034 * ageAlpha})`;
+    ctx.lineWidth = filmWidth;
     ctx.stroke();
+  }
+
+  const buckets: TrailSegment[][] = Array.from({ length: TRAIL_BUCKETS }, () => []);
+  const beads: TrailSegment[] = [];
+  for (const segment of segments) {
+    // 按**这一段自己的稳定宽度**分档，而不是按整条路径的平均值：
+    // 新点加入时不会改变老点的档位/宽度，纹理不会抖。
+    const bucket = Math.min(
+      TRAIL_BUCKETS - 1,
+      Math.max(0, Math.floor(((segment.width - 0.65) / 2.55) * TRAIL_BUCKETS)),
+    );
+    buckets[bucket]?.push(segment);
+    if (segment.bead && beads.length < MAX_TRAIL_BEADS) beads.push(segment);
+  }
+
+  for (let bucket = 0; bucket < TRAIL_BUCKETS; bucket += 1) {
+    const bucketSegments = buckets[bucket] ?? [];
+    if (bucketSegments.length === 0) continue;
+    const bucketMix = (bucket + 0.5) / TRAIL_BUCKETS;
+    const bucketWidth = 0.8 + bucketMix * 2.2;
+
+    // 暗边和亮边不是同一组线段：各自有自己的断续位置。
+    const darkSegments = bucketSegments.filter((segment) => segment.dark);
+    const lightSegments = bucketSegments.filter((segment) => segment.light);
+    const darkAlpha = Math.min(0.26, ageAlpha * (0.06 + 0.16 * bucketMix));
+    const lightAlpha = Math.min(0.3, ageAlpha * (0.08 + 0.14 * bucketMix));
+    const edgeWidth = bucketWidth;
+    const darkOffset = 0.7 + bucketWidth * 0.5 + bucketMix * 0.35;
+    const lightOffset = 0.55 + bucketWidth * 0.34 + (1 - bucketMix) * 0.4;
+
+    if (darkSegments.length > 0 && darkAlpha > 0.002) {
+      strokeOffsetSegments(
+        ctx,
+        darkSegments,
+        darkOffset,
+        Math.max(0.55, edgeWidth * 0.58),
+        `rgba(${DARK}, ${darkAlpha})`,
+        1,
+      );
+    }
+    if (lightSegments.length > 0 && lightAlpha > 0.002) {
+      strokeOffsetSegments(
+        ctx,
+        lightSegments,
+        lightOffset,
+        Math.max(0.4, edgeWidth * 0.4),
+        `rgba(${COOL}, ${lightAlpha})`,
+        -1,
+      );
+    }
+  }
+
+  if (beads.length > 0 && ageAlpha > 0.01) {
+    // 极小残珠：用极短圆头线段画，不引入 gradient/glow，也不逐颗 stroke。
     ctx.beginPath();
-    ctx.moveTo(a.x, a.y);
-    ctx.lineTo(b.x, b.y);
-    ctx.strokeStyle = `rgba(${COOL}, ${alpha})`;
-    ctx.lineWidth = Math.max(0.5, 0.75 + width * 0.55);
+    for (const bead of beads) {
+      ctx.moveTo(bead.midX, bead.midY);
+      ctx.lineTo(bead.midX + 0.01, bead.midY);
+    }
+    ctx.strokeStyle = `rgba(${DARK}, ${0.12 * ageAlpha})`;
+    ctx.lineWidth = 2.4;
+    ctx.stroke();
+
+    ctx.beginPath();
+    for (const bead of beads) {
+      ctx.moveTo(bead.midX - 0.5, bead.midY - 0.4);
+      ctx.lineTo(bead.midX - 0.49, bead.midY - 0.4);
+    }
+    ctx.strokeStyle = `rgba(${COOL}, ${0.16 * ageAlpha})`;
+    ctx.lineWidth = 1.2;
     ctx.stroke();
   }
 }
@@ -382,9 +584,12 @@ function paintTrailPoints(
 /**
  * 动态湿痕层。
  *
- * 只画滑动水珠身后那一小段：点按年龄变淡，头部清楚、尾部消失；宽度 1px 上下。
- * 水珠滑走/被合并后，湿痕会「交接」到 `residualTrails`，继续淡完，不会跟着本体瞬移。
- * 这一层每帧清空重画，但只有 1x 分辨率和几条短痕，代价远小于逐帧画几百颗水珠。
+ * 活跃水迹画当前滑行路径；水滴滑出/被吞并的那一刻，仿真立即把路径快照交给
+ * `residualTrails`，这里只按残留自己的 age 淡出，**不乘 drop.opacity**，也不等 respawn。
+ * 轨迹固定在原坐标，不会随水滴重生瞬移；5~8 秒后由仿真回收。
+ *
+ * 每帧清空 1x 小画布，每条水迹最多 `TRAIL_MAX_STROKES_PER_PATH` 次 stroke，
+ * 不做逐点多层描边，也不新增 DOM/滤镜。
  */
 export function paintDynamicTrails(
   ctx: CanvasRenderingContext2D,
@@ -392,7 +597,6 @@ export function paintDynamicTrails(
   size: RainCanvasSize,
 ): void {
   ctx.clearRect(0, 0, size.width, size.height);
-  const scale = rainSizeScale(size.width);
   ctx.save();
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
@@ -401,13 +605,25 @@ export function paintDynamicTrails(
     if (drop.trail.length < 2) continue;
     const def = state.layout.dynamicDrops[drop.index];
     const cycle = def?.cycles[drop.cycleIndex];
-    const fadeSeconds = cycle?.trailFadeSeconds ?? 2;
-    const maxLength = (cycle?.trailLengthPx ?? 90) * scale * 1.4;
-    paintTrailPoints(ctx, drop.trail, fadeSeconds, maxLength, drop.opacity, drop.radius / 30);
+    if (!cycle) continue;
+    // 长度按整轮 maxSpeed 固定，不能用当前 speed：钉点停顿 speed=0 时
+    // 已经画出的 308px 水迹不能瞬间缩成 198px。
+    const maxLengthPx = dynamicTrailLengthForCycle(cycle, state.viewport.height);
+    // 水滴后方留一段空位，避免头部和湿膜连成“圆头 + 尾巴”。
+    const headGapPx = dynamicTrailHeadGapPx(drop.radius);
+    // 活跃水迹不乘本体 opacity：本体是否淡出/被吞并由仿真在交接时处理。
+    paintTrailPath(ctx, drop.trail, maxLengthPx, headGapPx, 0);
   }
 
   for (const residual of state.residualTrails) {
-    paintTrailPoints(ctx, residual.points, residual.fadeSeconds, 210 * scale, 0.72, 0.85);
+    // residual 在交接时已经按同一个 headGap 裁掉；这里不再二次留空。
+    paintTrailPath(
+      ctx,
+      residual.points,
+      residual.maxLengthPx,
+      0,
+      residual.age / Math.max(0.001, residual.fadeSeconds),
+    );
   }
 
   ctx.restore();

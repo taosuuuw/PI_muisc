@@ -18,17 +18,32 @@ import {
   type RainDynamicCycle,
   type RainDynamicDrop,
 } from '../lib/rain-layout';
-import { buildRefractionMap } from '../lib/rain-refraction-map';
 import {
-  dynamicLensSpriteUrl,
-  LENS_FILTER_SCALE,
-  TRANSPARENT_LENS_URL,
-} from '../lib/rain-lens-map';
+  buildCombinedRainFieldPixels,
+  prepareCombinedRainFieldBase,
+  TRANSPARENT_FIELD_URL,
+  type RainFieldBase,
+  type RainFieldPixelsResult,
+} from '../lib/rain-field-map';
+import { RainFieldEncoder } from '../lib/rain-field-encoder';
+import {
+  RainFieldWorkerClient,
+  type RainFieldWorkerLike,
+} from '../lib/rain-field-worker-client';
+import {
+  applyRainFilterImageGeometry,
+  buildRainFilterGeometry,
+} from '../lib/rain-filter-geometry';
+import { LENS_FILTER_SCALE } from '../lib/rain-lens-map';
 import {
   createRainSimulation,
+  snapshotRainReplay,
+  stageControlledMergeReplay,
   stepRainSimulation,
   summarizeSimulation,
   takeDirtyRects,
+  type RainReplayScenario,
+  type RainReplaySnapshot,
   type RainSimulationState,
   type RainViewport,
 } from '../lib/rain-simulation';
@@ -43,14 +58,15 @@ import {
  * 上一版的雨是「几百颗白点 + 22 颗肥皂泡 + 6 颗匀速下滑的 blur 球」：小珠像雪、大水珠
  * 有一圈完整白边，滑动水珠的折射不跟位置（只是普通 backdrop blur）。这一版：
  *
- * 1. **附着水珠**（canvas）：团簇状、大小/形状/透明度都不同；大珠进静态折射图，透过它
- *    看得到被真正弯折的背景。小珠不再点白高光，只在偏心位置留一颗很小的冷光。
+ * 1. **附着水珠**（canvas）：团簇状、大小/形状/透明度都不同；全部可见珠都进入
+ *    共享静态法线场，透过它看得到被真正弯折的背景。canvas 只留极小湿膜和不对称边缘。
  * 2. **动态水珠**（DOM + 仿真）：积聚 → 释放 → 重力加速 → 钉点停顿 → 合并 → 滑出，
  *    每颗有自己的节奏，不是匀速循环。
- * 3. **动态折射**：不再给每颗水珠挂 `backdrop-filter`。整场雨共用**一个** SVG 滤镜：
- *    静态位移图当底，2 个 `feImage` 透镜精灵按当前坐标叠上去，`feDisplacementMap`
- *    每帧弯折真实背景。没有逐帧全屏 PNG，也没有「逐水滴 SVG backdrop」。
- * 4. **湿痕**：短的、弯的、1px 上下的水痕，按年龄变淡；不是从上到下的长亮线。
+ * 3. **共享动态场**：全部可见滑滴 + 活跃/残留水路 + 消费洞进同一张 24Hz combined 场图，
+ *    换一个 feImage href；`feDisplacementMap` 弯折真实背景，B 通道 coverage
+ *    用来把“略柔玻璃”和“珠内清晰偏折”合成。没有逐水滴滤镜，也不逐帧全屏编码。
+ * 4. **湿痕**：沿真实滑行路径的 180~450px 湿润水路，头部宽/尾部细，暗侧边 + 细亮边、
+ *    中间透明；水珠离开后立即交接并独立保留 5~8 秒，不跟本体淡出或瞬移。
  *
  * === 三层结构 ===
  * - `__refract`：整屏折射层（在 `__wet` 外面，避免被祖先 mask/contain 隔离掉采样）；
@@ -60,13 +76,20 @@ import {
  * === 性能约束 ===
  * - React 不参与逐帧：所有运动都在 rAF 里直接改 `transform` / `opacity` / `feImage` 属性；
  * - 静态 canvas 只在换歌、改窗口、合并小珠时重画；合并只重画一小块脏区；
- * - 动态湿痕 canvas 是 1x，每帧只画几条短痕；
+ * - 动态湿痕 canvas 是 1x，每帧按 5 个宽度档批画，单条水迹最多 10 次 stroke；
  * - 隐藏时停 rAF；reduced-motion 只画一张静态快照。
  *
  * === 探针 ===
  * `window.__PI_RAIN_PROBE__` 每帧更新（只读数字，不参与渲染）：
- * `{ version, seed, frames, simTime, viewport, drops, attached, sliding, paused, merges,
- *    hidden, reducedMotion, staticRefraction, dynamicRefraction }`。
+ * `{ version, seed, frames, simTime, viewport, drops, visibleDrops, attached, sliding, paused, merges,
+ *    residuals, consumedBeads, consumedLenses, restoredBeads, lensRevision, optics, staticFieldBeads,
+ *    staticFieldCoveragePx, staticFieldWrites, staticFieldMs, staticFieldMapWidth/Height,
+ *    dynamicFieldDrops, dynamicFieldTrails, dynamicFieldCoveragePx, dynamicFieldWrites,
+ *    dynamicFieldMs, dynamicFieldHz, dynamicFieldMapWidth/Height, hidden, reducedMotion,
+ *    staticRefraction, dynamicRefraction }`。
+ * DEV 下另有 `window.__PI_RAIN_REPLAY__`：`stage('dynamic'|'static')` / `snapshot()`，
+ * 只用于可控合并回放，不挂产品 UI。快照带 scenario/note；static 另带真实目标珠
+ * `target: { beadId, x, y, radius, hasLens, consumed }`。
  * Codex 可以用 CDP 读它 + 外部 rAF 计数实测 FPS，不要用历史注释里的帧率。
  */
 
@@ -76,35 +99,12 @@ export interface RainWindowProps {
 }
 
 /**
- * 动态折射槽位数。
+ * 动态共享场更新批次。
  *
- * 不是「不想给 9 颗都折射」，而是**真实透镜图的数量会直接压垮整屏滤镜**：实测 0 张
- * 144fps、1 张 144fps、2 张 128fps、3 张 85fps、4 张约 95fps（水珠本体还在动）。
- * 所以只给尺寸最大的 2 颗配透镜，其余 7 颗保留本体高光/暗边；这样既保留「滑动水珠
- * 真的折背景」，又不让滤镜每帧重算到掉帧。
+ * 9 颗滑滴都进同一张 combined 场图，不再每颗一个 feImage；每个批次只换一个
+ * feImage href。24Hz 是视觉/编码成本的折中（参考约 21.4fps），物理与主页面 rAF 不降频。
  */
-const DYNAMIC_LENS_SLOTS = 2;
-
-/**
- * 动态透镜的**整批**更新节流。
- *
- * 滤镜是整屏的：任何一个 `feImage` 属性变化，都会让整张折射图重算一次。之前每颗水珠
- * 各按自己的节奏写属性，三四颗在滑就等于每帧都在重算。这里改成**一批一起写**：
- * 每 45fps 扫一遍所有槽位，只写真正动了的透镜；其余帧完全不碰滤镜，浏览器可以复用
- * 上一帧的折射结果。水珠本体仍然 144fps 平滑移动。
- */
-const LENS_BATCH_INTERVAL_MS = 1000 / 45;
-/** 位置/尺寸变化小于这个值就当没动，省掉一次整屏滤镜重算。 */
-const LENS_MIN_DELTA_PX = 0.5;
-
-interface LensAttrState {
-  href: string;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  visible: boolean;
-}
+const DYNAMIC_FIELD_BATCH_MS = 1000 / 24;
 
 interface RainProbe {
   version: 2;
@@ -119,15 +119,69 @@ interface RainProbe {
   finished: number;
   merges: number;
   residuals: number;
+  visibleDrops: number;
+  consumedBeads: number;
+  consumedLenses: number;
+  restoredBeads: number;
+  lensesActive: number;
+  lensRevision: number;
   hidden: boolean;
   reducedMotion: boolean;
   staticRefraction: boolean;
   dynamicRefraction: boolean;
+  /** 透镜批次**目标上限**（Hz）；实际写入次数看 `lensWrites`。不等于渲染 FPS。 */
+  lensBatchHz: number;
+  /** 旧双透镜探针已无意义；null 表示该架构指标不存在。 */
+  lensLeadPx: number | null;
+  /** 兼容旧字段：等同 dynamicFieldWrites。 */
+  lensWrites: number;
+  /** 旧双透镜探针已无意义；null 表示该架构指标不存在。 */
+  lensCenterGapPx: number | null;
+  optics: string;
+  staticFieldBeads: number;
+  staticFieldCoveragePx: number;
+  staticFieldWrites: number;
+  staticFieldMs: number;
+  staticFieldMapWidth: number;
+  staticFieldMapHeight: number;
+  /** 单张 combined 场语义；static/dynamic 计数都来自同一张图。 */
+  combinedFieldMapWidth: number;
+  combinedFieldMapHeight: number;
+  combinedStaticBeads: number;
+  combinedStaticTrails: number;
+  combinedDynamicDrops: number;
+  combinedDynamicTrails: number;
+  combinedCoveragePx: number;
+  combinedPrepareMs: number;
+  combinedStampMs: number;
+  combinedEncodeMs: number;
+  combinedEncodeP95Ms: number;
+  combinedFieldWrites: number;
+  combinedCompletedWrites: number;
+  combinedInFlight: boolean;
+  combinedEncoderBackend: 'worker' | 'fallback' | 'none';
+  combinedTargetHz: number;
+  combinedUpdateAgeMs: number;
+  dynamicFieldDrops: number;
+  dynamicFieldTrails: number;
+  dynamicFieldCoveragePx: number;
+  dynamicFieldWrites: number;
+  dynamicFieldMs: number;
+  dynamicFieldP95Ms: number;
+  dynamicFieldHz: number;
+  dynamicFieldMapWidth: number;
+  dynamicFieldMapHeight: number;
+}
+
+interface RainReplayApi {
+  stage: (scenario?: RainReplayScenario) => RainReplaySnapshot | null;
+  snapshot: () => RainReplaySnapshot | null;
 }
 
 declare global {
   interface Window {
     __PI_RAIN_PROBE__?: RainProbe;
+    __PI_RAIN_REPLAY__?: RainReplayApi;
   }
 }
 
@@ -196,66 +250,34 @@ export function RainWindow({ seed }: RainWindowProps): ReactNode {
   const staticCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const trailCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const dropRefs = useRef<Array<HTMLSpanElement | null>>([]);
-  const lensRefs = useRef<Array<SVGFEImageElement | null>>([]);
-  const lensStateRef = useRef<Array<LensAttrState | undefined>>([]);
-  const lastLensBatchRef = useRef(0);
+  const fieldImageRef = useRef<SVGFEImageElement | null>(null);
+  const fieldCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const combinedBaseRef = useRef<RainFieldBase | null>(null);
+  const combinedStatsRef = useRef<RainFieldPixelsResult | null>(null);
+  const fieldEncoderRef = useRef<RainFieldEncoder | null>(null);
+  const fieldWorkerClientRef = useRef<RainFieldWorkerClient | null>(null);
+  const fieldSceneTokenRef = useRef(0);
+  const fieldUrlRef = useRef(TRANSPARENT_FIELD_URL);
+  const lastFieldBatchMsRef = useRef(0);
+  const lastFieldCommitMsRef = useRef(0);
+  const fieldWritesRef = useRef(0);
+  const fieldCompletedRef = useRef(0);
+  const fieldPrepareMsRef = useRef(0);
+  const fieldStampMsRef = useRef(0);
+  const fieldEncodeMsRef = useRef(0);
+  const fieldEncodeSamplesRef = useRef<number[]>([]);
+  const fieldEncodeP95Ref = useRef(0);
   const cycleRef = useRef<number[]>([]);
   const simRef = useRef<RainSimulationState | null>(null);
   const framesRef = useRef(0);
-  const staticRefractionRef = useRef(false);
   const hiddenRef = useRef(hidden);
   const reducedRef = useRef(reduced);
   hiddenRef.current = hidden;
   reducedRef.current = reduced;
   const viewport = useElementSize(rootRef);
-  const [refractionUrl, setRefractionUrl] = useState('');
+  const filterGeometry = buildRainFilterGeometry(viewport.width, viewport.height);
   // `useId` 带冒号，做 DOM id 不方便；剔掉非字母数字，保证 `url(#…)` 能解析。
   const idPrefix = useId().replace(/[^a-zA-Z0-9_-]/g, '') || 'pi-rain';
-  /*
-   * 只给「最大」的 2 颗动态水珠配透镜：它们的折射最容易被看见，而且槽位数固定，
-   * 不会因为某颗滑到一半换槽导致折射闪一下。其余 7 颗仍保留可见的水珠本体。
-   */
-  const lensDropIndices = useMemo(
-    () =>
-      layout.dynamicDrops
-        .map((drop, index) => ({
-          index,
-          size: Math.max(...drop.cycles.map((cycle) => cycle.baseSizePx)),
-        }))
-        .sort((a, b) => b.size - a.size || a.index - b.index)
-        .slice(0, DYNAMIC_LENS_SLOTS)
-        .map((item) => item.index),
-    [layout.dynamicDrops],
-  );
-
-  /*
-   * 稳定的 ref 回调：内联箭头每次渲染都会换身份，React 会把 ref 先置 null 再设回元素，
-   * 静态图生成等普通重渲染就会把 feImage 的动态属性擦回透明。这里只建一次。
-   */
-  const lensRefCallbacks = useMemo(
-    () =>
-      Array.from(
-        { length: DYNAMIC_LENS_SLOTS },
-        (_, index) => (element: SVGFEImageElement | null) => {
-          lensRefs.current[index] = element;
-          if (!element) return;
-          element.setAttribute('href', TRANSPARENT_LENS_URL);
-          element.setAttribute('x', '0');
-          element.setAttribute('y', '0');
-          element.setAttribute('width', '0');
-          element.setAttribute('height', '0');
-          lensStateRef.current[index] = {
-            href: TRANSPARENT_LENS_URL,
-            x: 0,
-            y: 0,
-            width: 0,
-            height: 0,
-            visible: false,
-          };
-        },
-      ),
-    [],
-  );
   const dropRefCallbacks = useMemo(
     () =>
       layout.dynamicDrops.map((_, index) => (element: HTMLSpanElement | null) => {
@@ -263,41 +285,32 @@ export function RainWindow({ seed }: RainWindowProps): ReactNode {
       }),
     [layout.dynamicDrops],
   );
-
-  staticRefractionRef.current = refractionUrl !== '';
-
-  /*
-   * 静态整屏位移图：只在换歌 / 改窗口尺寸时烤一次。
-   * 用 rAF 把这次生成推到下一帧，先让页面把雨层挂上，不要阻塞首屏。
-   */
-  useEffect(() => {
-    if (viewport.width < 2 || viewport.height < 2) return undefined;
-    let cancelled = false;
-    const frame = window.requestAnimationFrame(() => {
-      if (cancelled) return;
-      const url = buildRefractionMap(layout, viewport);
-      if (!cancelled) setRefractionUrl(url);
-    });
-    return () => {
-      cancelled = true;
-      window.cancelAnimationFrame(frame);
-    };
-  }, [layout, viewport]);
+  const fieldImageRefCallback = useCallback(
+    (element: SVGFEImageElement | null) => {
+      fieldImageRef.current = element;
+      if (element) {
+        element.setAttribute('href', fieldUrlRef.current);
+        applyRainFilterImageGeometry(
+          element,
+          buildRainFilterGeometry(viewport.width, viewport.height),
+        );
+      }
+    },
+    [viewport.width, viewport.height],
+  );
 
   /**
    * 每帧的 DOM 写入集中在这里：不 setState，不触发 React  reconcile。
    *
    * 这里同时更新：
    * - 9 颗动态水珠的 `transform` / `opacity` / 高光；
-   * - 2 个 `feImage` 透镜的位置和尺寸（只挑最大的 2 颗，动态折射跟位置走）；
+   * - 24Hz 更新一张 combined 场 feImage（全部滑滴 + 水路 + 消费洞）；
    * - 只读探针。
    */
   const renderFrame = useCallback(
     (sim: RainSimulationState, now: number): void => {
       const summary = summarizeSimulation(sim);
       const width = sim.viewport.width;
-      const lensBatchDue = now - lastLensBatchRef.current >= LENS_BATCH_INTERVAL_MS;
-      if (lensBatchDue) lastLensBatchRef.current = now;
 
       // 1) 所有动态水珠的本体：每帧平滑更新 transform / opacity / 高光。
       for (let index = 0; index < sim.drops.length; index += 1) {
@@ -319,6 +332,8 @@ export function RainWindow({ seed }: RainWindowProps): ReactNode {
           element.style.height = `${baseDiameter}px`;
           element.style.marginLeft = `${-baseDiameter / 2}px`;
           element.style.marginTop = `${-baseDiameter / 2}px`;
+          // 形状直接来自 layout；和透镜同宽高、只是四角半径温和不对称。
+          element.style.borderRadius = cycle.shape.borderRadius ?? '50%';
         }
 
         const metrics = dynamicDropMetrics(
@@ -334,93 +349,71 @@ export function RainWindow({ seed }: RainWindowProps): ReactNode {
         if (element.dataset.phase !== drop.phase) element.dataset.phase = drop.phase;
         const glow = element.firstElementChild;
         if (glow instanceof HTMLElement) {
-          glow.style.opacity = (drop.mergeFlash * 0.55).toFixed(3);
+          glow.style.opacity = (drop.mergeFlash * 0.3).toFixed(3);
         }
       }
 
       /*
-       * 2) 折射批次：只扫 2 个固定槽位。不在批次里的帧完全不碰滤镜，浏览器可以复用
-       *    上一帧的整屏折射结果；这就是「减少每帧滤镜更新」的落点。
+       * 2) 单张 combined 场：缓存静态原图 + 本批消费洞/水路/动态滴覆写。
+       *    toBlob/decode 异步且单批 inflight；下一批只取最新 sim，不排队。
        */
-      if (lensBatchDue) {
-        for (let slot = 0; slot < DYNAMIC_LENS_SLOTS; slot += 1) {
-          const dropIndex = lensDropIndices[slot];
-          const lens = lensRefs.current[slot];
-          const state = lensStateRef.current[slot];
-          if (dropIndex === undefined || !lens || !state) continue;
-          const drop = sim.drops[dropIndex];
-          const def = layout.dynamicDrops[dropIndex];
-          if (!drop) continue;
-          const cycle = def?.cycles[drop.cycleIndex];
-          if (!cycle) continue;
-
-          const baseDiameter = scaledBaseSize(cycle, width);
-          const metrics = dynamicDropMetrics(
-            baseDiameter,
-            drop.radius,
-            drop.speed,
-            cycle.shape.squash,
-          );
-          const visible =
-            drop.phase !== 'finished' &&
-            drop.opacity >= 0.04 &&
-            metrics.width >= 3.5 &&
-            metrics.height >= 3.5;
-
-          if (!visible) {
-            // 只写一次透明图；静止/结束的槽位之后完全不碰滤镜。
-            if (state.visible) {
-              lens.setAttribute('href', TRANSPARENT_LENS_URL);
-              lens.setAttribute('x', '-10000');
-              lens.setAttribute('y', '-10000');
-              lens.setAttribute('width', '1');
-              lens.setAttribute('height', '1');
-              state.href = TRANSPARENT_LENS_URL;
-              state.x = -10000;
-              state.y = -10000;
-              state.width = 1;
-              state.height = 1;
-              state.visible = false;
-            }
-            continue;
+      const base = combinedBaseRef.current;
+      const encoder = fieldEncoderRef.current;
+      const fieldCanvas = fieldCanvasRef.current;
+      if (
+        base &&
+        encoder &&
+        fieldCanvas &&
+        fieldImageRef.current &&
+        !encoder.busy &&
+        now - lastFieldBatchMsRef.current >= DYNAMIC_FIELD_BATCH_MS
+      ) {
+        const token = encoder.tryStart();
+        if (token !== null) {
+          lastFieldBatchMsRef.current = now;
+          fieldWritesRef.current += 1;
+          const stampStarted = performance.now();
+          const result = buildCombinedRainFieldPixels(base, sim);
+          combinedStatsRef.current = result;
+          const ctx = fieldCanvas.getContext('2d');
+          if (!ctx) {
+            encoder.abort(token);
+          } else {
+            ctx.putImageData(
+              new ImageData(result.pixels, base.mapWidth, base.mapHeight),
+              0,
+              0,
+            );
+            fieldStampMsRef.current = performance.now() - stampStarted;
+            const encodeStarted = performance.now();
+            encoder.submit(
+              {
+                pixels: result.pixels,
+                width: base.mapWidth,
+                height: base.mapHeight,
+                canvas: fieldCanvas,
+              },
+              token,
+              (committed) => {
+              if (token !== fieldSceneTokenRef.current) return;
+              const encodeMs = performance.now() - encodeStarted;
+              fieldEncodeMsRef.current = encodeMs;
+              const samples = fieldEncodeSamplesRef.current;
+              samples.push(encodeMs);
+              if (samples.length > 120) samples.shift();
+              const sorted = [...samples].sort((a, b) => a - b);
+              fieldEncodeP95Ref.current =
+                sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))] ?? 0;
+                if (committed) {
+                  fieldCompletedRef.current += 1;
+                  lastFieldCommitMsRef.current = performance.now();
+                }
+              },
+            );
           }
-
-          const x = drop.x - metrics.width / 2;
-          const y = drop.y - metrics.height / 2;
-          const href = dynamicLensSpriteUrl(Math.max(metrics.width, metrics.height));
-          const hrefChanged = href !== state.href;
-          const firstVisible = !state.visible;
-          const moved =
-            Math.abs(x - state.x) >= LENS_MIN_DELTA_PX ||
-            Math.abs(y - state.y) >= LENS_MIN_DELTA_PX ||
-            Math.abs(metrics.width - state.width) >= LENS_MIN_DELTA_PX ||
-            Math.abs(metrics.height - state.height) >= LENS_MIN_DELTA_PX;
-
-          // 没动到半个像素就不重算整屏滤镜；同一批里所有透镜一起写。
-          if (!firstVisible && !hrefChanged && !moved) continue;
-
-          if (firstVisible || hrefChanged) lens.setAttribute('href', href);
-          if (firstVisible || hrefChanged || Math.abs(x - state.x) >= 0.01) {
-            lens.setAttribute('x', x.toFixed(2));
-          }
-          if (firstVisible || hrefChanged || Math.abs(y - state.y) >= 0.01) {
-            lens.setAttribute('y', y.toFixed(2));
-          }
-          if (firstVisible || hrefChanged || Math.abs(metrics.width - state.width) >= 0.01) {
-            lens.setAttribute('width', metrics.width.toFixed(2));
-          }
-          if (firstVisible || hrefChanged || Math.abs(metrics.height - state.height) >= 0.01) {
-            lens.setAttribute('height', metrics.height.toFixed(2));
-          }
-
-          state.href = href;
-          state.x = x;
-          state.y = y;
-          state.width = metrics.width;
-          state.height = metrics.height;
-          state.visible = true;
         }
       }
+      const combinedStats = combinedStatsRef.current;
 
       // 探针只读、不参与渲染；每帧覆盖一个小对象，几乎不花钱。
       framesRef.current += 1;
@@ -437,10 +430,57 @@ export function RainWindow({ seed }: RainWindowProps): ReactNode {
         finished: summary.finished,
         merges: summary.merges,
         residuals: sim.residualTrails.length,
+        visibleDrops:
+          summary.attached + summary.sliding + summary.paused,
+        consumedBeads: sim.consumedBeads.size,
+        consumedLenses: sim.consumedLenses.size,
+        restoredBeads: sim.restoredBeads,
+        lensesActive: Math.max(0, layout.lenses.length - sim.consumedLenses.size),
+        lensRevision: sim.lensRevision,
         hidden: hiddenRef.current,
         reducedMotion: reducedRef.current,
-        staticRefraction: staticRefractionRef.current,
-        dynamicRefraction: true,
+        staticRefraction: base !== null,
+        dynamicRefraction: combinedStats !== null,
+        lensBatchHz: 1000 / DYNAMIC_FIELD_BATCH_MS,
+        lensLeadPx: null,
+        lensWrites: fieldCompletedRef.current,
+        lensCenterGapPx: null,
+        optics: 'combined-displacement',
+        staticFieldBeads: base?.coveredBeads ?? 0,
+        staticFieldCoveragePx: base?.coveragePixels ?? 0,
+        staticFieldWrites: base ? 1 : 0,
+        staticFieldMs: base?.prepareMs ?? 0,
+        staticFieldMapWidth: base?.mapWidth ?? 0,
+        staticFieldMapHeight: base?.mapHeight ?? 0,
+        combinedFieldMapWidth: base?.mapWidth ?? 0,
+        combinedFieldMapHeight: base?.mapHeight ?? 0,
+        combinedStaticBeads: base?.coveredBeads ?? 0,
+        combinedStaticTrails: base?.coveredTrails ?? 0,
+        combinedDynamicDrops: combinedStats?.coveredDrops ?? 0,
+        combinedDynamicTrails: combinedStats?.coveredTrails ?? 0,
+        combinedCoveragePx: combinedStats?.coveragePixels ?? 0,
+        combinedPrepareMs: fieldPrepareMsRef.current,
+        combinedStampMs: fieldStampMsRef.current,
+        combinedEncodeMs: fieldEncodeMsRef.current,
+        combinedEncodeP95Ms: fieldEncodeP95Ref.current,
+        combinedFieldWrites: fieldWritesRef.current,
+        combinedCompletedWrites: fieldCompletedRef.current,
+        combinedInFlight: encoder?.busy ?? false,
+        combinedEncoderBackend: fieldWorkerClientRef.current?.backend ?? 'none',
+        combinedTargetHz: 1000 / DYNAMIC_FIELD_BATCH_MS,
+        combinedUpdateAgeMs:
+          lastFieldCommitMsRef.current > 0
+            ? Math.max(0, now - lastFieldCommitMsRef.current)
+            : 0,
+        dynamicFieldDrops: combinedStats?.coveredDrops ?? 0,
+        dynamicFieldTrails: combinedStats?.coveredTrails ?? 0,
+        dynamicFieldCoveragePx: combinedStats?.coveragePixels ?? 0,
+        dynamicFieldWrites: fieldCompletedRef.current,
+        dynamicFieldMs: fieldStampMsRef.current,
+        dynamicFieldP95Ms: fieldEncodeP95Ref.current,
+        dynamicFieldHz: 1000 / DYNAMIC_FIELD_BATCH_MS,
+        dynamicFieldMapWidth: base?.mapWidth ?? 0,
+        dynamicFieldMapHeight: base?.mapHeight ?? 0,
       };
       const root = rootRef.current;
       if (root && framesRef.current % 20 === 0) {
@@ -449,7 +489,7 @@ export function RainWindow({ seed }: RainWindowProps): ReactNode {
         root.dataset.rainMerges = String(summary.merges);
       }
     },
-    [layout, lensDropIndices, seed],
+    [layout, seed],
   );
 
   /*
@@ -477,6 +517,68 @@ export function RainWindow({ seed }: RainWindowProps): ReactNode {
     if (!trailCtx) return undefined;
     trailCtx.setTransform(1, 0, 0, 1, 0, 0);
 
+    fieldEncoderRef.current?.dispose();
+    fieldWorkerClientRef.current?.dispose();
+    const workerClient = new RainFieldWorkerClient({
+      createWorker: () =>
+        new Worker(new URL('../lib/rain-field-worker.ts', import.meta.url), {
+          type: 'module',
+        }) as unknown as RainFieldWorkerLike,
+      fallback: (canvas) =>
+        new Promise<Blob>((resolve, reject) => {
+          canvas.toBlob(
+            (blob) => {
+              if (blob) resolve(blob);
+              else reject(new Error('fallback rain field toBlob failed'));
+            },
+            'image/png',
+          );
+        }),
+    });
+    const encoder = new RainFieldEncoder({
+      encode: (request, done) => {
+        void workerClient.encode(request).then(done, () => done(null));
+      },
+      decode: (url) =>
+        new Promise<void>((resolve, reject) => {
+          const image = new Image();
+          image.onload = () => resolve();
+          image.onerror = () => reject(new Error('rain field decode failed'));
+          image.src = url;
+        }),
+      createUrl: (blob) => URL.createObjectURL(blob),
+      revokeUrl: (url) => URL.revokeObjectURL(url),
+      setHref: (url) => {
+        fieldUrlRef.current = url;
+        fieldImageRef.current?.setAttribute('href', url);
+      },
+      schedule: (callback) => {
+        window.requestAnimationFrame(callback);
+      },
+      transparentUrl: TRANSPARENT_FIELD_URL,
+    });
+    fieldWorkerClientRef.current = workerClient;
+    fieldEncoderRef.current = encoder;
+    const sceneToken = encoder.beginScene();
+    fieldSceneTokenRef.current = sceneToken;
+    lastFieldBatchMsRef.current = 0;
+    lastFieldCommitMsRef.current = 0;
+    fieldWritesRef.current = 0;
+    fieldCompletedRef.current = 0;
+    fieldStampMsRef.current = 0;
+    fieldEncodeMsRef.current = 0;
+    fieldEncodeSamplesRef.current = [];
+    fieldEncodeP95Ref.current = 0;
+    combinedStatsRef.current = null;
+
+    const base = prepareCombinedRainFieldBase(layout, viewport);
+    combinedBaseRef.current = base;
+    fieldPrepareMsRef.current = base.prepareMs;
+    const fieldCanvas = fieldCanvasRef.current ?? document.createElement('canvas');
+    fieldCanvasRef.current = fieldCanvas;
+    fieldCanvas.width = base.mapWidth;
+    fieldCanvas.height = base.mapHeight;
+
     const sim = createRainSimulation(layout, viewport);
     simRef.current = sim;
     framesRef.current = 0;
@@ -487,6 +589,15 @@ export function RainWindow({ seed }: RainWindowProps): ReactNode {
 
     return () => {
       if (simRef.current === sim) simRef.current = null;
+      if (fieldSceneTokenRef.current === sceneToken) {
+        fieldSceneTokenRef.current = encoder.beginScene();
+      }
+      encoder.dispose();
+      workerClient.dispose();
+      if (fieldEncoderRef.current === encoder) fieldEncoderRef.current = null;
+      if (fieldWorkerClientRef.current === workerClient) {
+        fieldWorkerClientRef.current = null;
+      }
     };
   }, [layout, renderFrame, viewport]);
 
@@ -543,7 +654,29 @@ export function RainWindow({ seed }: RainWindowProps): ReactNode {
     [seed],
   );
 
-  const staticReady = refractionUrl !== '';
+  /*
+   * DEV-only 合并回放：在真实 RainWindow 里把两颗可见水珠摆成“一滑一停”的清晰相遇。
+   * 不挂产品 UI；生产构建的 import.meta.env.DEV 为 false，不会暴露。
+   */
+  useEffect(() => {
+    const environment = (import.meta as ImportMeta & { env?: { DEV?: boolean } }).env;
+    if (!environment?.DEV) return undefined;
+    const api: RainReplayApi = {
+      stage: (scenario = 'dynamic') => {
+        const sim = simRef.current;
+        return sim ? stageControlledMergeReplay(sim, scenario) : null;
+      },
+      snapshot: () => {
+        const sim = simRef.current;
+        return sim ? snapshotRainReplay(sim) : null;
+      },
+    };
+    window.__PI_RAIN_REPLAY__ = api;
+    return () => {
+      if (window.__PI_RAIN_REPLAY__ === api) delete window.__PI_RAIN_REPLAY__;
+    };
+  }, []);
+
   const filterId = `${idPrefix}-refract`;
 
   return (
@@ -555,73 +688,43 @@ export function RainWindow({ seed }: RainWindowProps): ReactNode {
       data-rain-seed={seed}
       data-rain-beads={layout.beads.length}
       data-rain-drops={layout.dynamicDrops.length}
-      data-rain-lenses={layout.lenses.length}
-      data-rain-lens-drops={lensDropIndices.join(',')}
-      data-rain-refraction={staticReady ? 'static+dynamic' : 'dynamic'}
+      data-rain-optics="combined-normal-field"
+      data-rain-optics-beads={layout.beads.length}
+      data-rain-refraction="combined-displacement"
       data-rain-simulation="v2"
       data-paused={hidden ? 'true' : 'false'}
       data-reduced-motion={reduced ? 'true' : 'false'}
       aria-hidden="true"
     >
       {/*
-       * 折射滤镜定义。整场雨只有一个 filter：
-       * - `feFlood` 128 灰 = 不位移的底；
-       * - 静态位移图（一次生成）盖在底上；
-       * - 每个动态槽位一个透明边透镜精灵，位置每帧更新；
-       * - 最后 `feDisplacementMap` 弯折真实的 SourceGraphic（页面背景/歌词/封面）。
+       * 单张 combined 法线场 + 单次 feDisplacementMap。
+       * 不再用 coverage 提 alpha、模糊玻璃或 composite 回源图；无水区域 RG=128,
+       * 128 自然保持清晰，水体内部由真实背景位移呈现体积。
        */}
       <svg className="pi-rain__defs" aria-hidden="true" focusable="false">
         <defs>
           <filter
             id={filterId}
-            x="0"
-            y="0"
-            width="100%"
-            height="100%"
+            filterUnits={filterGeometry.filterUnits}
+            primitiveUnits={filterGeometry.primitiveUnits}
+            x={filterGeometry.x}
+            y={filterGeometry.y}
+            width={filterGeometry.width}
+            height={filterGeometry.height}
             colorInterpolationFilters="sRGB"
           >
-            <feFlood floodColor="rgb(128,128,128)" result="rainBase" />
-            {staticReady ? (
-              <feImage
-                href={refractionUrl}
-                x="0"
-                y="0"
-                width="100%"
-                height="100%"
-                preserveAspectRatio="none"
-                result="rainStatic"
-              />
-            ) : null}
-            {Array.from({ length: DYNAMIC_LENS_SLOTS }, (_, index) => (
-              <feImage
-                key={`rain-lens-${index}`}
-                data-lens-drop={lensDropIndices[index]}
-                /*
-                 * href/x/y/width/height **故意不写进 JSX**：它们每帧由 renderFrame 直接
-                 * setAttribute。如果写成 props，React 每次重渲染（切后台、reduced-motion）
-                 * 都会把它们重置回初始值，而暂停时没有下一帧来恢复，折射就会突然消失。
-                 */
-                ref={lensRefCallbacks[index]}
-                preserveAspectRatio="none"
-                result={`rainDynamic${index}`}
-              />
-            ))}
-            {/*
-             * 用**一个** feMerge 把所有透镜叠成一张位移图，而不是逐个 feComposite 串联。
-             * 每多一个滤镜 primitive，整屏 backdrop 滤镜就多一次全画布合成；多个 over 是
-             * 这版 72fps 的主要来源之一（关掉折射立刻回到 144fps）。
-             * feMerge 的透明区域不会盖掉下层，正好符合「精灵外面是透明」的约定。
-             */}
-            <feMerge result="rainDisplacement">
-              <feMergeNode in="rainBase" />
-              {staticReady ? <feMergeNode in="rainStatic" /> : null}
-              {Array.from({ length: DYNAMIC_LENS_SLOTS }, (_, index) => (
-                <feMergeNode key={`rain-mix-${index}`} in={`rainDynamic${index}`} />
-              ))}
-            </feMerge>
+            <feImage
+              ref={fieldImageRefCallback}
+              x={filterGeometry.x}
+              y={filterGeometry.y}
+              width={filterGeometry.width}
+              height={filterGeometry.height}
+              preserveAspectRatio="none"
+              result="rainCombinedField"
+            />
             <feDisplacementMap
               in="SourceGraphic"
-              in2="rainDisplacement"
+              in2="rainCombinedField"
               scale={LENS_FILTER_SCALE}
               xChannelSelector="R"
               yChannelSelector="G"

@@ -14,8 +14,9 @@
  *   glare
  *
  * 三条硬约束：
- * 1. 不逐水滴挂 `backdrop-filter`：动态折射走共享滤镜里的 2 个 `feImage`（只给最大的 2 颗）；
- * 2. 不逐帧编码全屏 PNG：静态位移图只在换歌/改窗口时生成，动态只改 `feImage` 的 x/y；
+ * 1. 不逐水滴挂 `backdrop-filter`：全部静态珠进一张共享静态场，全部滑滴/水路进一张
+ *    30Hz 更新的共享动态场，滤镜里只有两个 feImage；
+ * 2. 静态场只在换歌/改窗口/目标透镜被吃时低频重烤；动态场按有界批次编码；
  * 3. 不给几百颗水珠建 DOM：静态部分在 canvas 上，动态只有 9 个元素。
  */
 
@@ -89,7 +90,8 @@
   background: transparent;
   /*
    * 不要在折射层上再叠 opacity / mask：它们都可能让 backdrop 采样变味。
-   * 中心歌词区的保护由布局完成（大珠和滑动水珠都不进中心椭圆）。
+   * 中心歌词可读性由 __wet 的淡出 mask 与 canvas 本体透明度控制；
+   * 光学场本身保留中心水珠，不再清空中心椭圆。
    */
 }
 
@@ -107,19 +109,19 @@
   position: absolute;
   inset: 0;
   /*
-   * 中间淡、四周浓：歌词就在画面正中。
-   * 中心保留约 42% 的可见度：细雾/小珠还在，但不至于让字浮在水里。
+   * 中间略淡、四周浓：歌词就在画面正中。
+   * 中心保留约 80% 的本体/湿痕可见度；光学场仍覆盖中心水珠，不把中心清成空洞。
    */
   -webkit-mask-image: radial-gradient(
-    ellipse 62% 58% at 50% 52%,
-    rgba(0, 0, 0, 0.6) 0%,
-    rgba(0, 0, 0, 0.8) 58%,
+    ellipse 68% 64% at 50% 52%,
+    rgba(0, 0, 0, 0.8) 0%,
+    rgba(0, 0, 0, 0.92) 58%,
     #000 100%
   );
   mask-image: radial-gradient(
-    ellipse 62% 58% at 50% 52%,
-    rgba(0, 0, 0, 0.6) 0%,
-    rgba(0, 0, 0, 0.8) 58%,
+    ellipse 68% 64% at 50% 52%,
+    rgba(0, 0, 0, 0.8) 0%,
+    rgba(0, 0, 0, 0.92) 58%,
     #000 100%
   );
 }
@@ -143,9 +145,9 @@
 /*
  * 动态水珠本体。
  *
- * 关键：**中心必须几乎全透**，让下面折射层弯折出来的真实背景透上来；
- * 这里只负责一圈偏心的暗边、很小的一颗冷白高光和底部一点点焦散。
- * 没有完整白边、没有外发光，避免读成肥皂泡。
+ * 关键：**中心必须几乎全透**，让下面共享场弯折出来的真实背景透上来；
+ * 这里只负责极其局部的不对称边和很小高光。没有完整白边/外发光，
+ * 避免读成肥皂泡；主要轮廓来自内容感知的折射场。
  */
 .pi-rain__drop {
   position: absolute;
@@ -161,76 +163,34 @@
   border-radius: 50%;
   pointer-events: none;
   transform-origin: 50% 50%;
-  /* 9 个元素，浏览器会把 transform 动画提到合成层；不写 will-change，省显存。 */
-  background:
-    /* 左上：一颗冷白高光，偏到水珠内缘。比上一版更亮，但仍是偏心的一小颗。 */
-    radial-gradient(
-      circle at 32% 26%,
-      rgba(255, 255, 255, 0.88) 0 3%,
-      rgba(255, 255, 255, 0.26) 8%,
-      transparent 17%
-    ),
-    /* 底部：很淡的焦散，不是白圈。 */
-    radial-gradient(circle at 46% 68%, rgba(220, 242, 255, 0.16) 0 6%, transparent 24%),
-    /* 边缘：中心透出折射，越靠边越压暗；最外圈再收干净。 */
-    radial-gradient(
-        circle at 50% 50%,
-        transparent 0 48%,
-        rgba(5, 12, 22, 0.06) 60%,
-        rgba(5, 12, 22, 0.22) 80%,
-        rgba(5, 12, 22, 0.52) 94%,
-        rgba(5, 12, 22, 0.06) 100%
-      );
   /*
-   * 内阴影给球面体积，外阴影给「贴在玻璃上」的接触感；亮档背景更亮，暗边要更实。
-   * 外阴影不要太大，否则一串水珠会糊成一片。
+   * 动态本体不再保留第二套 CSS 外壳：DOM 只做位置/透明度，外形完全由
+   * 同 shape 的共享动态场决定。这样不会出现 CSS 圆弧和法线壳错位。
    */
-  box-shadow:
-    inset 1px 1px 2px rgba(255, 255, 255, 0.3),
-    inset -2px -3px 7px rgba(2, 8, 16, 0.34),
-    0 2px 7px rgba(2, 8, 16, 0.32);
+  background: transparent;
 }
 
-/* 亮档背景更亮，暗边需要稍强一点才看得见；但仍不画白圈。 */
-:root[data-theme='light'] .pi-rain__drop {
-  box-shadow:
-    inset 1px 1px 2px rgba(255, 255, 255, 0.18),
-    inset -2px -3px 7px rgba(2, 8, 16, 0.42),
-    0 2px 7px rgba(2, 8, 16, 0.26);
+.pi-rain__drop::before,
+.pi-rain__drop::after {
+  display: none;
 }
 
-/* 合并时的柔光，不是一圈白环。 */
+/* 合并时的柔光，不是一圈白环；范围收小，避免又读成一颗发光的圆头。 */
 .pi-rain__drop-glow {
   position: absolute;
-  inset: -45%;
+  inset: -18%;
   border-radius: 50%;
   pointer-events: none;
   opacity: 0;
   background: radial-gradient(
     circle at 50% 50%,
-    rgba(214, 238, 255, 0.22) 0 18%,
-    rgba(214, 238, 255, 0.08) 38%,
-    transparent 68%
+    rgba(214, 238, 255, 0.14) 0 16%,
+    rgba(214, 238, 255, 0.04) 34%,
+    transparent 62%
   );
 }
 
-/*
- * 附着/滑动/停顿的细微差别：
- * - 附着时更扁、更圆，像挂在玻璃上；
- * - 滑动时纵向拉长由 JS 的 transform 负责，这里只把高光收一点；
- * - 停顿时高光稍亮，像被钉住。
- */
-.pi-rain__drop[data-phase='sliding'] {
-  background-position:
-    0 0,
-    0 0,
-    0 0;
-}
-
-.pi-rain__drop[data-phase='paused'] {
-  /* 停顿：不再拉长，稍微压扁；JS 会把 speed 归零。 */
-  filter: none;
-}
+/* 滑动/停顿的纵向形变全部由 JS 的 transform 负责，这里不再叠背景位移。 */
 
 /* ---- 5. 窗面反光 ---- */
 

@@ -26,6 +26,8 @@ export interface RainShape {
   wobble: number;
   /** 扰动相位，避免所有水珠同一个方向鼓包。 */
   wobblePhase: number;
+  /** DOM 水珠的圆角；只有动态水珠使用，静态 canvas 仍按团块画。 */
+  borderRadius?: string;
 }
 
 /** 画在 canvas 上的一颗附着水珠。 */
@@ -41,7 +43,12 @@ export interface RainBead {
   /** 强度 0~1：越大暗边越实、高光越清楚。 */
   opacity: number;
   shape: RainShape;
-  /** 是否允许滑动水珠沿途吸走它（只有小水珠/积聚伙伴会被吸）。 */
+  /**
+   * 旧布局用来标记“积聚伙伴”的提示位。
+   *
+   * 碰撞资格现在统一由可见几何决定：所有静态珠（包括大透镜珠）都能被真实接触吸收。
+   * 这个字段保留给布局/历史测试读取，不再参与碰撞筛选。
+   */
   mergeable: boolean;
 }
 
@@ -115,9 +122,9 @@ export interface RainDynamicCycle {
   releaseSpeed: number;
   /** 终端速度上限 px/s。 */
   maxSpeed: number;
-  /** 身后湿痕最大长度 px。 */
+  /** 身后湿痕的基础长度 px；运行时再按速度和窗口放大到约 180~450。 */
   trailLengthPx: number;
-  /** 湿痕从出现到完全消失的秒数。 */
+  /** 水珠离开后残留湿痕从清楚到完全消失的秒数（约 5~8 秒）。 */
   trailFadeSeconds: number;
   shape: RainShape;
 }
@@ -162,14 +169,14 @@ const RAIN_SALT = 0x7a15;
  * 做出湿斑，数量仍够铺满，但团簇之间会留出干的缝隙。
  */
 export const RAIN_CLUSTER_COUNT = 30;
-export const RAIN_SCATTER_BEAD_COUNT = 140;
-export const RAIN_MEDIUM_BEAD_COUNT = 100;
-export const RAIN_LARGE_BEAD_COUNT = 28;
+export const RAIN_SCATTER_BEAD_COUNT = 180;
+export const RAIN_MEDIUM_BEAD_COUNT = 130;
+export const RAIN_LARGE_BEAD_COUNT = 40;
 export const RAIN_TRAIL_COUNT = 26;
 export const RAIN_DYNAMIC_DROP_COUNT = 9;
 export const RAIN_DYNAMIC_CYCLES = 3;
 
-/** 大珠门槛：只有这么大、且不会被合并掉的水珠才进静态折射图。 */
+/** 光学大珠门槛：过线且不在歌词中心就进静态折射图；是否会被吃由碰撞几何另算。 */
 export const RAIN_LENS_MIN_SIZE_PX = 6.5;
 
 /** [min, max) 之间的随机数，保留 `digits` 位小数（避免长串浮点进 DOM）。 */
@@ -191,10 +198,40 @@ function makeShape(random: () => number, teardrop = false): RainShape {
 }
 
 /**
- * 歌词正中间的一块椭圆：大珠/滑动水珠不进来，避免把字折花。
+ * 动态水珠的可见轮廓。
  *
- * 歌词列最大宽 560px（1478px 窗口下约 31%~69%），所以横向留到 ±24%，纵向 ±28%。
- * 小珠/细雾仍可进来，由 CSS 的湿层 mask 再压淡。
+ * 比静态泪滴更克制：只做“上略窄、下略宽”的软蛋形，四角仍在 45~55% 附近。
+ * 这样它不再是一个标准圆珠，但轮廓不会缩到折射 feImage 框里面太多，避免
+ * 「本体边缘和透镜边缘分家」。
+ */
+function makeDynamicShape(random: () => number): RainShape {
+  const shape = makeShape(random, true);
+  const horizontal = [
+    between(random, 46, 49),
+    between(random, 46, 49),
+    between(random, 50, 53),
+    between(random, 50, 53),
+  ];
+  const vertical = [
+    // 上缘略收、下缘略鼓；仍落在透镜框内，不把 feImage 甩在轮廓外。
+    between(random, 43, 47),
+    between(random, 43, 47),
+    between(random, 52, 56),
+    between(random, 52, 56),
+  ];
+  return {
+    ...shape,
+    borderRadius: `${horizontal.map((value) => `${Math.round(value)}%`).join(' ')} / ${vertical
+      .map((value) => `${Math.round(value)}%`)
+      .join(' ')}`,
+  };
+}
+
+/**
+ * 歌词区域的旧大珠禁区。
+ *
+ * 现在只用于约束动态滑落带，避免大体量滑滴穿过歌词；静态珠允许在中心自然出现，
+ * 不再用这个椭圆把中心掏空。
  */
 export function isLyricCenter(leftPercent: number, topPercent: number): boolean {
   const dx = (leftPercent - 50) / 24;
@@ -237,76 +274,73 @@ export function buildRainLayout(seed: number): RainLayout {
    *    会重叠成一片；团簇之外再补散珠，保留「干的地方」。
    */
   for (let cluster = 0; cluster < RAIN_CLUSTER_COUNT; cluster += 1) {
-    let centerX = between(random, 1, 99);
-    let centerY = between(random, 1, 99);
-    // 团簇可以进歌词区，但中心区概率减半：那里主要靠细雾，不放大水珠。
-    if (isLyricCenter(centerX, centerY) && random() < 0.5) {
-      centerX = random() < 0.5 ? between(random, 2, 32) : between(random, 68, 98);
-    }
-    const count = 6 + Math.floor(random() * 9);
-    const spreadX = between(random, 1.2, 5.8);
-    const spreadY = between(random, 1.4, 6.2);
+    const centerX = between(random, 1, 99);
+    const centerY = between(random, 1, 99);
+    // 中心不再掏空：全视野都有水，靠 __wet mask 和覆盖率控制可读性。
+    const count = 7 + Math.floor(random() * 9);
+    const spreadX = between(random, 1.4, 6.2);
+    const spreadY = between(random, 1.6, 6.8);
     for (let index = 0; index < count; index += 1) {
       const angle = between(random, 0, Math.PI * 2, 3);
       const radius = Math.sqrt(random());
       const left = centerX + Math.cos(angle) * spreadX * radius;
       const top = centerY + Math.sin(angle) * spreadY * radius;
       const roll = random();
-      const size = roll < 0.82 ? between(random, 0.9, 2.7, 1) : between(random, 2.8, 4.8, 1);
-      pushBead(size, between(random, 0.22, 0.58, 2), false, left, top, makeShape(random));
+      const size =
+        roll < 0.14
+          ? between(random, 1.4, 3.2, 1)
+          : roll < 0.84
+            ? between(random, 6, 14, 1)
+            : between(random, 14, 22, 1);
+      pushBead(size, between(random, 0.46, 0.9, 2), false, left, top, makeShape(random, true));
     }
   }
 
-  // 2. 散珠：填团簇之间的缝，尺寸偏小；有少量中等珠。
+  // 2. 散珠：填团簇之间的缝；主体是 6~12px，少量 12~20px。
   for (let index = 0; index < RAIN_SCATTER_BEAD_COUNT; index += 1) {
-    const central = random() < 0.3;
-    const left = central ? between(random, 33, 67) : between(random, 0.5, 99.5);
-    const top = central ? between(random, 28, 72) : between(random, 0.5, 99.5);
+    const central = random() < 0.34;
+    const left = central ? between(random, 28, 72) : between(random, 0.5, 99.5);
+    const top = central ? between(random, 24, 76) : between(random, 0.5, 99.5);
     const roll = random();
-    const size = roll < 0.72 ? between(random, 0.8, 2.4, 1) : between(random, 2.5, 5.2, 1);
-    pushBead(size, between(random, 0.18, 0.5, 2), false, left, top, makeShape(random));
+    const size =
+      roll < 0.12
+        ? between(random, 1.2, 3, 1)
+        : roll < 0.7
+          ? between(random, 6, 12, 1)
+          : between(random, 12, 20, 1);
+    pushBead(size, between(random, 0.42, 0.86, 2), false, left, top, makeShape(random, true));
   }
 
-  // 3. 中等水珠：有明确的暗边和高光，是「湿玻璃」的主力。
+  // 3. 中等水珠：是「湿玻璃」的主力，6~30px，中心同样允许。
   for (let index = 0; index < RAIN_MEDIUM_BEAD_COUNT; index += 1) {
-    let left = between(random, 1, 99);
-    let top = between(random, 1, 99);
-    // 中间区只留较小的中等珠，且概率压低。
-    if (isLyricCenter(left, top)) {
-      if (random() < 0.55) {
-        left = random() < 0.5 ? between(random, 2, 33) : between(random, 67, 98);
-      }
-      top = between(random, 2, 98);
-    }
-    const size = between(random, 3.4, 8.2, 1);
+    const left = between(random, 1, 99);
+    const top = between(random, 1, 99);
+    const roll = random();
+    const size =
+      roll < 0.55
+        ? between(random, 8, 16, 1)
+        : roll < 0.85
+          ? between(random, 16, 22, 1)
+          : between(random, 22, 30, 1);
     pushBead(
-      isLyricCenter(left, top) ? Math.min(size, 6.2) : size,
-      between(random, 0.3, 0.72, 2),
+      size,
+      between(random, 0.5, 0.9, 2),
       random() < 0.18,
       left,
       top,
-      makeShape(random),
+      makeShape(random, true),
     );
   }
 
   /*
-   * 4. 静态大透镜：只放在歌词椭圆之外。它们进静态折射图，透过水珠能看到被弯折的
-   *    封面/背景；中心区没有大透镜，歌词就不会被折花。
+   * 4. 静态大珠：全视野分布，中心也有少量自然大珠；不再保留空白椭圆。
    */
   for (let index = 0; index < RAIN_LARGE_BEAD_COUNT; index += 1) {
-    let left = between(random, 2, 98);
-    let top = between(random, 2, 98);
-    for (let attempt = 0; attempt < 12 && isLyricCenter(left, top); attempt += 1) {
-      left = between(random, 2, 98);
-      top = between(random, 2, 98);
-    }
-    if (isLyricCenter(left, top)) {
-      left = random() < 0.5 ? between(random, 2, 25) : between(random, 75, 98);
-      top = between(random, 6, 94);
-    }
+    const left = between(random, 2, 98);
+    const top = between(random, 2, 98);
     pushBead(
-      between(random, 9.2, 20.5, 1),
-      between(random, 0.52, 0.9, 2),
+      between(random, 22, 38, 1),
+      between(random, 0.62, 0.95, 2),
       false,
       left,
       top,
@@ -334,9 +368,10 @@ export function buildRainLayout(seed: number): RainLayout {
         previousAt = at;
         pauses.push({ at: Math.round(at * 100) / 100, seconds: between(random, 0.28, 1.35, 2) });
       }
+      // 重力路径总体竖直：横向漂移和摆动都收小，只留不规则的小偏折。
       const driftMax = Math.min(
-        7,
-        Math.max(1.5, Math.min(startLeftPercent - band[0], band[1] - startLeftPercent)),
+        3.2,
+        Math.max(1.1, Math.min(startLeftPercent - band[0], band[1] - startLeftPercent)),
       );
       const driftPercent = between(random, -driftMax, driftMax, 2);
       cycles.push({
@@ -350,17 +385,17 @@ export function buildRainLayout(seed: number): RainLayout {
             : between(random, 0, 0.35, 3) * attachSeconds,
         band,
         driftPercent,
-        wobblePercent: between(random, 0.18, 1.35, 2),
-        wobbleWaves: between(random, 1.1, 4.2, 2),
+        wobblePercent: between(random, 0.08, 0.42, 2),
+        wobbleWaves: between(random, 0.9, 2.2, 2),
         wobblePhase: between(random, 0, Math.PI * 2, 3),
         pauses,
         gravity: between(random, 92, 186, 1),
         drag: between(random, 0.22, 0.88, 2),
         releaseSpeed: between(random, 2.2, 10.5, 2),
         maxSpeed: between(random, 96, 174, 1),
-        trailLengthPx: between(random, 52, 136, 0),
-        trailFadeSeconds: between(random, 1.25, 2.8, 2),
-        shape: makeShape(random, true),
+        trailLengthPx: between(random, 180, 330, 0),
+        trailFadeSeconds: between(random, 5.2, 7.8, 2),
+        shape: makeDynamicShape(random),
       });
     }
     dynamicDrops.push({
@@ -371,9 +406,9 @@ export function buildRainLayout(seed: number): RainLayout {
   }
 
   /*
-   * 6. 每颗动态水珠的「积聚伙伴」：起始点周围放几颗小珠，积聚时会一颗颗被吸掉；
-   *    再沿第一段路径放两三颗，滑落时就会看到「沿途合并、变大、加速」。
-   *    这些珠都标 mergeable，静态 canvas 只重绘被吸走的那一小块。
+   * 6. 每颗动态水珠的「积聚伙伴」：起始点周围放几颗小珠，真实接触时会被吸掉；
+   *    再沿第一段路径放两三颗，滑落时会看到「沿途合并、变大、加速」。
+   *    mergeable 只是布局提示；碰撞资格和光学选珠已经解耦。
    */
   for (const drop of dynamicDrops) {
     const first = drop.cycles[0];
@@ -440,10 +475,8 @@ export function buildRainLayout(seed: number): RainLayout {
   // 8. 静态透镜 = 过线的大珠；不另抽位置，保证本体重合。
   const lenses: RainLens[] = [];
   for (const bead of beads) {
-    // 可被动态水珠吸走的小珠不能进静态折射图，否则珠没了、折射还留在原地。
-    if (bead.sizePx < RAIN_LENS_MIN_SIZE_PX || bead.mergeable) continue;
-    // 歌词椭圆内不做大透镜折射；细珠仍由 canvas + mask 呈现。
-    if (isLyricCenter(bead.leftPercent, bead.topPercent)) continue;
+    // 光学选珠只看尺寸，不看碰撞资格；共享静态场实际覆盖全部珠。
+    if (bead.sizePx < RAIN_LENS_MIN_SIZE_PX) continue;
     lenses.push({
       beadId: bead.id,
       leftPercent: bead.leftPercent,
@@ -481,6 +514,26 @@ export interface RainDropMetrics {
   scaleX: number;
   /** DOM 相对 `baseDiameter` 的纵向缩放。 */
   scaleY: number;
+}
+
+/**
+ * 动态透镜半批次预测的前置位移（px）。
+ *
+ * 背景：动态透镜按 45fps 整批写 `feImage`，本体每 rAF 移动。批次间隔 22.2ms，
+ * 最大速度约 174px/s 时，本体一个批次会走约 3.9px；透镜不预测就会最多滞后 3.9px。
+ * 把透镜按“半个批次”向前放，滞后/超前各约 1.94px，最大分离减半，且**不增加刷新次数**。
+ *
+ * 纯函数，测试锁住“速度越快预测越多、但不超过上限；停顿/反向不会预测”。
+ */
+export function lensLeadPx(
+  speedPxPerSec: number,
+  batchIntervalMs: number,
+  maxLeadPx: number,
+): number {
+  const speed = Number.isFinite(speedPxPerSec) ? Math.max(0, speedPxPerSec) : 0;
+  const interval = Number.isFinite(batchIntervalMs) ? Math.max(0, batchIntervalMs) : 0;
+  const maxLead = Number.isFinite(maxLeadPx) ? Math.max(0, maxLeadPx) : 0;
+  return Math.min(maxLead, speed * (interval / 2000));
 }
 
 export function dynamicDropMetrics(
