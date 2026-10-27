@@ -15,10 +15,12 @@ import { RhineLayer, type RhineSource } from './components/RhineLayer';
 import { ShortcutLayer } from './components/ShortcutLayer';
 import { StyleToast } from './components/StyleToast';
 import { DynamicIsland } from './components/DynamicIsland';
-import { customAccentTokens } from './lib/accent';
+import { StartupIntro } from './components/StartupIntro';
+import { applyAccentToRoot } from './lib/accent';
 import { useIdle } from './lib/idle';
 import { useLastPlayed } from './lib/last-played';
 import { installMediaSession } from './lib/media-session';
+import { cacheTheme } from './lib/theme-cache';
 import { HomePage } from './pages/HomePage';
 import { MinePage } from './pages/MinePage';
 import { PlaylistPage } from './pages/PlaylistPage';
@@ -45,7 +47,11 @@ function rhineSourceOf(id: NavId): RhineSource | null {
  * `data-avant-style` 挂在 `.pi-app` 上：CSS 与冒烟探针都从根节点读它，
  * 与 `data-ui-style` 同一个道理（见 `state/ui.ts` 的 `AvantStyle` 注释里那三步接法）。
  */
-function useRhineSkin(uiStyle: UiStyle, avantStyle: AvantStyle, nav: NavId): {
+function useRhineSkin(
+  uiStyle: UiStyle,
+  avantStyle: AvantStyle,
+  nav: NavId,
+): {
   skin: boolean;
   source: RhineSource;
 } {
@@ -91,20 +97,29 @@ const PAGES: Record<NavId, ReactNode> = {
  */
 function useThemeMode(): 'light' | 'dark' {
   const settings = useQuery({ queryKey: ['settings'], queryFn: () => invoke(CH.settingsGet) });
-  const theme = settings.data?.theme ?? 'light';
-  const [resolved, setResolved] = useState<'light' | 'dark'>('light');
+  /*
+   * 设置还没读回来时**不要**先按默认浅色写一遍：`main.tsx` 已经用本机缓存铺好了首帧
+   * （深色用户不该先闪一帧白），这里等真实档位到了再校正。
+   */
+  const theme = settings.data?.theme;
+  const [resolved, setResolved] = useState<'light' | 'dark'>(() =>
+    document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light',
+  );
 
   useEffect(() => {
+    if (!theme) return undefined;
+    const currentTheme = theme;
     const root = document.documentElement;
     const media = window.matchMedia('(prefers-color-scheme: dark)');
     const apply = (): void => {
       const next: 'light' | 'dark' =
-        theme === 'system' ? (media.matches ? 'dark' : 'light') : theme;
+        currentTheme === 'system' ? (media.matches ? 'dark' : 'light') : currentTheme;
       root.dataset.theme = next;
       setResolved(next);
     };
     apply();
-    if (theme !== 'system') return undefined;
+    cacheTheme(currentTheme);
+    if (currentTheme !== 'system') return undefined;
     media.addEventListener('change', apply);
     return () => media.removeEventListener('change', apply);
   }, [theme]);
@@ -125,26 +140,7 @@ function useAccent(scheme: 'light' | 'dark'): void {
   const color = useUi((s) => s.accentColor);
 
   useEffect(() => {
-    const root = document.documentElement;
-    root.dataset.accent = mode;
-    const keys = [
-      '--pi-primary',
-      '--pi-primary-hover',
-      '--pi-primary-weak',
-      '--pi-primary-deep',
-      '--pi-on-primary',
-    ] as const;
-    // 非自定义档：把上一轮留下的内联值全部撤掉，让 tokens.css 的分档接手。
-    if (mode !== 'custom') {
-      for (const key of keys) root.style.removeProperty(key);
-      return;
-    }
-    const tokens = customAccentTokens(color, scheme === 'dark');
-    root.style.setProperty('--pi-primary', tokens.primary);
-    root.style.setProperty('--pi-primary-hover', tokens.hover);
-    root.style.setProperty('--pi-primary-weak', tokens.weak);
-    root.style.setProperty('--pi-primary-deep', tokens.deep);
-    root.style.setProperty('--pi-on-primary', tokens.onPrimary);
+    applyAccentToRoot(document.documentElement, mode, color, scheme === 'dark');
   }, [mode, color, scheme]);
 }
 
@@ -388,7 +384,13 @@ export function App(): ReactNode {
   const rhineBack = (): void => {
     const ui = useUi.getState();
     if (ui.openedPlaylist !== null) ui.closePlaylist();
-    ui.navigate(rhineSource === 'star' ? 'playlist:star' : rhineSource === 'recommend' ? 'playlist:recommend' : 'mine:playlists');
+    ui.navigate(
+      rhineSource === 'star'
+        ? 'playlist:star'
+        : rhineSource === 'recommend'
+          ? 'playlist:recommend'
+          : 'mine:playlists',
+    );
   };
   const hideListOverlay = rhineSkin && openedPlaylist !== null;
   const arriving = useHomeArrival();
@@ -494,6 +496,8 @@ export function App(): ReactNode {
           用户 m07538 要求「去掉切换歌曲的小名片，替代为显示播放页左下角的歌曲名片」
           —— 所以现在是播放页左下角那张名片自己在切歌时浮出来（见 HomePage 的 `revealCard`）。 */}
       <AudioEngine />
+      {/* 启动品牌开场：只播一次，设置 → 界面里可关；它自己会在播完后卸载。 */}
+      <StartupIntro />
     </div>
   );
 }

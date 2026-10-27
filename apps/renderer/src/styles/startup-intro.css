@@ -1,0 +1,194 @@
+/*
+ * 应用启动时的品牌开场（`components/StartupIntro.tsx`）。
+ *
+ * 页面已经挂好、设置也读到了才开始播，所以这一层只需要负责「把已经画出来的应用
+ * 盖住，再从品牌标记过渡到正常界面」。所有动画只碰 opacity / transform，
+ * 播完由组件卸载，不会给后面的页面留合成层。
+ */
+
+.pi-intro {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  color: var(--pi-text);
+  background:
+    radial-gradient(
+      120% 90% at 50% 28%,
+      color-mix(in srgb, var(--pi-primary) 12%, transparent) 0%,
+      transparent 58%
+    ),
+    var(--pi-bg);
+  cursor: pointer;
+  user-select: none;
+}
+
+.pi-intro[data-phase='leaving'] {
+  animation: pi-intro-veil-out 0.36s ease forwards;
+}
+
+.pi-intro[data-phase='leaving'] .pi-intro__content {
+  animation: pi-intro-content-out 0.34s ease forwards;
+}
+
+/* 品牌标记后面那团很淡的主色光，给整块画面一个中心，但不至于抢字。 */
+.pi-intro__glow {
+  position: absolute;
+  width: min(64vmin, 620px);
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle,
+    color-mix(in srgb, var(--pi-primary) 22%, transparent) 0%,
+    transparent 68%
+  );
+  filter: blur(24px);
+  pointer-events: none;
+  animation: pi-intro-glow 1.3s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.pi-intro__content {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  justify-items: center;
+  gap: 0;
+  width: min(760px, 94vw);
+  text-align: center;
+}
+
+/*
+ * 一个占据中心的大 π 字形，不再套蓝底方块。用户要「图样占据中心大部分、笔画更粗」，
+ * 所以这里用 900 重的几何无衬线、字号拉到 46vmin；渐变从浅蓝压到深蓝，粗笔画上才看得见。
+ * 投影是静态的，动画仍然只碰 opacity / transform。
+ */
+.pi-intro__glyph {
+  position: relative;
+  display: grid;
+  place-items: center;
+  margin-bottom: 0;
+  animation: pi-intro-glyph-in 0.7s cubic-bezier(0.34, 1.4, 0.64, 1) both;
+}
+
+.pi-intro__logo {
+  font-family: 'Palatino Linotype', 'Book Antiqua', Georgia, 'Times New Roman', serif;
+  font-size: clamp(360px, 54vmin, 540px);
+  font-weight: 700;
+  font-style: italic;
+  line-height: 0.78;
+  letter-spacing: -0.05em;
+  background: linear-gradient(
+    140deg,
+    color-mix(in srgb, var(--pi-primary) 38%, #ffffff) 0%,
+    var(--pi-primary) 46%,
+    color-mix(in srgb, var(--pi-primary) 52%, #000000) 100%
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  filter: drop-shadow(0 22px 52px color-mix(in srgb, var(--pi-primary) 30%, transparent));
+}
+
+/*
+ * 黑白主题色：π 用真正的黑→白渐变，而不是拿近黑主色和黑白混出来的灰黑。
+ * 亮档黑在上、白在下（顶部横杠压在白底上仍清楚，底部白端自然化进浅背景）；
+ * 暗档反过来，白在上、黑在下。两端都加一圈极细的反色描边，别让化进背景的那端
+ * 真的消失。
+ */
+[data-accent='mono'] .pi-intro__logo {
+  background-image: linear-gradient(140deg, #0a0a0a 0%, #4a4a4a 42%, #bfbfbf 72%, #ffffff 100%);
+  filter: drop-shadow(0 0 1px rgba(0, 0, 0, 0.18)) drop-shadow(0 22px 52px rgba(0, 0, 0, 0.18));
+}
+
+[data-theme='dark'][data-accent='mono'] .pi-intro__logo {
+  background-image: linear-gradient(140deg, #ffffff 0%, #bfbfbf 30%, #4a4a4a 60%, #0a0a0a 100%);
+  filter: drop-shadow(0 0 1px rgba(255, 255, 255, 0.18)) drop-shadow(0 22px 52px rgba(0, 0, 0, 0.3));
+}
+
+/*
+ * 一行偏书法的中文，替代原来的标签说明。楷体/宋体在 Windows 与 macOS 上都属于
+ * 系统自带的书写体，不需要打包字体；字距拉开一点，读起来更像一句题字。
+ * `margin-top` 就是用户说的「位置往下一点」。
+ */
+.pi-intro__tagline {
+  margin-top: 32px;
+  color: var(--pi-primary-deep);
+  font-family:
+    'KaiTi', 'STKaiti', 'Kaiti SC', 'Noto Serif CJK SC', 'Source Han Serif SC', 'SimSun', serif;
+  font-size: clamp(22px, 3.2vmin, 34px);
+  font-weight: 400;
+  letter-spacing: 0.16em;
+  /* 字距会在最后多出一格，往右缩半格才是真正居中。 */
+  text-indent: 0.16em;
+  line-height: 1.2;
+  animation: pi-intro-rise 0.55s cubic-bezier(0.22, 1, 0.36, 1) 0.24s both;
+}
+
+@keyframes pi-intro-veil-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes pi-intro-content-out {
+  to {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.97);
+  }
+}
+
+@keyframes pi-intro-glow {
+  from {
+    opacity: 0;
+    transform: scale(0.82);
+  }
+  38% {
+    opacity: 0.9;
+  }
+  to {
+    opacity: 0.55;
+    transform: scale(1.08);
+  }
+}
+
+@keyframes pi-intro-glyph-in {
+  0% {
+    opacity: 0;
+    transform: translateY(14px) scale(0.8);
+  }
+  62% {
+    opacity: 1;
+    transform: translateY(0) scale(1.025);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes pi-intro-rise {
+  from {
+    opacity: 0;
+    transform: translateY(7px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pi-intro {
+    display: none;
+  }
+  .pi-intro *,
+  .pi-intro[data-phase='leaving'] {
+    animation: none;
+  }
+}

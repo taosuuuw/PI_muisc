@@ -463,7 +463,6 @@ export type _CacheClearOk = AssertAssignable<
   CacheClearResult
 >;
 
-
 /* ------------------------------------------------------------------ *
  * 推荐页（M2.6）：私人雷达 / 推荐歌单 / 推荐新音乐
  * ------------------------------------------------------------------ */
@@ -526,15 +525,7 @@ export const PlaylistEditTracksRequestSchema = z.object({
  * M2：播放
  * ------------------------------------------------------------------ */
 
-export const AudioContainerSchema = z.enum([
-  'flac',
-  'mp3',
-  'm4a',
-  'ogg',
-  'wav',
-  'aac',
-  'unknown',
-]);
+export const AudioContainerSchema = z.enum(['flac', 'mp3', 'm4a', 'ogg', 'wav', 'aac', 'unknown']);
 
 /** 字节嗅探出的实测特征。UI 上的「无损」徽标只认它，不认接口自称。 */
 export const AudioProbeSchema = z.object({
@@ -849,7 +840,17 @@ export const SettingsSchema = z.object({
    * `classic` 流光（我们的默认，也是最先复刻的那套）/ `fume` 浮名 / `cadenza` 心象 /
    * `partita` 云阶 / `tilt` 倾诉 / `pendolo` 时计 / `monet` 莫奈（海报式：左歌词 + 右肖像）。
    */
-  lyricTheme: z.enum(['classic', 'fume', 'cadenza', 'partita', 'tilt', 'pendolo', 'monet', 'tempera', 'sonnet']),
+  lyricTheme: z.enum([
+    'classic',
+    'fume',
+    'cadenza',
+    'partita',
+    'tilt',
+    'pendolo',
+    'monet',
+    'tempera',
+    'sonnet',
+  ]),
   /** 歌词动效细调（字号 / 幅度 / 辉光 / 帧率上限……）；每个字段都真的改变画面。 */
   lyricTuning: LyricTuningSchema,
   /** 歌词来源档位（第五轮第 3 条）：`auto` = 按匹配率自动挑，其余值钉死某一个源。 */
@@ -869,6 +870,8 @@ export const SettingsSchema = z.object({
   edgeVignette: z.boolean(),
   /** 播放页的「雨窗」效果（主人本轮）；纯装饰层，默认开。 */
   rainWindow: z.boolean(),
+  /** 启动时的品牌开场动画（主人本轮）；只播一次，默认开。 */
+  startupIntro: z.boolean(),
   /** 点窗口关闭键时直接退出还是退到后台（主人本轮第 4 条）；见 `Settings.closeAction` 的注释。 */
   closeAction: z.enum(['quit', 'background']),
   /** 播放页自定义背景（主人本轮第 1 条）：`null` = 跟着当前歌曲的封面。 */
@@ -977,12 +980,12 @@ export type _SettingsOk = AssertAssignable<z.infer<typeof SettingsSchema>, Setti
 export type _SearchOk = AssertAssignable<z.infer<typeof SearchResultSchema>, SearchResult>;
 export type _AudioProbeOk = AssertAssignable<z.infer<typeof AudioProbeSchema>, AudioProbe>;
 export type _ResolvedAudioOk = AssertAssignable<z.infer<typeof ResolvedAudioSchema>, ResolvedAudio>;
-export type _ResolveAttemptOk = AssertAssignable<z.infer<typeof ResolveAttemptSchema>, ResolveAttempt>;
-export type _SourceStatusOk = AssertAssignable<z.infer<typeof SourceStatusSchema>, SourceStatus>;
-export type _LxPluginOk = AssertAssignable<
-  z.infer<typeof LxPluginSummarySchema>,
-  LxPluginSummary
+export type _ResolveAttemptOk = AssertAssignable<
+  z.infer<typeof ResolveAttemptSchema>,
+  ResolveAttempt
 >;
+export type _SourceStatusOk = AssertAssignable<z.infer<typeof SourceStatusSchema>, SourceStatus>;
+export type _LxPluginOk = AssertAssignable<z.infer<typeof LxPluginSummarySchema>, LxPluginSummary>;
 export type _QualityLogOk = AssertAssignable<
   z.infer<typeof QualityLogEntrySchema>,
   QualityLogEntry
@@ -1200,7 +1203,10 @@ export interface RouteMap {
   /** 轮询扫码状态；返回 803 时主进程已把 cookie 存好并广播 accountChanged。 */
   [CH.authQrCheck]: { input: z.input<typeof QrCheckRequestSchema>; output: QrLoginState };
   [CH.authLogout]: { input: void; output: AccountCapability };
-  [CH.libraryRecent]: { input: z.input<typeof PagedRequestSchema>; output: { tracks: PlayedTrack[] } };
+  [CH.libraryRecent]: {
+    input: z.input<typeof PagedRequestSchema>;
+    output: { tracks: PlayedTrack[] };
+  };
   [CH.libraryLiked]: { input: z.input<typeof PagedRequestSchema>; output: TrackPage };
   [CH.libraryMyPlaylists]: { input: void; output: { playlists: Playlist[] } };
   [CH.libraryRecommend]: { input: void; output: { tracks: Song[] } };
@@ -1405,7 +1411,10 @@ export const OUTPUT_SCHEMAS: Record<string, z.ZodType> = {
 
 /** preload 暴露到 `window.pi` 上的形状。 */
 export interface PreloadBridge {
-  invoke<K extends Channel>(channel: K, payload?: RouteMap[K]['input']): Promise<RouteMap[K]['output']>;
+  invoke<K extends Channel>(
+    channel: K,
+    payload?: RouteMap[K]['input'],
+  ): Promise<RouteMap[K]['output']>;
   /** 主进程 → 渲染进程的单向事件（播放状态、下载进度、登录态变更等）。 */
   on(event: EventName | string, listener: (payload: unknown) => void): () => void;
 }

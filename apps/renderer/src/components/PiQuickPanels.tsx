@@ -1,5 +1,5 @@
-﻿import { useEffect, useState } from 'react';
-import type { ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import type { CSSProperties, ReactNode, Ref } from 'react';
 import { QUALITY_LABEL, QUALITY_REQUIRES_VIP } from '@pi/shared';
 import type { LyricTheme, Quality, ThemeMode } from '@pi/shared';
 import { LYRIC_SOURCE_INFO } from '@pi/ipc';
@@ -75,6 +75,8 @@ export interface QuickPlaylistItem {
 export interface PiQuickPlaylistCardProps {
   items: readonly QuickPlaylistItem[];
   onDismiss?: () => void;
+  /** 父级已经进入退场拍；卡片只负责把 CSS 退场动画挂上。 */
+  leaving?: boolean;
   /** 卡片抬头，默认「去哪儿听」。 */
   title?: string;
 }
@@ -105,6 +107,8 @@ function QuickCardShell({
   caption,
   onDismiss,
   loading,
+  leaving,
+  cardRef,
   children,
 }: {
   kind: 'playlists' | 'settings';
@@ -112,10 +116,16 @@ function QuickCardShell({
   caption?: string;
   onDismiss?: () => void;
   loading?: boolean;
+  leaving?: boolean;
+  cardRef?: Ref<HTMLElement>;
   children: ReactNode;
 }): ReactNode {
   return (
-    <div className="pi-quick-layer" data-quick-layer={kind}>
+    <div
+      className="pi-quick-layer"
+      data-quick-layer={kind}
+      data-leaving={leaving ? 'true' : 'false'}
+    >
       <div
         className="pi-quick-layer__backdrop"
         data-quick-backdrop="true"
@@ -123,6 +133,7 @@ function QuickCardShell({
         role="presentation"
       />
       <section
+        ref={cardRef}
         className={`pi-quick-card pi-quick-card--${kind}`}
         data-quick-panel={kind}
         data-quick-panel-state={loading ? 'loading' : 'ready'}
@@ -162,6 +173,7 @@ function QuickCardShell({
 export function PiQuickPlaylistCard({
   items,
   onDismiss,
+  leaving,
   title = '去哪儿听',
 }: PiQuickPlaylistCardProps): ReactNode {
   useEscapeToDismiss(onDismiss);
@@ -172,6 +184,7 @@ export function PiQuickPlaylistCard({
       title={title}
       caption="上划选歌单 · 下划搜索 · 右划设置"
       onDismiss={onDismiss}
+      leaving={leaving}
     >
       <div className="pi-quick-grid">
         {items.map((item) => {
@@ -288,6 +301,8 @@ export interface PiQuickSettingsCardProps {
   /** 打开完整设置页（`useUi().openSettings()`）。 */
   onOpenSettings: () => void;
   onDismiss?: () => void;
+  /** 父级已经进入退场拍；卡片只负责把 CSS 退场动画挂上。 */
+  leaving?: boolean;
 }
 
 /**
@@ -308,8 +323,14 @@ export interface PiQuickSettingsCardProps {
 export function PiQuickSettingsCard({
   onOpenSettings,
   onDismiss,
+  leaving,
 }: PiQuickSettingsCardProps): ReactNode {
   useEscapeToDismiss(onDismiss);
+
+  const cardRef = useRef<HTMLElement | null>(null);
+  const pendingHeightRef = useRef<number | null>(null);
+  const heightTimerRef = useRef(0);
+  useEffect(() => () => window.clearTimeout(heightTimerRef.current), []);
 
   const settings = useSettings();
   const patch = usePatchSettings();
@@ -361,6 +382,60 @@ export function PiQuickSettingsCard({
    * `data-quick-quality-group` / `data-quick-more="account"` 这些冒烟抓手在任何分页下都找得到。
    */
   const [tab, setTab] = useState<QuickTab>('lyric');
+  /*
+   * 顶部四格是等宽的，所以选中块不用 JS 量 DOM：把下标交给 CSS，让一颗绝对定位的
+   * 「药丸」滑过去即可。这样切换时是**一块连续的表面在移动**，不是四颗按钮各自闪一下
+   * 背景色（EditHere 反馈 #1）。
+   */
+  const activeTabIndex = Math.max(
+    0,
+    QUICK_TABS.findIndex((entry) => entry.key === tab),
+  );
+
+  /*
+   * 卡片的 `height` 是内容撑出来的 auto，Chromium 这版的 `interpolate-size` 实测没把
+   * auto → auto 补间出来（反馈 #2）。所以这里用一次显式 FLIP：点击时记下旧高度，React
+   * 提交新分页后先钉回旧高度，下一帧再放到新高度，交给 CSS 的 height transition。
+   * 不使用 `getBoundingClientRect` 以外的状态，连续点击也能从当前动画高度接着走。
+   */
+  useLayoutEffect(() => {
+    const from = pendingHeightRef.current;
+    pendingHeightRef.current = null;
+    const card = cardRef.current;
+    if (!card || from === null) return;
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+
+    // 清掉上一轮可能残留的内联高度，量到新分页真正的 auto 高度。
+    card.style.transition = 'none';
+    card.style.height = '';
+    card.style.overflow = '';
+    const to = card.getBoundingClientRect().height;
+    if (Math.abs(to - from) < 1) {
+      card.style.transition = '';
+      return;
+    }
+
+    card.style.height = `${from}px`;
+    card.style.overflow = 'hidden';
+    // 强制一次 reflow，保证浏览器真的把「旧高度」当成过渡起点。
+    void card.offsetHeight;
+    card.style.transition = 'height 0.34s cubic-bezier(0.22, 1, 0.36, 1)';
+    card.style.height = `${to}px`;
+
+    window.clearTimeout(heightTimerRef.current);
+    heightTimerRef.current = window.setTimeout(() => {
+      card.style.height = '';
+      card.style.transition = '';
+      card.style.overflow = '';
+    }, 380);
+  }, [tab]);
+
+  const changeTab = (next: QuickTab): void => {
+    if (next === tab) return;
+    const card = cardRef.current;
+    pendingHeightRef.current = card ? card.getBoundingClientRect().height : null;
+    setTab(next);
+  };
   // 应用主色（用户第二十二轮第 2 条）：与设置页同一份 store，改哪边都一起变。
   const accentMode = useUi((state) => state.accentMode);
   const accentColor = useUi((state) => state.accentColor);
@@ -368,7 +443,14 @@ export function PiQuickSettingsCard({
   const setAccentColor = useUi((state) => state.setAccentColor);
 
   return (
-    <QuickCardShell kind="settings" title="快速设置" onDismiss={onDismiss} loading={!value}>
+    <QuickCardShell
+      kind="settings"
+      title="快速设置"
+      onDismiss={onDismiss}
+      loading={!value}
+      leaving={leaving}
+      cardRef={cardRef}
+    >
       {value ? (
         <div className="pi-quick-body">
           {/*
@@ -380,7 +462,13 @@ export function PiQuickSettingsCard({
             样式表里必须写 `.pi-quick-panel[hidden] { display: none }`：本文件给
             `.pi-quick-panel` 定了 `display: grid`，作者样式会盖掉浏览器默认的 `[hidden]`。
           */}
-          <div className="pi-quick-tabs" role="tablist" aria-label="快速设置分类">
+          <div
+            className="pi-quick-tabs"
+            role="tablist"
+            aria-label="快速设置分类"
+            style={{ '--pi-quick-tab-index': activeTabIndex } as CSSProperties}
+          >
+            <span className="pi-quick-tabs__pill" aria-hidden="true" />
             {QUICK_TABS.map((entry) => (
               <button
                 key={entry.key}
@@ -392,7 +480,7 @@ export function PiQuickSettingsCard({
                 aria-selected={tab === entry.key}
                 aria-label={entry.label}
                 title={entry.label}
-                onClick={() => setTab(entry.key)}
+                onClick={() => changeTab(entry.key)}
               >
                 <Icon name={entry.icon} size={18} />
               </button>

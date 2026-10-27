@@ -307,7 +307,14 @@ export type LyricSourceId = 'ncm' | 'amll' | 'qq' | 'kugou' | 'lrclib' | 'local'
  */
 export type LyricSourceMode = 'auto' | LyricSourceId;
 
-export const LYRIC_SOURCE_IDS: readonly LyricSourceId[] = ['ncm', 'amll', 'qq', 'kugou', 'lrclib', 'local'];
+export const LYRIC_SOURCE_IDS: readonly LyricSourceId[] = [
+  'ncm',
+  'amll',
+  'qq',
+  'kugou',
+  'lrclib',
+  'local',
+];
 
 export const LYRIC_SOURCE_MODE_LABEL: Readonly<Record<LyricSourceMode, string>> = {
   auto: '自动匹配',
@@ -469,15 +476,7 @@ export type ThemeMode = 'light' | 'dark' | 'system';
  * **只借鉴设计数值与做法（AGPL），不复制代码**。
  */
 export type LyricTheme =
-  | 'classic'
-  | 'fume'
-  | 'cadenza'
-  | 'partita'
-  | 'tilt'
-  | 'pendolo'
-  | 'monet'
-  | 'tempera'
-  | 'sonnet';
+  'classic' | 'fume' | 'cadenza' | 'partita' | 'tilt' | 'pendolo' | 'monet' | 'tempera' | 'sonnet';
 
 /**
  * 歌词动效的帧率上限档位。
@@ -675,6 +674,17 @@ export interface Settings {
    */
   rainWindow: boolean;
   /**
+   * 应用启动时的品牌开场动画（主人本轮：「在 app 启动时加入一个开场动画，可以在详情设置页里
+   * 开关」）。
+   *
+   * 只在**窗口第一次挂载**时播一次：从蓝色 π 标记、PI 字标到一句「正在打开你的音乐」，
+   * 约 1.4 秒后自己淡出；点击任意处 / 按任意键可以提前跳过。它盖在整个应用之上、
+   * 不接键盘焦点，播完就卸载，不影响后面的页面与浮层。
+   *
+   * 默认开；关掉之后启动时**不会出现任何开场层**。`prefers-reduced-motion` 下直接跳过。
+   */
+  startupIntro: boolean;
+  /**
    * 点窗口右上角那枚「关闭」时干什么（主人本轮第 4 条：「加入一个退出到后台的功能，
    * 可以在详情设置页选择退出是直接退出还是退出到后台」）。
    *
@@ -721,6 +731,8 @@ export const DEFAULT_SETTINGS: Settings = {
   edgeVignette: true,
   // 雨窗默认开：主人本轮点名要的播放页效果，装上就该看得见（设置 → 界面 → 播放页背景可关）。
   rainWindow: true,
+  // 开场动画默认开：第一次打开应用时先看到品牌；觉得拖沓可以在设置 → 界面里关。
+  startupIntro: true,
   // 关闭窗口默认「直接退出」：这是前几版的行为，新增的「退出到后台」要用户自己去设置页开。
   closeAction: 'quit',
   // 默认不用自定义背景：背景仍跟着当前这首歌的封面走。

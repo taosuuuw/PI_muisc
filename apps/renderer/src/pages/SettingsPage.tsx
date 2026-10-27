@@ -988,6 +988,34 @@ function UiTab(): ReactNode {
         </div>
 
         {/*
+          启动开场动画（主人本轮：「在 app 启动时加入一个开场动画，可以在详情设置页里开关」）。
+          和外观 / 雨窗一样放在顶部田字格里；字段是 `startupIntro`（`packages/shared` 的
+          `Settings`），默认开。关掉之后 `App` 里那个 `<StartupIntro />` 在设置读到的第一拍
+          就直接结束，不会先闪一下再消失。这一格的 hint 照样被田字格样式隐藏。
+        */}
+        <div className="pi-setting" data-startup-intro-setting="true">
+          <span>
+            <span
+              className="pi-setting__title"
+              title="应用启动时播放一次品牌开场：蓝底白 π、PI 字标，约 1.4 秒后淡出；点击任意处或按任意键可以跳过。只在窗口第一次打开时出现，不会在换页时重播。"
+            >
+              开场动画
+            </span>
+            <span className="pi-setting__hint">启动时播放一次，点击可跳过</span>
+          </span>
+          <Segmented
+            ariaLabel="开场动画"
+            value={value.startupIntro !== false ? 'on' : 'off'}
+            disabled={patch.isPending}
+            options={[
+              { value: 'on', label: '开' },
+              { value: 'off', label: '关' },
+            ]}
+            onChange={(next) => patch.mutate({ startupIntro: next === 'on' })}
+          />
+        </div>
+
+        {/*
           用户第五轮第 19 条：「这个开关直接去掉，默认硬件」。
           所以这里**没有开关**了，只留一行**状态**：平时是一句很轻的「当前用硬件加速」，
           真被自动降级成软件渲染时才变红——那种情况下用户得知道「卡」是因为什么。

@@ -90,11 +90,14 @@ export function HomePage(): ReactNode {
 
   /*
    * 「雨窗」效果（主人本轮）：设置 → 界面 → 播放页背景里那枚开关，字段是 `rainWindow`。
-   * 默认**开**（用户先提出来要这个效果），所以设置还没读回来时也按开算 —— 按关算的话，
-   * 进页第一秒会先没有雨、等查询回来再忽然下一场，那种闪一下比一直开着更扎眼。
-   * 它只是一层装饰层，关掉之后播放页与之前**一个像素都不差**。
+   *
+   * 这里**不能**在设置没读回来时按「开」算。开场遮罩通常盖住前 1.4 秒；如果设置还在路上，
+   * 按开算会先把雨画出来，等开场一结束、设置恰好回来是「关」，雨再被撤掉——就是
+   * 「关闭雨窗后，开场结束会闪一下雨窗」的那一帧。装饰层宁可晚一拍出现，也不要在
+   * 用户明确关掉时闪。设置到了再按真实值决定。
    */
-  const rainWindow = useSettings().data?.rainWindow ?? true;
+  const settingsQuery = useSettings();
+  const rainWindow = settingsQuery.data !== undefined && settingsQuery.data.rainWindow !== false;
 
   /**
    * 第十六轮第 3 条（用户 m07538）：「去掉切换歌曲的小名片，替代为显示播放页左下角的歌曲名片」。
@@ -946,6 +949,8 @@ function clock(ms: number): string {
  *   `state='unavailable'` 并在卡上写清，不假装点得出歌来；
  * - 播放列表 → `SongListOverlay` 的 `kind: 'queue'`（当前播放队列，真数据）。
  */
+const QUICK_PANEL_LEAVE_MS = 220;
+
 function QuickDock(): ReactNode {
   const quickPos = useUi((s) => s.quickPos);
   const quickPanel = useUi((s) => s.quickPanel);
@@ -974,12 +979,29 @@ function QuickDock(): ReactNode {
    */
   const [orbLeaving, setOrbLeaving] = useState(false);
   const leaveTimerRef = useRef(0);
+
+  /*
+   * 卡片退场：关闭键 / 背板 / Esc / 右划关闭都先挂 `data-leaving`，让卡片播完
+   * 220ms 的缩小淡出再真正卸载；「详细设置」也先退场，再打开完整设置页。
+   * 和球一样是「状态 + 计时器」两拍，CSS 只负责动画。
+   */
+  const [panelLeaving, setPanelLeaving] = useState(false);
+  const panelTimerRef = useRef(0);
+  const panelAfterRef = useRef<(() => void) | null>(null);
+  useEffect(() => () => window.clearTimeout(panelTimerRef.current), []);
+
   // 每次新的按下（`summonQuick` 每次都新建一个 quickPos 对象）都把上一拍的收起复位，
-  // 免得上一颗球的计时器把新球也顺手收掉；卸载时同样清干净。
+  // 免得上一颗球/上一张卡的计时器把新对象也顺手收掉；卸载时同样清干净。
   useEffect(() => {
     setOrbLeaving(false);
     window.clearTimeout(leaveTimerRef.current);
     leaveTimerRef.current = 0;
+    if (quickPos) {
+      setPanelLeaving(false);
+      window.clearTimeout(panelTimerRef.current);
+      panelTimerRef.current = 0;
+      panelAfterRef.current = null;
+    }
     return () => window.clearTimeout(leaveTimerRef.current);
   }, [quickPos]);
 
@@ -999,30 +1021,66 @@ function QuickDock(): ReactNode {
     }, QUICK_ORB_LEAVE_MS);
   };
 
-  /** 全部收回：卡片关掉、键也收回去（点背板 / 点关闭 / 划开搜索都走它）。 */
-  const dismiss = (): void => {
+  /** 真正把卡片/球摘掉；播完退场或用户要求立即关时走这里。 */
+  const finishDismiss = (): void => {
+    window.clearTimeout(panelTimerRef.current);
+    panelTimerRef.current = 0;
     setQuickPanel('none');
     setQuickPos(null);
+    setPanelLeaving(false);
+    const after = panelAfterRef.current;
+    panelAfterRef.current = null;
+    after?.();
+  };
+
+  /**
+   * 全部收回：卡片先播退场，220ms 后再关掉、键也收回去。
+   * `after` 用来接「详细设置」这种退场后还要开别的页面的动作。
+   */
+  const dismiss = (after?: () => void): void => {
+    if (after) panelAfterRef.current = after;
+    if (quickPanel === 'none' || window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      finishDismiss();
+      return;
+    }
+    if (panelLeaving) return;
+    setPanelLeaving(true);
+    window.clearTimeout(panelTimerRef.current);
+    panelTimerRef.current = window.setTimeout(finishDismiss, QUICK_PANEL_LEAVE_MS);
+  };
+
+  /** 跳页/搜索这种要立刻换场的路径：不播退场，直接收。 */
+  const dismissNow = (): void => {
+    panelAfterRef.current = null;
+    finishDismiss();
   };
 
   const onSwipe = (direction: QuickSwipeDirection): void => {
     switch (direction) {
       case 'up':
-        setQuickPanel(quickPanel === 'collections' ? 'none' : 'collections');
+        if (quickPanel === 'collections') {
+          dismiss();
+        } else {
+          setQuickPanel('collections');
+        }
         return;
       case 'down':
-        dismiss();
+        dismissNow();
         openSearch();
         return;
       case 'right':
-        setQuickPanel(quickPanel === 'settings' ? 'none' : 'settings');
+        if (quickPanel === 'settings') {
+          dismiss();
+        } else {
+          setQuickPanel('settings');
+        }
         return;
       // 第十七轮第 1 条：左划不再是「没有对应卡片」的空动作——它是**平凡 / 先锋**两套
       // 排版的切换开关（用户原话：「圆球向左拖动实现平凡/先锋两种风格的切换」）。
       // 划完把球与卡片一起收回：风格已经换掉，视觉上应当立刻看到新排版。
       case 'left':
         toggleUiStyle();
-        dismiss();
+        dismissNow();
         return;
       default:
         return;
@@ -1030,7 +1088,7 @@ function QuickDock(): ReactNode {
   };
 
   const go = (id: NavId) => (): void => {
-    dismiss();
+    dismissNow();
     navigate(id);
   };
 
@@ -1097,15 +1155,13 @@ function QuickDock(): ReactNode {
         />
       )}
       {quickPanel === 'collections' ? (
-        <PiQuickPlaylistCard items={items} onDismiss={dismiss} />
+        <PiQuickPlaylistCard items={items} onDismiss={dismiss} leaving={panelLeaving} />
       ) : null}
       {quickPanel === 'settings' ? (
         <PiQuickSettingsCard
-          onOpenSettings={() => {
-            dismiss();
-            openSettings();
-          }}
+          onOpenSettings={() => dismiss(() => openSettings())}
           onDismiss={dismiss}
+          leaving={panelLeaving}
         />
       ) : null}
     </>
@@ -1434,8 +1490,7 @@ function Lyrics({
    */
   if (
     !query.isPending &&
-    (allowLyriclessStage ||
-      (!query.isError && query.data?.hasLyric === true && lines.length > 0))
+    (allowLyriclessStage || (!query.isError && query.data?.hasLyric === true && lines.length > 0))
   ) {
     /*
      * 封面与元信息：**莫奈**（`monet`）的右列肖像、**时计**（`pendolo`）的表盘封面都吃 `coverUrl`，

@@ -64,6 +64,11 @@
   backdrop-filter: var(--pi-glass-blur-strong);
   -webkit-backdrop-filter: var(--pi-glass-blur-strong);
   box-shadow: var(--pi-glass-highlight), var(--pi-glass-shadow);
+  /*
+   * 四个 tab 的内容高度不一样。真正把 auto 高度补间起来的是组件里的 FLIP
+   * （`PiQuickPanels.tsx` 的 useLayoutEffect）；这里只提供过渡曲线。
+   */
+  transition: height 0.34s cubic-bezier(0.22, 1, 0.36, 1);
   animation: pi-quick-card-in 0.26s cubic-bezier(0.34, 1.4, 0.64, 1);
 }
 
@@ -86,6 +91,38 @@
   to {
     opacity: 1;
     transform: translateY(0) scale(1);
+  }
+}
+
+/*
+ * 退场由 `QuickDock` 先挂 `data-leaving`，220ms 后才卸载（`QUICK_PANEL_LEAVE_MS`）。
+ * 和入场反着来：缩一点、往下沉一点、淡出；背板同时淡掉。指针立刻失效，避免退场期间
+ * 还能点到卡片里的按钮。
+ */
+.pi-quick-layer[data-leaving='true'] .pi-quick-card {
+  animation: pi-quick-card-out 0.22s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+  pointer-events: none;
+}
+
+.pi-quick-layer[data-leaving='true'] .pi-quick-layer__backdrop {
+  animation: pi-quick-fade-out 0.18s ease forwards;
+  pointer-events: none;
+}
+
+@keyframes pi-quick-card-out {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(10px) scale(0.96);
+  }
+}
+
+@keyframes pi-quick-fade-out {
+  to {
+    opacity: 0;
   }
 }
 
@@ -287,6 +324,8 @@
 
 /* 分页栏：一条浅底药丸轨道 + 四颗等宽图标键（图标只给 `size={18}` 的一枚 `<svg>`）。 */
 .pi-quick-tabs {
+  position: relative;
+  isolation: isolate;
   display: flex;
   gap: 4px;
   padding: 4px;
@@ -295,7 +334,31 @@
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--pi-text) 5%, transparent);
 }
 
+/*
+ * 一颗**连续**的选中药丸：绝对定位在轨道里，按 `--pi-quick-tab-index` 平移。
+ * 四颗按钮等宽（flex: 1 1 0，间隙 4px），所以位移 = 下标 ×（自身宽 + 4px）。
+ * 用带回弹的 cubic-bezier，切换时先冲过去一点再收住，是反馈 #1 里要的「灵动」。
+ */
+.pi-quick-tabs__pill {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  left: 4px;
+  z-index: 0;
+  width: calc((100% - 20px) / 4);
+  border: 1px solid color-mix(in srgb, var(--pi-text) 8%, transparent);
+  border-radius: 999px;
+  background: var(--pi-surface);
+  box-shadow: var(--pi-shadow-card);
+  pointer-events: none;
+  transform: translateX(calc(var(--pi-quick-tab-index, 0) * (100% + 4px)));
+  transition: transform 0.42s cubic-bezier(0.34, 1.56, 0.64, 1);
+  will-change: transform;
+}
+
 .pi-quick-tab {
+  position: relative;
+  z-index: 1;
   flex: 1 1 0;
   display: grid;
   place-items: center;
@@ -308,20 +371,44 @@
   cursor: pointer;
   transition:
     color 0.16s ease,
-    background 0.16s ease,
-    box-shadow 0.16s ease;
+    transform 0.14s ease;
 }
 
-.pi-quick-tab:hover {
+.pi-quick-tab:hover:not([data-active='true']) {
   color: var(--pi-text);
   background: color-mix(in srgb, var(--pi-surface) 55%, transparent);
 }
 
 .pi-quick-tab[data-active='true'] {
-  border-color: color-mix(in srgb, var(--pi-text) 8%, transparent);
-  background: var(--pi-surface);
+  border-color: transparent;
+  background: transparent;
   color: var(--pi-primary-deep);
-  box-shadow: var(--pi-shadow-card);
+  box-shadow: none;
+}
+
+/* 按下时图标回缩一下，松手弹回；选中态那一颗另有一段「跳一下」的入场。 */
+.pi-quick-tab:active > svg {
+  transform: scale(0.86);
+}
+
+.pi-quick-tab > svg {
+  transition: transform 0.16s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.pi-quick-tab[data-active='true'] > svg {
+  animation: pi-quick-tab-icon-pop 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@keyframes pi-quick-tab-icon-pop {
+  0% {
+    transform: scale(0.82) translateY(1px);
+  }
+  62% {
+    transform: scale(1.12) translateY(-1px);
+  }
+  100% {
+    transform: scale(1) translateY(0);
+  }
 }
 
 /*
@@ -335,6 +422,22 @@
 .pi-quick-panel {
   display: grid;
   gap: 8px;
+}
+
+/* 新分页淡入并轻轻浮上来；配合卡片的 height 过渡，切换不是「啪」地换一页。 */
+.pi-quick-panel[data-active='true'] {
+  animation: pi-quick-panel-switch 0.3s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes pi-quick-panel-switch {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.988);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 
 /* 标题行：**浅色小字** + 右侧当前值（原来是 13px/600 的深色黑体标题）。 */
@@ -370,10 +473,13 @@
 }
 
 .pi-quick-choice {
+  position: relative;
   display: grid;
   justify-items: center;
   gap: 6px;
   padding: 12px 6px 10px;
+  overflow: hidden;
+  isolation: isolate;
   border: 1px solid transparent;
   border-radius: 16px;
   /* 半透明软底：卡片本身已经是磨砂玻璃，方块用「更亮一点的玻璃」把层次叠出来。 */
@@ -388,9 +494,37 @@
     transform 0.16s ease;
 }
 
+/* 选中时从中心扩出去的一团主色光晕；只碰 opacity/transform，不触发布局。 */
+.pi-quick-choice::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  border-radius: inherit;
+  background: radial-gradient(
+    circle at 50% 38%,
+    color-mix(in srgb, var(--pi-primary) 34%, transparent) 0%,
+    transparent 66%
+  );
+  opacity: 0;
+  transform: scale(0.45);
+  pointer-events: none;
+}
+
+.pi-quick-choice > * {
+  position: relative;
+  z-index: 1;
+}
+
 .pi-quick-choice:hover {
   transform: translateY(-1px);
   background: var(--pi-primary-weak);
+}
+
+/* 按下就先给一点触感；真正的回弹在 data-active 变成 true 时播放。 */
+.pi-quick-choice:not(:disabled):active {
+  transform: scale(0.96);
+  transition-duration: 0.08s;
 }
 
 .pi-quick-choice[data-active='true'] {
@@ -398,6 +532,72 @@
   background: var(--pi-primary-weak);
   color: var(--pi-primary-deep);
   box-shadow: var(--pi-shadow-card);
+  animation: pi-quick-choice-pop 0.46s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.pi-quick-choice[data-active='true']::after {
+  animation: pi-quick-choice-bloom 0.62s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.pi-quick-choice[data-active='true'] .pi-quick-choice__icon {
+  background: color-mix(in srgb, var(--pi-primary) 16%, var(--pi-surface));
+  animation: pi-quick-choice-icon 0.52s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.pi-quick-choice[data-active='true'] .pi-quick-choice__text {
+  animation: pi-quick-choice-text 0.4s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes pi-quick-choice-pop {
+  0% {
+    transform: scale(0.94);
+  }
+  42% {
+    transform: scale(1.045);
+  }
+  72% {
+    transform: scale(0.992);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes pi-quick-choice-bloom {
+  0% {
+    opacity: 0.55;
+    transform: scale(0.45);
+  }
+  55% {
+    opacity: 0.28;
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.2);
+  }
+}
+
+@keyframes pi-quick-choice-icon {
+  0% {
+    transform: translateY(2px) scale(0.72) rotate(-8deg);
+  }
+  55% {
+    transform: translateY(-2px) scale(1.14) rotate(3deg);
+  }
+  100% {
+    transform: translateY(0) scale(1) rotate(0deg);
+  }
+}
+
+@keyframes pi-quick-choice-text {
+  from {
+    opacity: 0.35;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .pi-quick-choice:disabled {
@@ -502,8 +702,23 @@
   .pi-quick-card,
   .pi-quick-layer__backdrop {
     animation: none;
+    transition: none;
+  }
+  .pi-quick-tabs__pill {
+    transition: none;
+  }
+  .pi-quick-tab > svg,
+  .pi-quick-panel[data-active='true'] {
+    animation: none;
+    transition: none;
   }
   .pi-quick-item:hover {
     transform: none;
+  }
+  .pi-quick-choice,
+  .pi-quick-choice::after,
+  .pi-quick-choice > * {
+    animation: none;
+    transition: none;
   }
 }

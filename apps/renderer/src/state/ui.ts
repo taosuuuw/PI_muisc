@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import type { Playlist } from '@pi/shared';
-import { DEFAULT_ACCENT_COLOR, parseHexColor, type AccentMode } from '../lib/accent';
+import { persistAccent, readStoredAccent, type AccentMode } from '../lib/accent';
 import type { Point } from '../lib/drag-snap';
 import type { NavId } from '../components/NavDrawer';
 
@@ -181,47 +181,10 @@ export function markOnboarded(): void {
  * 应用主题色（用户第二十一轮第 5 条）也存本机：`pi.accent`，内容是
  * `{"mode":"sky|mono|custom","color":"#rrggbb"}`。
  *
- * 和 `uiStyle` 同一个道理（见上面那段注释）：为一个纯前端的配色偏好去扩 `packages/ipc`
- * 的通道与主进程的 patch 白名单不划算。真正把它变成 CSS 变量的是 `App.tsx` 的 `useAccent`，
- * 换算函数在 `lib/accent.ts`。
+ * 和 `uiStyle` 同一个道理：为一个纯前端的配色偏好去扩 `packages/ipc`
+ * 的通道与主进程的 patch 白名单不划算。读取 / 写入 / 首帧落色都在 `lib/accent.ts`，
+ * 这里只把它接进 zustand。
  */
-export interface AccentPrefs {
-  mode: AccentMode;
-  /** 自定义档的颜色；`sky` / `mono` 两档不读它，但仍然留着（切回去还在）。 */
-  color: string;
-}
-
-const ACCENT_KEY = 'pi.accent';
-
-function readStoredAccent(): AccentPrefs {
-  const fallback: AccentPrefs = { mode: 'sky', color: DEFAULT_ACCENT_COLOR };
-  if (typeof window === 'undefined') return fallback;
-  try {
-    const raw = window.localStorage.getItem(ACCENT_KEY);
-    if (raw === null) return fallback;
-    const parsed: unknown = JSON.parse(raw);
-    if (typeof parsed !== 'object' || parsed === null) return fallback;
-    const record = parsed as { mode?: unknown; color?: unknown };
-    const mode: AccentMode =
-      record.mode === 'mono' || record.mode === 'custom' ? record.mode : 'sky';
-    const color =
-      typeof record.color === 'string' && parseHexColor(record.color) !== null
-        ? record.color
-        : DEFAULT_ACCENT_COLOR;
-    return { mode, color };
-  } catch {
-    return fallback;
-  }
-}
-
-function persistAccent(prefs: AccentPrefs): void {
-  try {
-    window.localStorage.setItem(ACCENT_KEY, JSON.stringify(prefs));
-  } catch {
-    /* 同 uiStyle：写不进去也不该崩 */
-  }
-}
-
 interface UiState {
   loginOpen: boolean;
   openLogin: () => void;

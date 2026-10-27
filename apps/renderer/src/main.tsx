@@ -4,6 +4,8 @@ import { QueryClientProvider } from '@tanstack/react-query';
 import { App } from './App';
 import { getBridge } from './bridge';
 import { queryClient } from './lib/query-client';
+import { applyCachedTheme } from './lib/theme-cache';
+import { applyCachedAccent } from './lib/accent';
 import './styles/tokens.css';
 import './styles/global.css';
 import './styles/search-overlay.css';
@@ -68,12 +70,16 @@ if (!getBridge()) {
     <div className="pi-fatal">
       <h1>预加载桥不可用</h1>
       <p>
-        preload 脚本没有加载成功，渲染进程拿不到任何数据通道。
-        请检查 <code>apps/desktop/out/preload.cjs</code> 是否存在（重新构建一次通常就好了）。
+        preload 脚本没有加载成功，渲染进程拿不到任何数据通道。 请检查{' '}
+        <code>apps/desktop/out/preload.cjs</code> 是否存在（重新构建一次通常就好了）。
       </p>
     </div>,
   );
 } else {
+  // 首帧先把上次已知的明暗铺上，别让深色用户先看到一帧白（开场动画会放大这一下）。
+  applyCachedTheme();
+  // 主色也要首帧就位：π 的渐变色读 `--pi-primary`，晚一拍就会“最后变色”。
+  applyCachedAccent();
   createRoot(container).render(
     <StrictMode>
       <QueryClientProvider client={queryClient}>

@@ -185,3 +185,91 @@ export function customAccentTokens(color: string, dark: boolean): AccentTokens {
     onPrimary: onPrimaryFor(rgb),
   };
 }
+
+/* ------------------------------------------------------------------ *
+ * 主色首帧缓存
+ *
+ * 主色和明暗一样存在本机（`pi.accent`），但 `useAccent` 是在 React 挂载后的 effect 里
+ * 才把 `data-accent` / 自定义变量写到 `<html>` 上的。开场动画第一帧已经用默认天蓝画了 π，
+ * 等 effect 跑完再切成本地设置的黑白/自定义色，看起来就是「π 最后变了个颜色」。
+ *
+ * 下面这组函数让 `main.tsx` 在 React 挂载前同步把主色铺好，`useAccent` 之后只做同值复核。
+ * 缓存只影响首帧；真正的设置仍以 UI store / 用户当前操作为准。
+ * ------------------------------------------------------------------ */
+
+export const ACCENT_STORAGE_KEY = 'pi.accent';
+
+export interface AccentPrefs {
+  mode: AccentMode;
+  /** 自定义档的颜色；`sky` / `mono` 两档不读它，但仍然留着（切回去还在）。 */
+  color: string;
+}
+
+export function readStoredAccent(): AccentPrefs {
+  const fallback: AccentPrefs = { mode: 'sky', color: DEFAULT_ACCENT_COLOR };
+  if (typeof window === 'undefined') return fallback;
+  try {
+    const raw = window.localStorage.getItem(ACCENT_STORAGE_KEY);
+    if (raw === null) return fallback;
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== 'object' || parsed === null) return fallback;
+    const record = parsed as { mode?: unknown; color?: unknown };
+    const mode: AccentMode =
+      record.mode === 'mono' || record.mode === 'custom' ? record.mode : 'sky';
+    const color =
+      typeof record.color === 'string' && parseHexColor(record.color) !== null
+        ? record.color
+        : DEFAULT_ACCENT_COLOR;
+    return { mode, color };
+  } catch {
+    return fallback;
+  }
+}
+
+export function persistAccent(prefs: AccentPrefs): void {
+  try {
+    window.localStorage.setItem(ACCENT_STORAGE_KEY, JSON.stringify(prefs));
+  } catch {
+    /* 同 uiStyle：写不进去也不该崩 */
+  }
+}
+
+const ACCENT_TOKEN_KEYS = [
+  '--pi-primary',
+  '--pi-primary-hover',
+  '--pi-primary-weak',
+  '--pi-primary-deep',
+  '--pi-on-primary',
+] as const;
+
+/** 把一档主色落到 `<html>` 上；启动首帧和 `useAccent` 共用这一份逻辑。 */
+export function applyAccentToRoot(
+  root: HTMLElement,
+  mode: AccentMode,
+  color: string,
+  dark: boolean,
+): void {
+  root.dataset.accent = mode;
+  if (mode !== 'custom') {
+    // 非自定义档：把上一轮留下的内联值全部撤掉，让 tokens.css 的分档接手。
+    for (const key of ACCENT_TOKEN_KEYS) root.style.removeProperty(key);
+    return;
+  }
+  const tokens = customAccentTokens(color, dark);
+  root.style.setProperty('--pi-primary', tokens.primary);
+  root.style.setProperty('--pi-primary-hover', tokens.hover);
+  root.style.setProperty('--pi-primary-weak', tokens.weak);
+  root.style.setProperty('--pi-primary-deep', tokens.deep);
+  root.style.setProperty('--pi-on-primary', tokens.onPrimary);
+}
+
+/** React 挂载前调用：先把上次已知的主色铺上，避免开场第一帧先蓝后黑。 */
+export function applyCachedAccent(): void {
+  const prefs = readStoredAccent();
+  applyAccentToRoot(
+    document.documentElement,
+    prefs.mode,
+    prefs.color,
+    document.documentElement.dataset.theme === 'dark',
+  );
+}

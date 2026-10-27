@@ -115,7 +115,9 @@
 }
 
 .pi-immersive[data-scheme='light'] .pi-immersive__cover {
-  filter: blur(3px) saturate(1.04) brightness(1.06);
+  /* 浅色档原来提亮 1.06，再把 34% 白 wash 叠上去，封面会被洗成一张白纸；
+     现在保留一点原色，只做轻微提亮，颜色交给下面的浅色洗染。 */
+  filter: blur(3px) saturate(1.03) brightness(1);
 }
 
 .pi-immersive[data-scheme='dark'] .pi-immersive__cover {
@@ -152,6 +154,14 @@
   opacity: 0.34;
   /* 换歌时颜色 1s 过渡过去（取色是异步的，先中性色后主题色，这一步负责「不闪」）。 */
   transition: background-color 1s linear;
+}
+
+/*
+ * 浅色档的洗染比暗档更轻：底色本身已经是近白，再叠 34% 白会把封面洗得没有颜色，
+ * 卡片与进度条也跟着糊在背景里。只留一层很淡的雾，让封面保留一点本来色相。
+ */
+.pi-immersive[data-scheme='light'] .pi-immersive__wash {
+  opacity: 0.2;
 }
 
 /* ---- 第 3 层：逐句情绪光晕（用户第 9 轮第 5 条） ---- */
@@ -325,6 +335,23 @@
 }
 
 /*
+ * 浅色档的歌词纱：不再用「中心一团高光 + 四周透明」的径向渐变。那种写法会把中间
+ * 提得很亮、右边却回到封面原色，看起来像一盏聚光灯打在画面正中（EditHere 反馈）。
+ *
+ * 现在改成**纯横向渐变**：左 26%、中 44%、右 50%。亮度从左往右平缓抬起，
+ * 不再有中间高光，右边也不会突然暗下去；中心的 44% 浅灰仍够托住深色歌词。
+ * 颜色用界面自己的 `--pi-bg-subtle`，和纯白 `--pi-surface` 拉开一点层次。
+ */
+.pi-immersive[data-scheme='light'] .pi-immersive__lyric-veil {
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--pi-bg-subtle) 26%, transparent) 0%,
+    color-mix(in srgb, var(--pi-bg-subtle) 44%, transparent) 50%,
+    color-mix(in srgb, var(--pi-bg-subtle) 50%, transparent) 100%
+  );
+}
+
+/*
  * 用户本轮第 2 条（贴的图 2）：暗色模式下**不要**「中间一个黑团 + 外面一圈光环」，
  * 整体变暗就行。
  *
@@ -447,6 +474,14 @@
   inset: 0;
   /* 0.6 → 0.5、起始 40% → 42%：封面要「看得见」，四角再压那么重会把它吃掉。 */
   background: radial-gradient(circle, transparent 42%, rgba(0, 0, 0, 0.5) 100%);
+}
+
+/*
+ * 浅色档不再压暗角：横向纱已经从左边 26% 抬到右边 50%，四角再压一圈黑只会把右边
+ * 重新压灰，和反馈里「右边偏暗」是同一个问题。暗档仍然保留 0.5 的暗角。
+ */
+.pi-immersive[data-scheme='light'] .pi-immersive__vignette {
+  background: none;
 }
 
 /* ---- 第 7 层：侧光（用户第二十一轮第 4 条） ---- */
