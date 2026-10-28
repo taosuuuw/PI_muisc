@@ -702,6 +702,16 @@ export interface Settings {
    * 字段与裁切语义见 `PlayerBackground` 的注释。
    */
   playerBackground: PlayerBackground | null;
+  /**
+   * 歌曲之间的过渡方式（`docs/PLAN-AUTOMIX.md` 的 P1 档）。
+   *
+   * - `fade`（默认）：切歌 / 暂停 / 恢复时对播放增益做淡入淡出，歌尾提前淡出；
+   * - `off`：关掉，行为与加这个开关之前完全一致（硬切）。
+   *
+   * 这一档**不重叠两首歌**，只解决「啪一下断」；Crossfade 与 AutoMix 是后续阶段，
+   * 到时候会在这里扩成更多档位（`'off' | 'fade' | 'crossfade' | 'automix'`）。
+   */
+  songTransition: 'off' | 'fade';
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -737,6 +747,8 @@ export const DEFAULT_SETTINGS: Settings = {
   closeAction: 'quit',
   // 默认不用自定义背景：背景仍跟着当前这首歌的封面走。
   playerBackground: null,
+  // 歌曲过渡默认开「淡变」：这是 P1 的交付物，装上就该听得出来；不喜欢可以在设置里关。
+  songTransition: 'fade',
 };
 
 /**

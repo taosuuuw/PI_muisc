@@ -1016,6 +1016,33 @@ function UiTab(): ReactNode {
         </div>
 
         {/*
+          歌曲过渡（`docs/PLAN-AUTOMIX.md` 的 P1 档）：切歌 / 暂停 / 恢复时对增益做淡入淡出，
+          歌尾提前淡出。默认开；关掉之后行为与加这一项之前完全一致（硬切）。
+          字段是 `songTransition`（`packages/shared` 的 `Settings`）。
+        */}
+        <div className="pi-setting" data-song-transition-setting="true">
+          <span>
+            <span
+              className="pi-setting__title"
+              title="切歌、暂停、恢复时对声音做淡入淡出，歌尾也会提前淡出，避免「啪」的一下断掉。关掉之后是硬切，与以前一样。"
+            >
+              自动过渡
+            </span>
+            <span className="pi-setting__hint">切歌与暂停不再硬断</span>
+          </span>
+          <Segmented
+            ariaLabel="自动过渡"
+            value={value.songTransition === 'off' ? 'off' : 'fade'}
+            disabled={patch.isPending}
+            options={[
+              { value: 'fade', label: '淡变' },
+              { value: 'off', label: '关' },
+            ]}
+            onChange={(next) => patch.mutate({ songTransition: next === 'off' ? 'off' : 'fade' })}
+          />
+        </div>
+
+        {/*
           用户第五轮第 19 条：「这个开关直接去掉，默认硬件」。
           所以这里**没有开关**了，只留一行**状态**：平时是一句很轻的「当前用硬件加速」，
           真被自动降级成软件渲染时才变红——那种情况下用户得知道「卡」是因为什么。

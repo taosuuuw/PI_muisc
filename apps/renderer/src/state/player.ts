@@ -25,6 +25,19 @@ import type {
 type LyricSourceMode = Settings['lyricSource'];
 import { CH, errorMessage, invoke } from '../bridge';
 import { applyVolume, getAudio } from '../lib/audio-engine';
+import {
+  CUT_FADE_MS,
+  FADE_IN_MS,
+  FADE_OUT_MS,
+  PAUSE_FADE_MS,
+  ensureGraph,
+  fadeIn,
+  fadeOut,
+  isGraphReady,
+  resetFade,
+  resumeGraph,
+  shouldStartTailFade,
+} from '../lib/transition/fade-graph';
 import { LYRIC_GATE_MS, isLyricPending, prefetchLyric } from '../lib/lyric-prefetch';
 import { useNowPlaying } from './nowPlaying';
 
@@ -69,6 +82,8 @@ interface PlayerState {
   loadingGate: boolean;
   /** 当前生效的歌词源档位（`hydrate` 时从设置里抄一份）：预取歌词要用它拼缓存键。 */
   lyricMode: LyricSourceMode;
+  /** 当前生效的歌曲过渡档位（`hydrate` 时从设置里抄一份）：`off` 时一切行为退回硬切。 */
+  songTransition: 'off' | 'fade';
   /** 本轮被判过「不可播」的歌曲 id，避免反复重试同一首。 */
   unplayable: number[];
   positionMs: number;
@@ -128,6 +143,13 @@ let volumeTimer: ReturnType<typeof setTimeout> | undefined;
 let clockArmed = false;
 
 /**
+ * 歌尾淡出是不是已经为当前这一遍播放点过火了。
+ *
+ * 每首歌只该淡出一次：切歌、恢复播放、seek 之后都要把它放回 false，下一次才会重新计时。
+ */
+let tailFadeArmed = false;
+
+/**
  * 判定「播放位置已经在结尾」的容差（毫秒）。
  *
  * `<audio>` 的 `timeupdate` 与 `ended` 之间、以及 duration 的取整都会有几毫秒的出入，
@@ -176,6 +198,14 @@ function waitForLyric(
 }
 
 async function playElement(): Promise<void> {
+  /*
+   * 先把 Web Audio 图接上：`createMediaElementSource` 一旦建立，元素的输出就**只走这张图**，
+   * 所以必须同时确认 context 在跑（否则播放器会静音）。`ensureGraph` 在纯 Node 单测里返回
+   * undefined，`resumeGraph` 也随之变成 no-op，不会碰真实音频设备。
+   */
+  ensureGraph(getAudio());
+  const running = await resumeGraph();
+  if (!running) console.warn('[pi/transition] 音频图停在 suspended，这次播放可能没有声音');
   try {
     await getAudio().play();
   } catch (error) {
@@ -199,7 +229,19 @@ export const usePlayer = create<PlayerState>((set, get) => {
      * 它触发的 `pause` 事件不会把状态写成 `paused`：本函数紧接着就把状态置成 `resolving`，
      * 而 `reportPlaying()` 只认 `playing` ↔ `paused` 两态（见文件末尾）。
      */
-    getAudio().pause();
+    const element = getAudio();
+    /*
+     * 手动切歌先收个尾（90ms）：直接 `pause()` 是在波形中间硬停，听感上就是「啪」一下。
+     * 自动切歌（`ended` 之后走到这里）元素已经 paused，不会多等这一下。
+     *
+     * 只有音频图真的存在时才 `await`：纯 Node 单测里没有 AudioContext，`fadeOut` 是个
+     * 即时 resolve 的空操作，但 `await` 本身会让出微任务——那会破坏下面这条既有契约
+     * 「`pause()` 发生在任何 `await` 之前」，也让人以为代码变慢了。
+     */
+    if (get().songTransition === 'fade' && isGraphReady() && !element.paused) {
+      await fadeOut(CUT_FADE_MS);
+    }
+    element.pause();
     const state = get();
     const id = currentId(state.queue);
     const song = id === undefined ? undefined : state.songs[id];
@@ -260,7 +302,6 @@ export const usePlayer = create<PlayerState>((set, get) => {
         return;
       }
 
-      const element = getAudio();
       element.src = result.src;
       // 元素从这一刻起指的是这一首，之后的 timeupdate 才属于它。
       clockArmed = true;
@@ -268,6 +309,9 @@ export const usePlayer = create<PlayerState>((set, get) => {
       set({ src: result.src, audio: result.audio, status: 'playing', notice: null, loadingGate: false });
       skipGuard = 0;
       await playElement();
+      // 新歌从静音升到满幅：这是 P1「不硬切」的另一半（收尾淡出 + 起头淡入）。
+      if (get().songTransition === 'fade') fadeIn(FADE_IN_MS);
+      tailFadeArmed = false;
     } catch (error) {
       set({ status: 'error', error: errorMessage(error), loadingGate: false });
     }
@@ -301,6 +345,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
     notice: null,
     loadingGate: false,
     lyricMode: 'auto',
+    songTransition: 'fade',
     unplayable: [],
     positionMs: 0,
     durationMs: 0,
@@ -311,7 +356,13 @@ export const usePlayer = create<PlayerState>((set, get) => {
     hydrate: (settings) => {
       applyVolume(settings.volume, get().muted);
       // 顺带记下歌词源档位：等歌词时用它拼缓存键（必须和 `useLyric` 同一份，否则白等）。
-      set({ volume: settings.volume, mode: settings.playMode, lyricMode: settings.lyricSource });
+      set({
+        volume: settings.volume,
+        mode: settings.playMode,
+        lyricMode: settings.lyricSource,
+        // 老设置里没有这个字段：缺省按「淡变」算，与 DEFAULT_SETTINGS 一致。
+        songTransition: settings.songTransition ?? 'fade',
+      });
     },
 
     restoreLast(song, songs) {
@@ -397,6 +448,14 @@ export const usePlayer = create<PlayerState>((set, get) => {
     async toggle() {
       const state = get();
       if (state.status === 'playing') {
+        /*
+         * 暂停也走 90ms 的斜坡：直接 `pause()` 是从某个波形值一刀切到 0。
+         * 淡出的这 90ms 里用户可能已经点了别的歌（`loadCurrent` 把状态改成 resolving 甚至开播了），
+         * 那一下不该再把新状态踩回 paused——所以回来要重新核对一遍。
+         */
+        if (state.songTransition === 'fade' && isGraphReady()) await fadeOut(PAUSE_FADE_MS);
+        const after = get();
+        if (after.status !== 'playing' || after.src !== state.src) return;
         getAudio().pause();
         set({ status: 'paused' });
         return;
@@ -436,6 +495,9 @@ export const usePlayer = create<PlayerState>((set, get) => {
         set(atSequenceEnd ? { status: 'playing', positionMs: 0, notice: null } : { status: 'playing' });
         try {
           await playElement();
+          // 恢复播放：从暂停时的当前增益（可能已经淡到 0）升回满幅。
+          if (state.songTransition === 'fade') fadeIn(PAUSE_FADE_MS);
+          tailFadeArmed = false;
         } catch (error) {
           set({ status: 'error', error: errorMessage(error) });
         }
@@ -469,6 +531,12 @@ export const usePlayer = create<PlayerState>((set, get) => {
     seek(positionMs) {
       const target = Math.max(0, positionMs);
       getAudio().currentTime = target / 1000;
+      /*
+       * 拖回播放中途时必须把增益恢复满幅：歌尾那一段已经淡出过，不重置的话用户会以为
+       * 「拖回来以后整首都没声音」（qplayer 踩过这个坑）。进度变了，歌尾的淡出也要重新计时。
+       */
+      if (get().songTransition === 'fade') resetFade();
+      tailFadeArmed = false;
       set({ positionMs: target });
     },
 
@@ -515,3 +583,31 @@ export const usePlayer = create<PlayerState>((set, get) => {
     },
   };
 });
+
+/**
+ * 歌尾提前淡出的看门狗（P1）。
+ *
+ * 为什么不用 `timeupdate`：它只有 4Hz，250ms 的误差会让 900ms 的淡出起步晚一截。
+ * 为什么不挂 rAF：窗口最小化 / 收进托盘时 rAF 会停，那时候就再也等不到淡出。
+ * 200ms 一次读 `currentTime` 是折中；后台被节流到 1s 时，`fadeOut(剩余时间)` 自己会缩短，
+ * 最坏是一次很快的淡出，仍然比硬切好。
+ */
+function watchTailFade(): void {
+  const state = usePlayer.getState();
+  if (state.songTransition !== 'fade') return;
+  const audio = getAudio();
+  if (audio.paused) return;
+  const duration = audio.duration;
+  if (!Number.isFinite(duration) || duration <= 0) return;
+  const remaining = duration - audio.currentTime;
+  if (!shouldStartTailFade(remaining, tailFadeArmed)) return;
+  tailFadeArmed = true;
+  void fadeOut(Math.min(FADE_OUT_MS, remaining * 1000));
+}
+
+// 单测跑在纯 Node 里：没有 `window` 就不启动，免得定时器拖住进程，也免得碰 `getAudio()`。
+if (typeof window !== 'undefined') {
+  const timer = setInterval(watchTailFade, 200);
+  // Node 环境（万一有 `window` 的 shim）里不要因为这个定时器拖住进程。
+  (timer as unknown as { unref?: () => void }).unref?.();
+}

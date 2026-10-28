@@ -589,6 +589,45 @@ export function PiQuickSettingsCard({
               </span>
             </div>
             <LyricSourcePicker variant="compact" />
+
+            {/*
+              自动过渡（`docs/PLAN-AUTOMIX.md` 的 P1 档）：切歌 / 暂停 / 恢复时对增益做淡入淡出、
+              歌尾提前淡出。它和「默认音质」「歌词来源」同属「这首歌怎么听」，所以併进音质这一页，
+              不新开分页（冒烟按「恰好四颗分页键」断言，加第五页会假红）。
+              字段是 `songTransition`（`packages/shared` 的 `Settings`），设置页里那个开关改的是同一个值。
+            */}
+            <div className="pi-quick-head" data-quick-switch="song-transition">
+              <span className="pi-quick-head__label">自动过渡</span>
+              <span className="pi-quick-head__value">
+                {value.songTransition === 'off' ? '关' : '淡变'}
+              </span>
+            </div>
+            <div className="pi-quick-choices" data-quick-choices="song-transition">
+              {[
+                { key: 'fade', label: '淡变', icon: 'waveform' },
+                { key: 'off', label: '关', icon: 'mute' },
+              ].map((item) => (
+                <button
+                  key={item.key}
+                  type="button"
+                  className="pi-quick-choice"
+                  data-quick-choice={`song-transition-${item.key}`}
+                  data-active={(value.songTransition === 'off' ? 'off' : 'fade') === item.key}
+                  title={
+                    item.key === 'fade'
+                      ? '切歌、暂停、恢复时淡入淡出，歌尾提前淡出'
+                      : '关掉后是硬切，与加这个开关之前一样'
+                  }
+                  disabled={patch.isPending}
+                  onClick={() => patch.mutate({ songTransition: item.key === 'off' ? 'off' : 'fade' })}
+                >
+                  <span className="pi-quick-choice__icon" aria-hidden="true">
+                    <Icon name={item.icon as IconName} size={18} />
+                  </span>
+                  <span className="pi-quick-choice__text">{item.label}</span>
+                </button>
+              ))}
+            </div>
           </section>
 
           <section
