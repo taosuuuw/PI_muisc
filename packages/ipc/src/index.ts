@@ -884,8 +884,8 @@ export const SettingsSchema = z.object({
       offsetY: z.number().min(-1).max(1),
     })
     .nullable(),
-  /** 歌曲过渡方式（`docs/PLAN-AUTOMIX.md` 的 P1 档）：`fade` = 淡入淡出，`off` = 硬切。 */
-  songTransition: z.enum(['off', 'fade']),
+  /** 歌曲过渡方式（`docs/PLAN-AUTOMIX.md`）：`fade` 淡入淡出、`crossfade` 交叉重叠、`off` 硬切。 */
+  songTransition: z.enum(['off', 'fade', 'crossfade']),
 });
 
 export const SettingsPatchSchema = SettingsSchema.partial();

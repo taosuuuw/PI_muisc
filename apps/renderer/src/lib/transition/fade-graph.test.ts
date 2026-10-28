@@ -18,10 +18,11 @@ import {
  *    依赖真音频元素；判定则是容易写错的地方（边界 / NaN / 重复触发），所以单独钉在这里。
  */
 const fakeElement = {} as HTMLAudioElement;
+const fakeDecks = { a: fakeElement, b: fakeElement };
 
 describe('没有 AudioContext 的环境', () => {
   it('ensureGraph 返回 undefined，而不是抛错', () => {
-    expect(ensureGraph(fakeElement)).toBeUndefined();
+    expect(ensureGraph(fakeDecks)).toBeUndefined();
   });
 
   it('所有淡变原语都是安全的 no-op', async () => {

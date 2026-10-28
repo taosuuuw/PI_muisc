@@ -1024,21 +1024,33 @@ function UiTab(): ReactNode {
           <span>
             <span
               className="pi-setting__title"
-              title="切歌、暂停、恢复时对声音做淡入淡出，歌尾也会提前淡出，避免「啪」的一下断掉。关掉之后是硬切，与以前一样。"
+              title="「淡变」：切歌、暂停、恢复时做淡入淡出，歌尾提前淡出。「交叉」：歌尾前 12 秒先解析下一首，最后 5 秒两首歌叠在一起交接。「关」：硬切，与以前一样。"
             >
               自动过渡
             </span>
-            <span className="pi-setting__hint">切歌与暂停不再硬断</span>
+            <span className="pi-setting__hint">淡变 / 交叉 / 关</span>
           </span>
           <Segmented
             ariaLabel="自动过渡"
-            value={value.songTransition === 'off' ? 'off' : 'fade'}
+            value={
+              value.songTransition === 'off'
+                ? 'off'
+                : value.songTransition === 'crossfade'
+                  ? 'crossfade'
+                  : 'fade'
+            }
             disabled={patch.isPending}
             options={[
               { value: 'fade', label: '淡变' },
+              { value: 'crossfade', label: '交叉' },
               { value: 'off', label: '关' },
             ]}
-            onChange={(next) => patch.mutate({ songTransition: next === 'off' ? 'off' : 'fade' })}
+            onChange={(next) =>
+              patch.mutate({
+                songTransition:
+                  next === 'off' ? 'off' : next === 'crossfade' ? 'crossfade' : 'fade',
+              })
+            }
           />
         </div>
 

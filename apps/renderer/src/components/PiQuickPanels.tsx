@@ -599,34 +599,58 @@ export function PiQuickSettingsCard({
             <div className="pi-quick-head" data-quick-switch="song-transition">
               <span className="pi-quick-head__label">自动过渡</span>
               <span className="pi-quick-head__value">
-                {value.songTransition === 'off' ? '关' : '淡变'}
+                {value.songTransition === 'off'
+                  ? '关'
+                  : value.songTransition === 'crossfade'
+                    ? '交叉'
+                    : '淡变'}
               </span>
             </div>
             <div className="pi-quick-choices" data-quick-choices="song-transition">
               {[
                 { key: 'fade', label: '淡变', icon: 'waveform' },
+                { key: 'crossfade', label: '交叉', icon: 'shuffle' },
                 { key: 'off', label: '关', icon: 'mute' },
-              ].map((item) => (
-                <button
-                  key={item.key}
-                  type="button"
-                  className="pi-quick-choice"
-                  data-quick-choice={`song-transition-${item.key}`}
-                  data-active={(value.songTransition === 'off' ? 'off' : 'fade') === item.key}
-                  title={
-                    item.key === 'fade'
-                      ? '切歌、暂停、恢复时淡入淡出，歌尾提前淡出'
-                      : '关掉后是硬切，与加这个开关之前一样'
-                  }
-                  disabled={patch.isPending}
-                  onClick={() => patch.mutate({ songTransition: item.key === 'off' ? 'off' : 'fade' })}
-                >
-                  <span className="pi-quick-choice__icon" aria-hidden="true">
-                    <Icon name={item.icon as IconName} size={18} />
-                  </span>
-                  <span className="pi-quick-choice__text">{item.label}</span>
-                </button>
-              ))}
+              ].map((item) => {
+                const current =
+                  value.songTransition === 'off'
+                    ? 'off'
+                    : value.songTransition === 'crossfade'
+                      ? 'crossfade'
+                      : 'fade';
+                return (
+                  <button
+                    key={item.key}
+                    type="button"
+                    className="pi-quick-choice"
+                    data-quick-choice={`song-transition-${item.key}`}
+                    data-active={current === item.key}
+                    title={
+                      item.key === 'crossfade'
+                        ? '歌尾前 12 秒解析下一首，最后 5 秒两首叠在一起交接'
+                        : item.key === 'fade'
+                          ? '切歌、暂停、恢复时淡入淡出，歌尾提前淡出'
+                          : '关掉后是硬切，与加这个开关之前一样'
+                    }
+                    disabled={patch.isPending}
+                    onClick={() =>
+                      patch.mutate({
+                        songTransition:
+                          item.key === 'off'
+                            ? 'off'
+                            : item.key === 'crossfade'
+                              ? 'crossfade'
+                              : 'fade',
+                      })
+                    }
+                  >
+                    <span className="pi-quick-choice__icon" aria-hidden="true">
+                      <Icon name={item.icon as IconName} size={18} />
+                    </span>
+                    <span className="pi-quick-choice__text">{item.label}</span>
+                  </button>
+                );
+              })}
             </div>
           </section>
 

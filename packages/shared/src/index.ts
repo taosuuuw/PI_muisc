@@ -703,15 +703,15 @@ export interface Settings {
    */
   playerBackground: PlayerBackground | null;
   /**
-   * 歌曲之间的过渡方式（`docs/PLAN-AUTOMIX.md` 的 P1 档）。
+   * 歌曲之间的过渡方式（`docs/PLAN-AUTOMIX.md` 的 P1 / P2 档）。
    *
    * - `fade`（默认）：切歌 / 暂停 / 恢复时对播放增益做淡入淡出，歌尾提前淡出；
+   * - `crossfade`：歌尾前 12 秒解析下一首、装到备用 deck，最后 5 秒两条等功率曲线交叉重叠；
    * - `off`：关掉，行为与加这个开关之前完全一致（硬切）。
    *
-   * 这一档**不重叠两首歌**，只解决「啪一下断」；Crossfade 与 AutoMix 是后续阶段，
-   * 到时候会在这里扩成更多档位（`'off' | 'fade' | 'crossfade' | 'automix'`）。
+   * AutoMix（乐句对齐那档）是后续阶段，到时候会在这里再加一个值。
    */
-  songTransition: 'off' | 'fade';
+  songTransition: 'off' | 'fade' | 'crossfade';
 }
 
 export const DEFAULT_SETTINGS: Settings = {
