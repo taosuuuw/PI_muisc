@@ -102,7 +102,7 @@ describe('song-collage-geometry 几何', () => {
       }
     }
     expect(EXPANSION_SIZE).toBe(6 * COLLAGE_PITCH - 8);
-    // 模板里最小/最大的一格都是 2×2 与 6×3：264..400，倍数 2.02，离 1.8 有余量。
+    // 模板里最短边最小 2×2，最大 3×4 / 4×3 / 6×3（短边 3 格）：264..400，倍数 2.02，离 1.8 有余量。
     expect(smallest).toBe(2 * COLLAGE_PITCH - 8);
     expect(worstRatio).toBeGreaterThanOrEqual(1.8);
   });
@@ -127,7 +127,9 @@ describe('song-collage-geometry 几何', () => {
       for (const total of [1, 5, 12, 13, 60, 300, 5000]) {
         const geometry = geometryFor(viewport, total, scale);
         expect(geometry.worldWidth * geometry.scale).toBeGreaterThanOrEqual(viewport.width - 1e-6);
-        expect(geometry.worldHeight * geometry.scale).toBeGreaterThanOrEqual(viewport.height - 1e-6);
+        expect(geometry.worldHeight * geometry.scale).toBeGreaterThanOrEqual(
+          viewport.height - 1e-6,
+        );
         // 世界比视口大的那一截就是可拖拽量（居中后两侧各一半），探针会拖 −120/−90。
         expect(geometry.worldWidth * geometry.scale - viewport.width).toBeGreaterThanOrEqual(
           PAN_MARGIN_X - 1e-6,
@@ -183,7 +185,9 @@ describe('song-collage-geometry 几何', () => {
     // 朝向：模板线性步进（相邻块不撞），镜像来自哈希（同坐标恒定）。
     expect(Math.floor(getBlockOrientation(3, 2) / 4)).toBe((3 + 2 * 2) % 4);
     expect(getBlockOrientation(3, 2)).toBe(getBlockOrientation(3, 2));
-    expect(Math.floor(getBlockOrientation(0, 0) / 4)).not.toBe(Math.floor(getBlockOrientation(1, 0) / 4));
+    expect(Math.floor(getBlockOrientation(0, 0) / 4)).not.toBe(
+      Math.floor(getBlockOrientation(1, 0) / 4),
+    );
   });
 
   it('只产出与视口相交的槽位；放大块 808 落在锚角正中，同块邻居按重排让位', () => {
@@ -360,7 +364,11 @@ describe('song-collage-geometry 几何', () => {
         item.ref.blockCol === center.blockCol && item.ref.blockRow === center.blockRow;
       expect(item.reflowed).toBe(sameBlock && !item.expanded);
       if (item.expanded) continue;
-      const layout = blockLayoutOf(item.ref.blockCol, item.ref.blockRow, sameBlock ? center.slotIndex : null);
+      const layout = blockLayoutOf(
+        item.ref.blockCol,
+        item.ref.blockRow,
+        sameBlock ? center.slotIndex : null,
+      );
       const slot = layout[item.ref.slotIndex];
       expect(slot).toBeDefined();
       if (slot === undefined) continue;
@@ -496,7 +504,10 @@ describe('song-collage-geometry 几何', () => {
     // → 内容占 2 列 × 2 行。
     const blocksNeeded = total / SLOTS_PER_BLOCK;
     const usedColumns = Math.min(Math.ceil(blocksNeeded), geometry.blocksPerRow);
-    const usedRows = Math.ceil(Math.min(Math.ceil(blocksNeeded), geometry.blocksPerRow * geometry.blockRows) / geometry.blocksPerRow);
+    const usedRows = Math.ceil(
+      Math.min(Math.ceil(blocksNeeded), geometry.blocksPerRow * geometry.blockRows) /
+        geometry.blocksPerRow,
+    );
     expect(content.right).toBeCloseTo(usedColumns * geometry.blockWidth, 6);
     expect(content.bottom).toBeCloseTo(usedRows * geometry.blockHeight, 6);
     // 每一个座位的矩形都落在内容边界内（右/下都不越界）。

@@ -138,7 +138,6 @@ import {
   cameraScaleFor,
   cameraToCenterOn,
   centeredCamera,
-  centerSlotOf,
   clamp,
   clampCamera,
   collageCellExitTransform,
@@ -1031,7 +1030,8 @@ export const SongCollage = forwardRef<SongCollageHandle, SongCollageProps>(funct
 
   /**
    * 量到尺寸（或换了尺寸/歌数）之后：首帧把相机摆到世界正中（一定有左右可拖），
-   * 之后只把现有相机夹回新的世界边界；顺手冻住入场波纹的起点、重算放大块。
+   * 之后只把现有相机夹回新的世界边界；顺手冻住入场波纹的起点。
+   * 放大块不再在这里按视口中心兜底——它只由下面「正在播放」的同步 effect 决定；
    * 换尺寸会让「点击放大的目标相机」失效，所以顺手打断正在跑的镜头缓动。
    */
   useEffect(() => {
@@ -1057,10 +1057,31 @@ export const SongCollage = forwardRef<SongCollageHandle, SongCollageProps>(funct
     setWaveOrigin(
       (previous) => previous ?? { x: -next.x / geometry.scale, y: -next.y / geometry.scale },
     );
-    const slot = centerSlotOf(next, viewport, geometry, viewCenterRef.current ?? undefined);
-    activeSlotRef.current = slot;
-    setActiveSlot((previous) => (sameSlot(previous, slot) ? previous : slot));
   }, [geometry, paintCamera, stopFollow, total, viewport]);
+
+  /**
+   * 用户本轮：「图中框选的拼贴大小不应该在常态存在，除非是正在播放的歌曲」。
+   *
+   * 旧行为是 `centerSlot = activeSlot ?? 视口中心格`，等于**永远**把屏幕正中那一格放大；
+   * 现在只认正在播放的那首歌在墙上的槽位。播放的歌不在当前列表里（或被卸载）就把
+   * `activeSlot` 清成 null，整面墙回到全正常尺寸。搜索定位 / 用户点击仍会临时设 activeSlot，
+   * 但播放状态一变，这里会把它拉回正在播放的那一格（或清空）。
+   */
+  useEffect(() => {
+    if (viewport.width <= 0 || viewport.height <= 0 || total <= 0) return;
+    const slot = playingSlot();
+    if (slot === null) {
+      if (activeSlotRef.current !== null) {
+        activeSlotRef.current = null;
+        setActiveSlot(null);
+      }
+      return;
+    }
+    if (!sameSlot(activeSlotRef.current, slot)) {
+      activeSlotRef.current = slot;
+      setActiveSlot(slot);
+    }
+  }, [geometry, playingId, playingSlot, total, viewport.height, viewport.width]);
 
   /**
    * 第十六轮第 4 条(c)：换歌数/换尺寸之后也要判一次「贴到内容边了吗」——
@@ -1114,11 +1135,7 @@ export const SongCollage = forwardRef<SongCollageHandle, SongCollageProps>(funct
    * 但同样没必要为看不见的块建 DOM）。`waveOrigin` 没冻住前先不画，
    * 免得入场延迟先按 0 播一遍、下一秒冻住起点又重播。
    */
-  const centerSlot =
-    activeSlot ??
-    (viewport.width > 0 && total > 0
-      ? centerSlotOf(camera, viewport, geometry, viewCenter ?? undefined)
-      : null);
+  const centerSlot = activeSlot;
 
   const items = useMemo<CollageInstance[]>(() => {
     if (total <= 0 || viewport.width <= 0 || waveOrigin === null) return [];
@@ -1212,140 +1229,140 @@ export const SongCollage = forwardRef<SongCollageHandle, SongCollageProps>(funct
         className="pi-collage__world"
         style={{ width: geometry.worldWidth, height: geometry.worldHeight }}
       >
-          {items.map((item) => {
-            const song = songs[item.queueIndex];
-            if (song === undefined) return null;
-            const isCenter = item.expanded;
-            const isPlaying = playingId === song.id;
-            const isExiting = exitingKey === item.key;
-            /** 父任务补充：`focusSong` 命中的那一格（搜索定位高亮）。 */
-            const isHit = hitKey === item.key;
-            // folia 的封面按 `max(rect) × 相机缩放 × DPR` 取图：小片别拉原图，大片别糊。
-            // 取 64 的整数倍，避免同一张卡因为四舍五入反复换 URL 重新下载。
-            const wanted = Math.max(item.width, item.height) * pixelScale;
-            const cover = coverAt(
-              song.album?.coverUrl,
-              Math.min(768, Math.max(192, Math.round(wanted / 64) * 64)),
-            );
-            // 标题字号跟着卡片走（folia 的 `LatticeTitle` 是按卡片宽度缩字号的）；歌手沿用 folia 的固定小号字。
-            const copySize = isCenter
-              ? Math.round(Math.min(56, Math.max(26, item.width * 0.062)))
-              : Math.round(Math.min(30, Math.max(13, Math.min(item.width, item.height) * 0.062)));
-            const inset = Math.round(
-              Math.min(32, Math.max(8, Math.min(item.width, item.height) * 0.045)),
-            );
-            /**
-             * 右上角删除键的直径（主人第 10 轮第 4 条：「应该适应卡片的大小变化而不是统一一个大小」）。
-             *
-             * 沿用同一套口径：标题字号吃 `width × 0.062`、内缩吃 `min(w,h) × 0.045`，
-             * 这枚键取 `min(w,h) × 0.085` 再夹在 18~44px 之间 —— 小卡上不会顶掉封面，
-             * 大卡（放大块）上也不会缩成一个小点。图标由 CSS 按按钮的百分比画，跟着一起缩放。
-             */
-            const removeSize = Math.round(
-              Math.min(44, Math.max(18, Math.min(item.width, item.height) * 0.085)),
-            );
-            const style = {
-              left: item.x,
-              top: item.y,
-              width: item.width,
-              height: item.height,
-              // 入场延迟是纯几何算出来的（相对冻结的波纹起点、用**模板原位**而不是重排后的位置），
-              // 同坐标永远同一个值，所以平移/换放大块都不会改 `animation-delay`、也就不会重播入场。
-              '--pi-collage-delay': `${item.delay.toFixed(2)}s`,
-              '--pi-collage-copy': `${copySize}px`,
-              '--pi-collage-inset': `${inset}px`,
-              '--pi-collage-remove': `${removeSize}px`,
-            } as CSSProperties;
-            return (
-              <button
-                key={item.key}
-                type="button"
-                className={`pi-collage__item${isCenter ? ' pi-collage__item--center' : ''}${
-                  item.reflowed ? ' pi-collage__item--reflowed' : ''
-                }${isExiting ? ' pi-collage__item--exiting' : ''}${
-                  isHit ? ' pi-collage__item--hit' : ''
-                }`}
-                data-song-collage-item={song.id}
-                data-collage-cell={item.key}
-                data-queue-index={item.queueIndex}
-                data-center={isCenter ? 'true' : 'false'}
-                data-collage-expanded={isCenter ? 'true' : 'false'}
-                data-collage-reflow={item.reflowed ? 'true' : 'false'}
-                data-playing={isPlaying ? 'true' : 'false'}
-                data-collage-exiting={isExiting ? 'true' : 'false'}
-                data-collage-hit={isHit ? 'true' : 'false'}
-                style={style}
-                title={`${song.name} - ${artistNames(song)}`}
-                aria-label={`${item.queueIndex + 1}. ${song.name} - ${artistNames(song)}`}
-                onClick={() => {
-                  if (suppressClickRef.current) {
-                    suppressClickRef.current = false;
-                    return;
-                  }
-                  /**
-                   * 第十六轮第 4 条(b) + 用户 m00736 第 6 条：既在播、又是当前放大聚焦的那一格
-                   * —— 点它的语义是「进播放页」，不是再播一遍。只打退场钩子（放大块长到铺满
-                   * 屏幕）+ 回调宿主，**不**重复 `focusSlot` / `play()`（它已经在中心、也已经在播）。
-                   * 宿主没给 `onEnterPlaying`（歌单详情浮层）时不再退回「再播一遍」的旧语义，
-                   * 而是由组件自己等动画放完再收浮层、切回播放页（见 `enterPlayer`）。
-                   */
-                  if (isPlaying && isCenter) {
-                    setExitingKey(item.key);
-                    if (onEnterPlaying !== undefined) onEnterPlaying(song);
-                    else enterPlayer();
-                    return;
-                  }
-                  // 先换放大块 + 镜头缓动过去，再照旧播/选中（拖出来的位移不会走到这里，
-                  // 上面那个 `suppressClickRef` 已经把「拖」筛掉了）。
-                  focusSlot(item.ref);
-                  playCell(song, item.queueIndex);
-                }}
-              >
-                <span className="pi-collage__cover">
-                  {cover ? (
-                    <img src={cover} alt="" loading="lazy" decoding="async" draggable={false} />
-                  ) : (
-                    <span className="pi-collage__nocover" aria-hidden="true" />
-                  )}
-                </span>
-                <span className="pi-collage__shade" aria-hidden="true" />
-                <span className="pi-collage__badge" aria-hidden="true">
-                  {item.queueIndex + 1}
-                </span>
-                {/* 主人本轮第 3 条：悬停浮现的删除键。
+        {items.map((item) => {
+          const song = songs[item.queueIndex];
+          if (song === undefined) return null;
+          const isCenter = item.expanded;
+          const isPlaying = playingId === song.id;
+          const isExiting = exitingKey === item.key;
+          /** 父任务补充：`focusSong` 命中的那一格（搜索定位高亮）。 */
+          const isHit = hitKey === item.key;
+          // folia 的封面按 `max(rect) × 相机缩放 × DPR` 取图：小片别拉原图，大片别糊。
+          // 取 64 的整数倍，避免同一张卡因为四舍五入反复换 URL 重新下载。
+          const wanted = Math.max(item.width, item.height) * pixelScale;
+          const cover = coverAt(
+            song.album?.coverUrl,
+            Math.min(768, Math.max(192, Math.round(wanted / 64) * 64)),
+          );
+          // 标题字号跟着卡片走（folia 的 `LatticeTitle` 是按卡片宽度缩字号的）；歌手沿用 folia 的固定小号字。
+          const copySize = isCenter
+            ? Math.round(Math.min(56, Math.max(26, item.width * 0.062)))
+            : Math.round(Math.min(30, Math.max(13, Math.min(item.width, item.height) * 0.062)));
+          const inset = Math.round(
+            Math.min(32, Math.max(8, Math.min(item.width, item.height) * 0.045)),
+          );
+          /**
+           * 右上角删除键的直径（主人第 10 轮第 4 条：「应该适应卡片的大小变化而不是统一一个大小」）。
+           *
+           * 沿用同一套口径：标题字号吃 `width × 0.062`、内缩吃 `min(w,h) × 0.045`，
+           * 这枚键取 `min(w,h) × 0.085` 再夹在 18~44px 之间 —— 小卡上不会顶掉封面，
+           * 大卡（放大块）上也不会缩成一个小点。图标由 CSS 按按钮的百分比画，跟着一起缩放。
+           */
+          const removeSize = Math.round(
+            Math.min(44, Math.max(18, Math.min(item.width, item.height) * 0.085)),
+          );
+          const style = {
+            left: item.x,
+            top: item.y,
+            width: item.width,
+            height: item.height,
+            // 入场延迟是纯几何算出来的（相对冻结的波纹起点、用**模板原位**而不是重排后的位置），
+            // 同坐标永远同一个值，所以平移/换放大块都不会改 `animation-delay`、也就不会重播入场。
+            '--pi-collage-delay': `${item.delay.toFixed(2)}s`,
+            '--pi-collage-copy': `${copySize}px`,
+            '--pi-collage-inset': `${inset}px`,
+            '--pi-collage-remove': `${removeSize}px`,
+          } as CSSProperties;
+          return (
+            <button
+              key={item.key}
+              type="button"
+              className={`pi-collage__item${isCenter ? ' pi-collage__item--center' : ''}${
+                item.reflowed ? ' pi-collage__item--reflowed' : ''
+              }${isExiting ? ' pi-collage__item--exiting' : ''}${
+                isHit ? ' pi-collage__item--hit' : ''
+              }`}
+              data-song-collage-item={song.id}
+              data-collage-cell={item.key}
+              data-queue-index={item.queueIndex}
+              data-center={isCenter ? 'true' : 'false'}
+              data-collage-expanded={isCenter ? 'true' : 'false'}
+              data-collage-reflow={item.reflowed ? 'true' : 'false'}
+              data-playing={isPlaying ? 'true' : 'false'}
+              data-collage-exiting={isExiting ? 'true' : 'false'}
+              data-collage-hit={isHit ? 'true' : 'false'}
+              style={style}
+              title={`${song.name} - ${artistNames(song)}`}
+              aria-label={`${item.queueIndex + 1}. ${song.name} - ${artistNames(song)}`}
+              onClick={() => {
+                if (suppressClickRef.current) {
+                  suppressClickRef.current = false;
+                  return;
+                }
+                /**
+                 * 第十六轮第 4 条(b) + 用户 m00736 第 6 条：既在播、又是当前放大聚焦的那一格
+                 * —— 点它的语义是「进播放页」，不是再播一遍。只打退场钩子（放大块长到铺满
+                 * 屏幕）+ 回调宿主，**不**重复 `focusSlot` / `play()`（它已经在中心、也已经在播）。
+                 * 宿主没给 `onEnterPlaying`（歌单详情浮层）时不再退回「再播一遍」的旧语义，
+                 * 而是由组件自己等动画放完再收浮层、切回播放页（见 `enterPlayer`）。
+                 */
+                if (isPlaying && isCenter) {
+                  setExitingKey(item.key);
+                  if (onEnterPlaying !== undefined) onEnterPlaying(song);
+                  else enterPlayer();
+                  return;
+                }
+                // 先换放大块 + 镜头缓动过去，再照旧播/选中（拖出来的位移不会走到这里，
+                // 上面那个 `suppressClickRef` 已经把「拖」筛掉了）。
+                focusSlot(item.ref);
+                playCell(song, item.queueIndex);
+              }}
+            >
+              <span className="pi-collage__cover">
+                {cover ? (
+                  <img src={cover} alt="" loading="lazy" decoding="async" draggable={false} />
+                ) : (
+                  <span className="pi-collage__nocover" aria-hidden="true" />
+                )}
+              </span>
+              <span className="pi-collage__shade" aria-hidden="true" />
+              <span className="pi-collage__badge" aria-hidden="true">
+                {item.queueIndex + 1}
+              </span>
+              {/* 主人本轮第 3 条：悬停浮现的删除键。
                     ⚠️ 用 `<span role="button">` 而不是 `<button>`：外层格子本身就是 `<button>`，
                     按钮里套按钮是非法结构（浏览器会把它拆掉）。指针按下也 `stopPropagation` ——
                     那是这面墙开始拖动的手势，别从 × 上起拖。 */}
-                {onRemove !== undefined && !isExiting ? (
-                  <span
-                    className="pi-collage__remove"
-                    role="button"
-                    tabIndex={0}
-                    data-collage-remove={song.id}
-                    aria-label={`从列表里移除 ${song.name}`}
-                    title="从列表里移除"
-                    onPointerDown={(event) => event.stopPropagation()}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      onRemove(song);
-                    }}
-                    onKeyDown={(event) => {
-                      if (event.key !== 'Enter' && event.key !== ' ') return;
-                      event.preventDefault();
-                      event.stopPropagation();
-                      onRemove(song);
-                    }}
-                  >
-                    <Icon name="close" size={12} />
-                  </span>
-                ) : null}
-                <span className="pi-collage__copy">
-                  <strong className="pi-collage__name">{song.name}</strong>
-                  <small className="pi-collage__meta">{artistNames(song)}</small>
+              {onRemove !== undefined && !isExiting ? (
+                <span
+                  className="pi-collage__remove"
+                  role="button"
+                  tabIndex={0}
+                  data-collage-remove={song.id}
+                  aria-label={`从列表里移除 ${song.name}`}
+                  title="从列表里移除"
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onRemove(song);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key !== 'Enter' && event.key !== ' ') return;
+                    event.preventDefault();
+                    event.stopPropagation();
+                    onRemove(song);
+                  }}
+                >
+                  <Icon name="close" size={12} />
                 </span>
-              </button>
-            );
-          })}
+              ) : null}
+              <span className="pi-collage__copy">
+                <strong className="pi-collage__name">{song.name}</strong>
+                <small className="pi-collage__meta">{artistNames(song)}</small>
+              </span>
+            </button>
+          );
+        })}
       </div>
     </div>
   );
