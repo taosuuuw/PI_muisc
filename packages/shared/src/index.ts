@@ -730,7 +730,7 @@ export interface Settings {
    *
    * AutoMix（乐句对齐那档）是后续阶段，到时候会在这里再加一个值。
    */
-  songTransition: 'off' | 'fade' | 'crossfade';
+  songTransition: 'off' | 'fade' | 'crossfade' | 'automix';
 }
 
 export const DEFAULT_SETTINGS: Settings = {

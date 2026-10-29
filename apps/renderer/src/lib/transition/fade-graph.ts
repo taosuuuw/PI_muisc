@@ -26,6 +26,10 @@ export type DeckId = 'a' | 'b';
 export interface DeckNodes {
   readonly element: HTMLAudioElement;
   readonly source: MediaElementAudioSourceNode;
+  /** 低频架（200Hz 以下）。`bassSwap` 用它让出场曲的低频先让位。 */
+  readonly lowShelf: BiquadFilterNode;
+  /** 高频架（4kHz 以上）。`tailRide` 用它把出场曲的高频收暗。 */
+  readonly highShelf: BiquadFilterNode;
   readonly gain: GainNode;
 }
 
@@ -85,15 +89,37 @@ export function ensureGraph(
   const context = new AudioContext();
   const masterGain = context.createGain();
   masterGain.gain.value = pendingMaster.muted ? 0 : clamp01(pendingMaster.volume);
-  masterGain.connect(context.destination);
+  /*
+   * 软限幅：交叉时两首歌的峰值会叠加，等功率曲线保证的是「能量」，不是「峰值不超 1」。
+   * 30ms 起效、20:1 的压缩只处理真的会削顶的那一瞬，平时几乎不动整体响度。
+   */
+  const limiter = context.createDynamicsCompressor();
+  limiter.threshold.value = -3;
+  limiter.knee.value = 0;
+  limiter.ratio.value = 20;
+  limiter.attack.value = 0.003;
+  limiter.release.value = 0.1;
+  masterGain.connect(limiter);
+  limiter.connect(context.destination);
   const build = (id: DeckId): DeckNodes => {
     const element = elements[id];
     const source = context.createMediaElementSource(element);
+    // 分频段：低频架 → 高频架 → 增益。平时两个架都是 0dB（透明），只有 AutoMix 会动它们。
+    const lowShelf = context.createBiquadFilter();
+    lowShelf.type = 'lowshelf';
+    lowShelf.frequency.value = 200;
+    lowShelf.gain.value = 0;
+    const highShelf = context.createBiquadFilter();
+    highShelf.type = 'highshelf';
+    highShelf.frequency.value = 4000;
+    highShelf.gain.value = 0;
     const gain = context.createGain();
     gain.gain.value = 1;
-    source.connect(gain);
+    source.connect(lowShelf);
+    lowShelf.connect(highShelf);
+    highShelf.connect(gain);
     gain.connect(masterGain);
-    return { element, source, gain };
+    return { element, source, lowShelf, highShelf, gain };
   };
   graph = {
     context,
@@ -232,16 +258,13 @@ export function resetFade(deck: DeckId = activeDeck()): void {
 }
 
 /**
- * 双 deck 交叉淡化：出场曲线的平方 + 进场曲线的平方 = 1（等功率），所以中间不会塌一个洞。
+ * 画等功率主曲线（内部共用）。
  *
- * 调用方负责在 `play()` 之后、调用本函数之前把活动 deck 切过去（`setActiveDeck`），
- * 这样 `window.__piAudio`、进度与歌词从交叉开始那一刻就跟新歌走。
- *
- * 返回的 Promise 在曲线画完时 resolve；调用方随后暂停出场 deck 并把它的增益复位。
+ * 出场曲线的平方 + 进场曲线的平方 = 1，所以中间不会塌一个洞。
+ * 调用方负责先把活动 deck 切过去，这样 `window.__piAudio`、进度与歌词从交叉开始就跟着新歌走。
  */
-export function crossfade(from: DeckId, to: DeckId, seconds: number): Promise<void> {
-  if (!graph) return Promise.resolve();
-  const duration = Math.max(0.1, seconds);
+function scheduleEqualPower(from: DeckId, to: DeckId, duration: number): void {
+  if (!graph) return;
   const { context, decks } = graph;
   const now = context.currentTime;
   const points = 128;
@@ -270,7 +293,77 @@ export function crossfade(from: DeckId, to: DeckId, seconds: number): Promise<vo
     fromGain.setValueCurveAtTime(fall, now, duration);
   }
   toGain.setValueCurveAtTime(rise, now, duration);
+}
+
+/** 双 deck 交叉淡化（P2 的那条曲线，AutoMix 的 `plainBlend` 也用它）。 */
+export function crossfade(from: DeckId, to: DeckId, seconds: number): Promise<void> {
+  if (!graph) return Promise.resolve();
+  const duration = Math.max(0.1, seconds);
+  scheduleEqualPower(from, to, duration);
   return new Promise((resolve) => setTimeout(resolve, duration * 1000 + 60));
+}
+
+export interface AutoMixCurveOptions {
+  style: 'beatCut' | 'bassSwap' | 'tailRide' | 'plainBlend';
+  durationSec: number;
+}
+
+/** `bassSwap` 里出场曲低频最多压多少。 */
+const BASS_CUT_DB = -12;
+/** `tailRide` 里出场曲高频最多收暗多少。 */
+const TAIL_HIGH_CUT_DB = -6;
+
+/**
+ * AutoMix 的分频段交叉（P4）。
+ *
+ * 主体仍是等功率曲线；按接法额外叠加两条分频段动作：
+ * - `bassSwap`：把两首歌的低频在时间上错开——出场曲的低频在前半段压掉 12dB，
+ *   进场曲的低频从 -12dB 升回 0dB。两支鼓叠在一起时最糊的就是低频，这样听感是「换鼓」
+ *   而不是「两套鼓打架」。
+ * - `tailRide`：出场曲的高频在过渡里逐渐收暗 6dB，让「它正在退场」比纯音量更明显。
+ * - `beatCut` / `plainBlend`：只用等功率曲线。
+ *
+ * 结束时调用方应调 `resetDeckFilters` 把滤波器复位，否则下一轮会带着旧增益。
+ */
+export function automixCrossfade(
+  from: DeckId,
+  to: DeckId,
+  options: AutoMixCurveOptions,
+): Promise<void> {
+  if (!graph) return Promise.resolve();
+  const duration = Math.max(0.2, options.durationSec);
+  const { context, decks } = graph;
+  const now = context.currentTime;
+  scheduleEqualPower(from, to, duration);
+
+  if (options.style === 'bassSwap') {
+    const fromLow = decks[from].lowShelf.gain;
+    const toLow = decks[to].lowShelf.gain;
+    fromLow.cancelScheduledValues(now);
+    fromLow.setValueAtTime(0, now);
+    fromLow.linearRampToValueAtTime(BASS_CUT_DB, now + duration * 0.5);
+    toLow.cancelScheduledValues(now);
+    toLow.setValueAtTime(BASS_CUT_DB, now);
+    toLow.linearRampToValueAtTime(0, now + duration);
+  } else if (options.style === 'tailRide') {
+    const fromHigh = decks[from].highShelf.gain;
+    fromHigh.cancelScheduledValues(now);
+    fromHigh.setValueAtTime(0, now);
+    fromHigh.linearRampToValueAtTime(TAIL_HIGH_CUT_DB, now + duration);
+  }
+
+  return new Promise((resolve) => setTimeout(resolve, duration * 1000 + 60));
+}
+
+/** 把某个 deck 的分频段滤波器复位成透明（0dB）。 */
+export function resetDeckFilters(deck: DeckId): void {
+  if (!graph) return;
+  const now = graph.context.currentTime;
+  const { lowShelf, highShelf } = graph.decks[deck];
+  lowShelf.gain.cancelScheduledValues(now);
+  lowShelf.gain.setValueAtTime(0, now);
+  highShelf.gain.cancelScheduledValues(now);
+  highShelf.gain.setValueAtTime(0, now);
 }
 
 /**

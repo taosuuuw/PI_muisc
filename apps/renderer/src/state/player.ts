@@ -37,17 +37,20 @@ import {
   FADE_IN_MS,
   FADE_OUT_MS,
   PAUSE_FADE_MS,
+  automixCrossfade,
   crossfade,
   ensureGraph,
   fadeIn,
   fadeOut,
   isGraphReady,
+  resetDeckFilters,
   resetFade,
   resumeGraph,
   setDeckGain,
   shouldStartTailFade,
   type DeckId,
 } from '../lib/transition/fade-graph';
+import { planTransition, type TransitionPlan } from '../lib/transition/automix';
 import {
   CROSSFADE_SEC,
   shouldArmNext,
@@ -55,7 +58,7 @@ import {
   type TransitionPhase,
 } from '../lib/transition/schedule';
 import { LYRIC_GATE_MS, isLyricPending, prefetchLyric } from '../lib/lyric-prefetch';
-import { ensureTrackProfile } from '../lib/transition/profile-service';
+import { ensureTrackProfile, peekTrackProfile } from '../lib/transition/profile-service';
 import { useNowPlaying } from './nowPlaying';
 
 /**
@@ -100,7 +103,7 @@ interface PlayerState {
   /** 当前生效的歌词源档位（`hydrate` 时从设置里抄一份）：预取歌词要用它拼缓存键。 */
   lyricMode: LyricSourceMode;
   /** 当前生效的歌曲过渡档位（`hydrate` 时从设置里抄一份）：`off` 时一切行为退回硬切。 */
-  songTransition: 'off' | 'fade' | 'crossfade';
+  songTransition: 'off' | 'fade' | 'crossfade' | 'automix';
   /** 本轮被判过「不可播」的歌曲 id，避免反复重试同一首。 */
   unplayable: number[];
   positionMs: number;
@@ -336,8 +339,32 @@ async function startCrossfade(): Promise<void> {
     return;
   }
 
+  const outgoingDeck = getActiveDeck();
+  const outgoingElement = getDeckElement(outgoingDeck);
+  const remainingSec = Number.isFinite(outgoingElement.duration)
+    ? Math.max(0, outgoingElement.duration - outgoingElement.currentTime)
+    : CROSSFADE_SEC;
+  const mode = usePlayer.getState().songTransition;
+  const outgoingSong = usePlayer.getState().currentSong;
+
+  /*
+   * AutoMix 档：先规划再动手。规划用两端已落盘的档案（没有就退回固定时长），
+   * 结果里的 style / 时长 / 变速比决定了后面画哪条曲线。
+   */
+  let plan: TransitionPlan | undefined;
+  let seconds = CROSSFADE_SEC;
+  if (mode === 'automix' && outgoingSong) {
+    plan = planTransition({
+      outgoing: peekTrackProfile(outgoingSong.id),
+      incoming: peekTrackProfile(current.song.id),
+      remainingSec,
+      fallbackDurationSec: CROSSFADE_SEC,
+    });
+    seconds = plan.durationSec;
+  }
+
   phase = 'fading';
-  const fromDeck = getActiveDeck();
+  const fromDeck = outgoingDeck;
   const toDeck = current.deck;
   const element = getDeckElement(toDeck);
 
@@ -375,11 +402,26 @@ async function startCrossfade(): Promise<void> {
   // 交叉和「等歌词」不共存：先让歌词开始拉，界面上不会空着。
   void prefetchLyric(current.song, usePlayer.getState().lyricMode);
 
-  await crossfade(fromDeck, toDeck, CROSSFADE_SEC);
+  // 只弯出场曲：`preservesPitch` 保持音高，避免「变速 = 变调」的廉价感。
+  if (plan && Math.abs(plan.tempoRatio - 1) > 1e-6) {
+    outgoingElement.preservesPitch = true;
+    outgoingElement.playbackRate = plan.tempoRatio;
+  }
+
+  if (plan) {
+    console.info(`[pi/automix] ${plan.style}（${seconds.toFixed(1)}s）：${plan.reason}`);
+    await automixCrossfade(fromDeck, toDeck, { style: plan.style, durationSec: seconds });
+  } else {
+    await crossfade(fromDeck, toDeck, seconds);
+  }
 
   const outElement = getDeckElement(fromDeck);
   outElement.pause();
+  outElement.playbackRate = 1;
   setDeckGain(fromDeck, 1);
+  // 滤波器必须复位，否则下一轮会带着上一轮的 -12dB 低频。
+  resetDeckFilters(fromDeck);
+  resetDeckFilters(toDeck);
   phase = 'idle';
   armed = undefined;
 }

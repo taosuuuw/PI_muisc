@@ -19,8 +19,9 @@ import { CROSSFADE_SEC } from './schedule';
 /** 剩余多少毫秒之内算「马上要播下一首」（第十八轮第 11 条：结束前 5s）。 */
 export const UP_NEXT_WINDOW_MS = 5_000;
 
-export function upNextWindowMs(songTransition: 'off' | 'fade' | 'crossfade'): number {
-  return songTransition === 'crossfade'
-    ? UP_NEXT_WINDOW_MS + CROSSFADE_SEC * 1000
-    : UP_NEXT_WINDOW_MS;
+export function upNextWindowMs(songTransition: 'off' | 'fade' | 'crossfade' | 'automix'): number {
+  if (songTransition === 'crossfade') return UP_NEXT_WINDOW_MS + CROSSFADE_SEC * 1000;
+  // AutoMix 的过渡长度是 4~8 秒（按拍/静音量化的），取最长那一档给窗口，保证预告能露满 5 秒。
+  if (songTransition === 'automix') return UP_NEXT_WINDOW_MS + 8_000;
+  return UP_NEXT_WINDOW_MS;
 }
