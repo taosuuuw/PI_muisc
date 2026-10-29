@@ -569,30 +569,9 @@ export function PiQuickSettingsCard({
             </div>
 
             {/*
-              歌词来源（用户第五轮第 4 条：「歌词来源这一栏移到音质选择下面去」）。
-              它原来占的是自己一整页，现在併进「音质」页、紧跟在六颗音质按键下面：
-              这两件事在界面上本来就是同一类 ——「这首歌用什么听、歌词从哪来」。
-              平时只占一行图标（见 `LyricSourcePicker` 的紧凑形态），点图标才展开源列表。
-            */}
-            <div className="pi-quick-head" data-quick-switch="lyric-source">
-              <span className="pi-quick-head__label">歌词来源</span>
-              <span
-                className="pi-quick-head__value"
-                data-quick-lyric-source={usedSource ?? value.lyricSource}
-              >
-                {value.lyricSource === 'auto'
-                  ? usedSource === undefined
-                    ? '自动匹配'
-                    : `自动 · 现用 ${LYRIC_SOURCE_INFO.find((entry) => entry.id === usedSource)?.label ?? usedSource}`
-                  : (LYRIC_SOURCE_INFO.find((entry) => entry.id === value.lyricSource)?.label ??
-                    value.lyricSource)}
-              </span>
-            </div>
-            <LyricSourcePicker variant="compact" />
-
-            {/*
-              自动过渡（`docs/PLAN-AUTOMIX.md` 的 P1 档）：切歌 / 暂停 / 恢复时对增益做淡入淡出、
-              歌尾提前淡出。它和「默认音质」「歌词来源」同属「这首歌怎么听」，所以併进音质这一页，
+              自动过渡（`docs/PLAN-AUTOMIX.md`）：交叉 / 智能 / 关。用户 2026-10-29 要求它
+              挪到「歌词来源」上面——它比歌词来源更常调，放上面更顺手。
+              它和「默认音质」「歌词来源」同属「这首歌怎么听」，所以併进音质这一页，
               不新开分页（冒烟按「恰好四颗分页键」断言，加第五页会假红）。
               字段是 `songTransition`（`packages/shared` 的 `Settings`），设置页里那个开关改的是同一个值。
             */}
@@ -639,6 +618,28 @@ export function PiQuickSettingsCard({
                 </button>
               ))}
             </div>
+
+            {/*
+              歌词来源（用户第五轮第 4 条：「歌词来源这一栏移到音质选择下面去」）。
+              它原来占的是自己一整页，现在併进「音质」页、紧跟在六颗音质按键下面：
+              这两件事在界面上本来就是同一类 ——「这首歌用什么听、歌词从哪来」。
+              平时只占一行图标（见 `LyricSourcePicker` 的紧凑形态），点图标才展开源列表。
+            */}
+            <div className="pi-quick-head" data-quick-switch="lyric-source">
+              <span className="pi-quick-head__label">歌词来源</span>
+              <span
+                className="pi-quick-head__value"
+                data-quick-lyric-source={usedSource ?? value.lyricSource}
+              >
+                {value.lyricSource === 'auto'
+                  ? usedSource === undefined
+                    ? '自动匹配'
+                    : `自动 · 现用 ${LYRIC_SOURCE_INFO.find((entry) => entry.id === usedSource)?.label ?? usedSource}`
+                  : (LYRIC_SOURCE_INFO.find((entry) => entry.id === value.lyricSource)?.label ??
+                    value.lyricSource)}
+              </span>
+            </div>
+            <LyricSourcePicker variant="compact" />
           </section>
 
           <section
