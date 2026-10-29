@@ -1,5 +1,6 @@
 import { app, safeStorage } from 'electron';
 import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { open } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -35,6 +36,7 @@ import {
   qualityRank,
   type AccountCapability,
   type AudioProbe,
+  type AutomixResources,
   type CommentPage,
   type CommentLikeResult,
   type CommentPostResult,
@@ -125,6 +127,8 @@ export class Services {
   readonly ncm: NcmClient;
   /** 本地音频代理：渲染进程的 `<audio>` 只认它给出的地址。 */
   readonly media: MediaServer;
+  /** Beat This! 资源目录（模型 + WASM）；可能不存在，`automixResources()` 会如实报告。 */
+  private readonly ortDir: string;
   /** M5 下载管理器：下载队列 + 本地文件清单。 */
   readonly downloads: DownloadsManager;
 
@@ -239,6 +243,15 @@ export class Services {
       userDataDir,
     );
 
+    /*
+     * Beat This! 的资源目录：开发态在 `apps/desktop/resources/ort`，打包态在 `resources/ort`。
+     * 目录可能不存在（没跑过资源准备脚本）——那种情况下 `automixResources()` 返回不可用，
+     * 渲染层自动退回 DSP 拍点，不影响播放。
+     */
+    this.ortDir = app.isPackaged
+      ? path.join(process.resourcesPath, 'ort')
+      : path.join(app.getAppPath(), 'resources', 'ort');
+
     this.media = new MediaServer({
       lookup: (key) => this.lookupMedia(key),
       upstreamHeaders: NEUTRAL_UPSTREAM_HEADERS,
@@ -294,6 +307,33 @@ export class Services {
       });
   }
 
+  /**
+   * Beat This! 的推理资源地址（P3）。
+   *
+   * 模型 83MB、WASM 14.8MB，渲染进程只能通过 http 取（打包态是 `file://`，不能 fetch 本地文件），
+   * 所以这里给的是本地代理的带 token 地址；缺文件时 `available=false`，渲染层退回 DSP。
+   */
+  automixResources(): AutomixResources {
+    // 加载器已经 vendor 进渲染层的 bundle，这里只需要模型与 wasm 二进制。
+    const files = ['beat_this.onnx', 'ort-wasm-simd-threaded.wasm'];
+    const missing = files.filter((name) => !existsSync(path.join(this.ortDir, name)));
+    if (missing.length > 0) {
+      return {
+        available: false,
+        modelUrl: '',
+        wasmBase: '',
+        reason: `缺少 ${missing.join('、')}（应放在 ${this.ortDir}）`,
+      };
+    }
+    return {
+      available: true,
+      // 走自定义 scheme（不是 http）：ONNX Runtime 要动态 import wasm 加载器，
+      // 而 file:// 页面不允许 import 跨源模块。`pi-ort://ort/` 由主进程的 protocol.handle 提供。
+      modelUrl: 'pi-ort://ort/beat_this.onnx',
+      wasmBase: 'pi-ort://ort/',
+    };
+  }
+
   async getSettings(): Promise<Settings> {
     if (this.settingsCache) return this.settingsCache;
     const stored = await this.store.get<Partial<Settings>>(KEYS.settings);
@@ -306,6 +346,14 @@ export class Services {
     // 不用 zod 的 `.default()` 做这件事：`SettingsSchema.partial()` 在 zod 4 里
     // 不会吃掉子对象默认值，改音量也会顺手把动效参数打回默认（见 LyricTuningSchema 的注释）。
     const merged: Settings = { ...DEFAULT_SETTINGS, ...(stored ?? {}) };
+    /*
+     * `songTransition` 的 `fade` 档已下线（它和 `crossfade` 听感太接近，设置项没必要四选一）。
+     * 老用户盘上可能还存着 `'fade'`：不归一的话，zod 校验会把它判成非法值、设置页也会卡在
+     * 一个不存在的选项上。统一升成 `crossfade`（它们本来就是一个「有过渡」的默认）。
+     */
+    if ((merged as { songTransition?: string }).songTransition === 'fade') {
+      (merged as { songTransition: string }).songTransition = 'crossfade';
+    }
     this.settingsCache = {
       ...merged,
       lyricTuning: { ...DEFAULT_LYRIC_TUNING, ...(stored?.lyricTuning ?? {}) },

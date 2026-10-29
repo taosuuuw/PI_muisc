@@ -589,6 +589,25 @@ export const DEFAULT_LYRIC_TUNING: LyricTuning = {
 /** 音源层级（docs/ADR/0001-音源解析链.md 的链序）。 */
 export type SourceTier = 'official' | 'unm' | 'aggregator' | 'lx' | 'local';
 
+/**
+ * Beat This! 推理资源的地址（P3）。
+ *
+ * 模型与 WASM 走主进程的本地代理（渲染进程是 `file://`，不能 fetch 本地文件），
+ * 所以这里给的是带 token 的 http 地址；`available=false` 时渲染进程回退到 DSP 拍点。
+ */
+export interface AutomixResources {
+  /** 三个文件都在才算可用。 */
+  available: boolean;
+  modelUrl: string;
+  /**
+   * wasm 目录前缀（不带 token）：ONNX Runtime 会自己拼 `ort-wasm-simd-threaded.{mjs,wasm}`，
+   * 带查询串的目录前缀会被它拼坏，所以静态路由在 token 校验之前放行（仅 loopback）。
+   */
+  wasmBase: string;
+  /** 不可用的原因（缺哪个文件），给日志用。 */
+  reason?: string;
+}
+
 export interface Settings {
   theme: ThemeMode;
   /** 默认请求音质；实际会被账号能力与实测结果夹逼。 */
@@ -702,6 +721,17 @@ export interface Settings {
    * 字段与裁切语义见 `PlayerBackground` 的注释。
    */
   playerBackground: PlayerBackground | null;
+  /**
+   * 歌曲之间的过渡方式（`docs/PLAN-AUTOMIX.md` 的档位）。
+   *
+   * - `crossfade`（默认）：歌尾前 12 秒解析下一首、装到备用 deck，最后 5 秒两条等功率曲线交叉重叠；
+   * - `automix`：在交叉的基础上按拍网格/段落对齐（智能档）；
+   * - `off`：关掉，行为与加这个开关之前完全一致（硬切）。
+   *
+   * 原来的 `fade`（只做淡入淡出、不重叠）已下线：它和 `crossfade` 的实际听感太接近，
+   * 留着只是让设置项变成四选一。老设置里的 `fade` 会在读取时归一到 `crossfade`。
+   */
+  songTransition: 'off' | 'crossfade' | 'automix';
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -737,6 +767,8 @@ export const DEFAULT_SETTINGS: Settings = {
   closeAction: 'quit',
   // 默认不用自定义背景：背景仍跟着当前这首歌的封面走。
   playerBackground: null,
+  // 歌曲过渡默认「交叉」：装上就该听得出来；不喜欢可以在设置里关或换成智能。
+  songTransition: 'crossfade',
 };
 
 /**

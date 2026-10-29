@@ -121,3 +121,10 @@ apps/renderer/src/components/lyric-themes/CadenzaTheme.test.ts
 apps/renderer/src/components/lyric-themes/PartitaTheme.test.ts
 apps/renderer/src/components/lyric-themes/TiltTheme.test.ts
 apps/renderer/src/lib/accent.test.ts
+
+# ---------------------------------------------------------------------------
+# Beat This! 推理资源（P3）：模型 83MB + WASM 14.8MB，不进仓库。
+# 运行 `node scripts/fetch-beatthis-model.mjs` 准备；
+# 缺失时应用自动退回 DSP 拍点（见 docs/PLAN-AUTOMIX.md §P3）。
+# ---------------------------------------------------------------------------
+apps/desktop/resources/ort/

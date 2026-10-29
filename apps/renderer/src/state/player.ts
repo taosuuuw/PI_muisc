@@ -24,8 +24,42 @@ import type {
 /** 设置里那一档歌词源（`Settings['lyricSource']`），避免为一处类型再引一个名字。 */
 type LyricSourceMode = Settings['lyricSource'];
 import { CH, errorMessage, invoke } from '../bridge';
-import { applyVolume, getAudio } from '../lib/audio-engine';
+import {
+  applyVolume,
+  ensureDecks,
+  getActiveDeck,
+  getAudio,
+  getDeckElement,
+  switchActiveDeck,
+} from '../lib/audio-engine';
+import {
+  CUT_FADE_MS,
+  FADE_IN_MS,
+  FADE_OUT_MS,
+  PAUSE_FADE_MS,
+  automixCrossfade,
+  crossfade,
+  ensureGraph,
+  fadeIn,
+  fadeOut,
+  isGraphReady,
+  resetDeckFilters,
+  resetFade,
+  resumeGraph,
+  setDeckGain,
+  shouldStartTailFade,
+  type DeckId,
+} from '../lib/transition/fade-graph';
+import { planTransition, type TransitionPlan } from '../lib/transition/automix';
+import {
+  CROSSFADE_SEC,
+  PREFETCH_LEAD_SEC,
+  shouldArmNext,
+  shouldStartCrossfade,
+  type TransitionPhase,
+} from '../lib/transition/schedule';
 import { LYRIC_GATE_MS, isLyricPending, prefetchLyric } from '../lib/lyric-prefetch';
+import { ensureTrackProfile, peekTrackProfile } from '../lib/transition/profile-service';
 import { useNowPlaying } from './nowPlaying';
 
 /**
@@ -69,6 +103,8 @@ interface PlayerState {
   loadingGate: boolean;
   /** 当前生效的歌词源档位（`hydrate` 时从设置里抄一份）：预取歌词要用它拼缓存键。 */
   lyricMode: LyricSourceMode;
+  /** 当前生效的歌曲过渡档位（`hydrate` 时从设置里抄一份）：`off` 时一切行为退回硬切。 */
+  songTransition: 'off' | 'crossfade' | 'automix';
   /** 本轮被判过「不可播」的歌曲 id，避免反复重试同一首。 */
   unplayable: number[];
   positionMs: number;
@@ -128,6 +164,52 @@ let volumeTimer: ReturnType<typeof setTimeout> | undefined;
 let clockArmed = false;
 
 /**
+ * 歌尾淡出是不是已经为当前这一遍播放点过火了。
+ *
+ * 每首歌只该淡出一次：切歌、恢复播放、seek 之后都要把它放回 false，下一次才会重新计时。
+ */
+let tailFadeArmed = false;
+
+/**
+ * 过渡状态机（P2）：
+ *
+ * ```
+ * idle ──(距歌尾 12s)──▶ arming ──(地址到手)──▶ ready ──(距歌尾 5s)──▶ fading ──▶ idle
+ *   ▲                      │                     │                      │
+ *   └──────── 任何失败 / 用户干预 / 队列变化 ─────┴──────────────────────┘
+ * ```
+ *
+ * 判定在 `lib/transition/schedule.ts`（纯函数、可单测），这里只负责执行与回退：
+ * 任何一步不成立都退回 `idle`，P1 的尾部淡出会兜底，绝不卡在半过渡里。
+ */
+let phase: TransitionPhase = 'idle';
+
+/** 每次 arm 递增；异步解析回来时用它判断「这一轮还算数吗」。 */
+let armToken = 0;
+
+/** 已经备好的下一首（`ready` 状态下有效）。 */
+interface ArmedTrack {
+  deck: DeckId;
+  song: Song;
+  src: string;
+  audio: ResolvedAudio;
+  /** 交叉完成后要写进 store 的新队列。 */
+  queue: QueueState;
+  /** 预取开始时的队列；对不上就说明用户改过队列，这一轮作废。 */
+  baseQueue: QueueState;
+  /**
+   * AutoMix 档在预取阶段就算好的过渡方案。watcher 用它决定**什么时候**开始交叉：
+   * 交叉档是固定 5 秒，智能档可能是 8 秒（16 拍），不提前起手就放不下。
+   */
+  plan?: TransitionPlan;
+}
+let armed: ArmedTrack | undefined;
+
+function otherDeck(id: DeckId): DeckId {
+  return id === 'a' ? 'b' : 'a';
+}
+
+/**
  * 判定「播放位置已经在结尾」的容差（毫秒）。
  *
  * `<audio>` 的 `timeupdate` 与 `ended` 之间、以及 duration 的取整都会有几毫秒的出入，
@@ -175,13 +257,225 @@ function waitForLyric(
   };
 }
 
-async function playElement(): Promise<void> {
+async function playElement(target?: HTMLAudioElement): Promise<boolean> {
+  /*
+   * 两个 deck 都要在图上：交叉淡化时两路会同时出声。
+   * 元素一旦被 `createMediaElementSource` 接管，输出就只走这张图，所以必须同时确认
+   * context 在跑（否则播放器会静音）。`ensureGraph` 在纯 Node 单测里返回 undefined，
+   * `resumeGraph` 也随之变成 no-op，不会碰真实音频设备。
+   */
+  ensureGraph(ensureDecks());
+  const running = await resumeGraph();
+  if (!running) console.warn('[pi/transition] 音频图停在 suspended，这次播放可能没有声音');
+  const element = target ?? getAudio();
   try {
-    await getAudio().play();
+    await element.play();
+    return true;
   } catch (error) {
     // 切歌/暂停会打断上一次 play()，抛 AbortError 属于正常现象。
-    if ((error as { name?: string }).name === 'AbortError') return;
+    if ((error as { name?: string }).name === 'AbortError') return false;
     throw error;
+  }
+}
+
+/**
+ * 预取下一首：解析出地址后装到**备用 deck** 上，静音待命（增益为 0）。
+ *
+ * 为什么提前 12 秒：解析链要联网，慢的时候好几秒；等歌快结束了才开始就全变成空档。
+ * 解析失败 / 队列被改 / 用户切歌，都把状态退回 `idle`——P1 的尾部淡出会兜底。
+ */
+async function armNextTrack(): Promise<void> {
+  const state = usePlayer.getState();
+  if (phase !== 'idle') return;
+  const nextQueue = advance(state.queue, 'auto');
+  if (nextQueue === state.queue) return; // 没有下一首（顺序播放到头 / 单曲循环）
+  const nextId = currentId(nextQueue);
+  if (nextId === undefined) return;
+  const song = state.songs[nextId];
+  if (!song || state.unplayable.includes(song.id)) return;
+
+  phase = 'arming';
+  const token = ++armToken;
+  try {
+    const result = await invoke(CH.playerResolve, { song });
+    if (token !== armToken || phase !== 'arming') return;
+    // 解析这几秒里队列/用户状态可能变了：对不上就作废。
+    if (usePlayer.getState().queue !== state.queue) {
+      phase = 'idle';
+      return;
+    }
+    if (!result.src || !result.audio) {
+      phase = 'idle';
+      return;
+    }
+    const deck = otherDeck(getActiveDeck());
+    const element = getDeckElement(deck);
+    element.src = result.src;
+    element.load();
+    /*
+     * AutoMix：在预取阶段（还剩 12 秒左右）就把这次过渡规划好。
+     * 规划结果里的时长决定了**何时**开始交叉——固定 5 秒的窗口放不下 16 拍（8 秒），
+     * 所以不能等到了 5 秒才决定接多长。
+     */
+    const outgoingSong = usePlayer.getState().currentSong;
+    let plan: TransitionPlan | undefined;
+    if (usePlayer.getState().songTransition === 'automix' && outgoingSong) {
+      const activeElement = getAudio();
+      const remainingSec = Number.isFinite(activeElement.duration)
+        ? Math.max(0, activeElement.duration - activeElement.currentTime)
+        : CROSSFADE_SEC;
+      plan = planTransition({
+        outgoing: peekTrackProfile(outgoingSong.id),
+        incoming: peekTrackProfile(song.id),
+        remainingSec,
+        outgoingDurationSec: Number.isFinite(activeElement.duration)
+          ? activeElement.duration
+          : undefined,
+        fallbackDurationSec: CROSSFADE_SEC,
+      });
+    }
+    armed = {
+      deck,
+      song,
+      src: result.src,
+      audio: result.audio,
+      queue: nextQueue,
+      baseQueue: state.queue,
+      plan,
+    };
+    phase = 'ready';
+    /*
+     * P3：顺手把下一首的离线档案算出来（缓存里没有才真算）。
+     * fire-and-forget：它只影响「将来的过渡怎么接」，失败不影响这一次播放。
+     */
+    void ensureTrackProfile(song, result.src)
+      .then((profile) => {
+        if (!profile) return;
+        /*
+         * 档案刚算好：如果这次过渡还没开始，就用真实的段落/拍网格**重算一次 plan**。
+         * 这是「第一次听某首歌也能有 AutoMix」的关键——预取时档案多半还没落盘，
+         * 先用「提前 4 小节」占位；算完立刻换成结构起手点。
+         */
+        if (phase !== 'ready' || armed?.song.id !== song.id) return;
+        if (usePlayer.getState().songTransition !== 'automix') return;
+        const outgoingSong = usePlayer.getState().currentSong;
+        if (!outgoingSong) return;
+        const active = getAudio();
+        const duration = Number.isFinite(active.duration) ? active.duration : undefined;
+        armed.plan = planTransition({
+          outgoing: peekTrackProfile(outgoingSong.id),
+          incoming: peekTrackProfile(song.id),
+          remainingSec: duration !== undefined ? Math.max(0, duration - active.currentTime) : CROSSFADE_SEC,
+          outgoingDurationSec: duration,
+          fallbackDurationSec: CROSSFADE_SEC,
+        });
+      })
+      .catch(() => {});
+  } catch {
+    if (token === armToken) phase = 'idle';
+  }
+}
+
+/**
+ * 开始交叉：新 deck 起播 → 切活动 deck 与 store → 两条等功率曲线 → 收尾。
+ *
+ * 进场曲先 `play()` 再画曲线：元素起播有几十毫秒的延迟，先播能保证曲线开始那一刻它已经出声；
+ * 它的增益此时是 0，所以听不见。
+ */
+async function startCrossfade(): Promise<void> {
+  const current = armed;
+  if (!current || phase !== 'ready') return;
+  if (usePlayer.getState().queue !== current.baseQueue) {
+    abortTransition();
+    return;
+  }
+
+  const outgoingDeck = getActiveDeck();
+  const outgoingElement = getDeckElement(outgoingDeck);
+  // 方案在预取时就定好了；这里只负责按它执行（交叉档没有 plan，走固定时长）。
+  const plan = current.plan;
+  const seconds = plan?.durationSec ?? CROSSFADE_SEC;
+
+  phase = 'fading';
+  const fromDeck = outgoingDeck;
+  const toDeck = current.deck;
+  const element = getDeckElement(toDeck);
+
+  let started = false;
+  try {
+    // 智能档跳过测到的静音前奏（最多 8 秒），让下一首从「有内容的地方」进；
+    // 交叉档仍然从头播。
+    element.currentTime = plan?.incomingStartSec ?? 0;
+    started = await playElement(element);
+  } catch {
+    started = false;
+  }
+  if (!started) {
+    // 新歌放不出来：退回 P1 的路径，让 `ended → next` 自己走。
+    setDeckGain(toDeck, 1);
+    phase = 'idle';
+    armed = undefined;
+    return;
+  }
+
+  switchActiveDeck(toDeck);
+  clockArmed = true;
+  tailFadeArmed = false;
+  useNowPlaying.getState().select(current.song);
+  usePlayer.setState({
+    queue: current.queue,
+    currentSong: current.song,
+    src: current.src,
+    audio: current.audio,
+    status: 'playing',
+    positionMs: 0,
+    durationMs: current.song.durationMs ?? 0,
+    loadingGate: false,
+    error: null,
+    notice: null,
+  });
+  // 交叉和「等歌词」不共存：先让歌词开始拉，界面上不会空着。
+  void prefetchLyric(current.song, usePlayer.getState().lyricMode);
+
+  // 只弯出场曲：`preservesPitch` 保持音高，避免「变速 = 变调」的廉价感。
+  if (plan && Math.abs(plan.tempoRatio - 1) > 1e-6) {
+    outgoingElement.preservesPitch = true;
+    outgoingElement.playbackRate = plan.tempoRatio;
+  }
+
+  if (plan) {
+    console.info(`[pi/automix] ${plan.style}（${seconds.toFixed(1)}s）：${plan.reason}`);
+    await automixCrossfade(fromDeck, toDeck, { style: plan.style, durationSec: seconds });
+  } else {
+    await crossfade(fromDeck, toDeck, seconds);
+  }
+
+  const outElement = getDeckElement(fromDeck);
+  outElement.pause();
+  outElement.playbackRate = 1;
+  setDeckGain(fromDeck, 1);
+  // 滤波器必须复位，否则下一轮会带着上一轮的 -12dB 低频。
+  resetDeckFilters(fromDeck);
+  resetDeckFilters(toDeck);
+  phase = 'idle';
+  armed = undefined;
+}
+
+/**
+ * 中止过渡并回到干净状态。**任何用户干预都要先调它**：
+ * 切歌、暂停、seek、队列变化、设置里换档位。
+ */
+function abortTransition(): void {
+  if (phase === 'idle' && armed === undefined) return;
+  armToken += 1;
+  const fading = phase === 'fading';
+  phase = 'idle';
+  armed = undefined;
+  if (fading) {
+    // 活动 deck 已经切到新歌，出场的那一路还在响：停掉并复位，免得下次预取时它带着旧增益。
+    const idleDeck = otherDeck(getActiveDeck());
+    getDeckElement(idleDeck).pause();
+    setDeckGain(idleDeck, 1);
   }
 }
 
@@ -190,6 +484,8 @@ export const usePlayer = create<PlayerState>((set, get) => {
   async function loadCurrent(): Promise<void> {
     // 解析期间元素里还是上一首（下面有 await）：先关时钟，别让它的 timeupdate 写进新歌状态。
     clockArmed = false;
+    // 任何一次「重新装填」都意味着上一轮预取/交叉作废。
+    abortTransition();
     /*
      * 用户本轮第 1 条：「切换歌曲时，下一首加载歌词前，上一首歌就应该停止播放了」。
      *
@@ -199,7 +495,19 @@ export const usePlayer = create<PlayerState>((set, get) => {
      * 它触发的 `pause` 事件不会把状态写成 `paused`：本函数紧接着就把状态置成 `resolving`，
      * 而 `reportPlaying()` 只认 `playing` ↔ `paused` 两态（见文件末尾）。
      */
-    getAudio().pause();
+    const element = getAudio();
+    /*
+     * 手动切歌先收个尾（90ms）：直接 `pause()` 是在波形中间硬停，听感上就是「啪」一下。
+     * 自动切歌（`ended` 之后走到这里）元素已经 paused，不会多等这一下。
+     *
+     * 只有音频图真的存在时才 `await`：纯 Node 单测里没有 AudioContext，`fadeOut` 是个
+     * 即时 resolve 的空操作，但 `await` 本身会让出微任务——那会破坏下面这条既有契约
+     * 「`pause()` 发生在任何 `await` 之前」，也让人以为代码变慢了。
+     */
+    if (get().songTransition !== 'off' && isGraphReady() && !element.paused) {
+      await fadeOut(CUT_FADE_MS, getActiveDeck());
+    }
+    element.pause();
     const state = get();
     const id = currentId(state.queue);
     const song = id === undefined ? undefined : state.songs[id];
@@ -260,7 +568,6 @@ export const usePlayer = create<PlayerState>((set, get) => {
         return;
       }
 
-      const element = getAudio();
       element.src = result.src;
       // 元素从这一刻起指的是这一首，之后的 timeupdate 才属于它。
       clockArmed = true;
@@ -268,6 +575,17 @@ export const usePlayer = create<PlayerState>((set, get) => {
       set({ src: result.src, audio: result.audio, status: 'playing', notice: null, loadingGate: false });
       skipGuard = 0;
       await playElement();
+      // 新歌从静音升到满幅：这是 P1「不硬切」的另一半（收尾淡出 + 起头淡入）。
+      if (get().songTransition !== 'off') fadeIn(FADE_IN_MS, getActiveDeck());
+      tailFadeArmed = false;
+      /*
+       * 智能档：这首歌如果是「队列第一首」（之前没人预取过它），它出场时就没有档案，
+       * 也就谈不上按段落混出去。播放开始后顺手把它自己分析掉——下一次它当出场曲时就有了。
+       * 已经有档案的会直接命中缓存，不会重复算。
+       */
+      if (get().songTransition === 'automix') {
+        void ensureTrackProfile(song, result.src).catch(() => {});
+      }
     } catch (error) {
       set({ status: 'error', error: errorMessage(error), loadingGate: false });
     }
@@ -301,6 +619,7 @@ export const usePlayer = create<PlayerState>((set, get) => {
     notice: null,
     loadingGate: false,
     lyricMode: 'auto',
+    songTransition: 'crossfade',
     unplayable: [],
     positionMs: 0,
     durationMs: 0,
@@ -309,9 +628,17 @@ export const usePlayer = create<PlayerState>((set, get) => {
     mode: 'order',
 
     hydrate: (settings) => {
+      // 换档位（例如从「交叉」切回「淡变」）时，正在酝酿的那一轮过渡要作废。
+      abortTransition();
       applyVolume(settings.volume, get().muted);
       // 顺带记下歌词源档位：等歌词时用它拼缓存键（必须和 `useLyric` 同一份，否则白等）。
-      set({ volume: settings.volume, mode: settings.playMode, lyricMode: settings.lyricSource });
+      set({
+        volume: settings.volume,
+        mode: settings.playMode,
+        lyricMode: settings.lyricSource,
+        // 老设置里没有这个字段：缺省按「淡变」算，与 DEFAULT_SETTINGS 一致。
+        songTransition: settings.songTransition ?? 'crossfade',
+      });
     },
 
     restoreLast(song, songs) {
@@ -397,6 +724,17 @@ export const usePlayer = create<PlayerState>((set, get) => {
     async toggle() {
       const state = get();
       if (state.status === 'playing') {
+        /*
+         * 暂停也走 90ms 的斜坡：直接 `pause()` 是从某个波形值一刀切到 0。
+         * 淡出的这 90ms 里用户可能已经点了别的歌（`loadCurrent` 把状态改成 resolving 甚至开播了），
+         * 那一下不该再把新状态踩回 paused——所以回来要重新核对一遍。
+         */
+        abortTransition();
+        if (state.songTransition !== 'off' && isGraphReady()) {
+          await fadeOut(PAUSE_FADE_MS, getActiveDeck());
+        }
+        const after = get();
+        if (after.status !== 'playing' || after.src !== state.src) return;
         getAudio().pause();
         set({ status: 'paused' });
         return;
@@ -436,6 +774,9 @@ export const usePlayer = create<PlayerState>((set, get) => {
         set(atSequenceEnd ? { status: 'playing', positionMs: 0, notice: null } : { status: 'playing' });
         try {
           await playElement();
+          // 恢复播放：从暂停时的当前增益（可能已经淡到 0）升回满幅。
+          if (state.songTransition !== 'off') fadeIn(PAUSE_FADE_MS, getActiveDeck());
+          tailFadeArmed = false;
         } catch (error) {
           set({ status: 'error', error: errorMessage(error) });
         }
@@ -468,7 +809,15 @@ export const usePlayer = create<PlayerState>((set, get) => {
 
     seek(positionMs) {
       const target = Math.max(0, positionMs);
+      // 拖进度条一定会打断正在酝酿的交叉：那一轮的目标位置已经不对了。
+      abortTransition();
       getAudio().currentTime = target / 1000;
+      /*
+       * 拖回播放中途时必须把增益恢复满幅：歌尾那一段已经淡出过，不重置的话用户会以为
+       * 「拖回来以后整首都没声音」（qplayer 踩过这个坑）。进度变了，歌尾的淡出也要重新计时。
+       */
+      if (get().songTransition !== 'off') resetFade(getActiveDeck());
+      tailFadeArmed = false;
       set({ positionMs: target });
     },
 
@@ -515,3 +864,59 @@ export const usePlayer = create<PlayerState>((set, get) => {
     },
   };
 });
+
+/**
+ * 过渡看门狗（P1 的尾部淡出 + P2 的预取 / 交叉）。
+ *
+ * 为什么不用 `timeupdate`：它只有 4Hz，250ms 的误差会让 900ms 的淡出起步晚一截；
+ * 也不挂 rAF：窗口最小化 / 收进托盘时 rAF 会停，那时候就再也等不到。
+ * 200ms 一次读 `currentTime` 是折中；后台被节流到 1s 时，`fadeOut(剩余时间)` 自己会缩短。
+ */
+function watchTransition(): void {
+  const state = usePlayer.getState();
+  const audio = getAudio();
+  if (state.songTransition === 'off') return;
+  if (audio.paused) return;
+  const duration = audio.duration;
+  if (!Number.isFinite(duration) || duration <= 0) return;
+  const remaining = duration - audio.currentTime;
+  if (!Number.isFinite(remaining) || remaining <= 0) return;
+
+  /*
+   * 交叉档与智能档共用同一条「预取 → 到点交叉」的调度；两者的区别只在
+   * `startCrossfade` 里：智能档会先算 plan（量化长度、变速、选接法），交叉档用固定时长。
+   * 这里如果只认 `crossfade`，智能档就会静默掉进下面的淡变兜底——永远不交叉。
+   */
+  if (state.songTransition === 'crossfade' || state.songTransition === 'automix') {
+    /*
+     * 智能档要更早预取：分析一首歌要 10~14 秒，而起手点又可能提前到剩余 20 秒以上。
+     * 沿用交叉档的 12 秒窗口的话，交叉会在档案落盘之前就开始，等于没用上段落对齐。
+     */
+    const armLead = state.songTransition === 'automix' ? 60 : PREFETCH_LEAD_SEC;
+    // ① 到预取窗口：先把下一首解析好、装到备用 deck 上（静音待命）。
+    if (shouldArmNext(remaining, phase, armLead)) {
+      void armNextTrack();
+      return;
+    }
+    // ② 到交叉点：两条等功率曲线接上。智能档按 plan 的起手点提前开（有段落表时
+    //    从最后一个副歌结束处混入，没有则是提前 4 小节的 outro 段）。
+    const startAt = armed?.plan?.startAtRemainingSec ?? CROSSFADE_SEC;
+    if (shouldStartCrossfade(remaining, phase, startAt)) {
+      void startCrossfade();
+      return;
+    }
+  }
+
+  // 交叉之外（以及交叉失败回退之后）才轮到 P1 的尾部淡出兜底。
+  if (phase !== 'idle') return;
+  if (!shouldStartTailFade(remaining, tailFadeArmed)) return;
+  tailFadeArmed = true;
+  void fadeOut(Math.min(FADE_OUT_MS, remaining * 1000), getActiveDeck());
+}
+
+// 单测跑在纯 Node 里：没有 `window` 就不启动，免得定时器拖住进程，也免得碰 `getAudio()`。
+if (typeof window !== 'undefined') {
+  const timer = setInterval(watchTransition, 200);
+  // Node 环境（万一有 `window` 的 shim）里不要因为这个定时器拖住进程。
+  (timer as unknown as { unref?: () => void }).unref?.();
+}

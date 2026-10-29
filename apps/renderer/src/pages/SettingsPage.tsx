@@ -1016,6 +1016,36 @@ function UiTab(): ReactNode {
         </div>
 
         {/*
+          歌曲过渡（`docs/PLAN-AUTOMIX.md` 的 P1 档）：切歌 / 暂停 / 恢复时对增益做淡入淡出，
+          歌尾提前淡出。默认开；关掉之后行为与加这一项之前完全一致（硬切）。
+          字段是 `songTransition`（`packages/shared` 的 `Settings`）。
+        */}
+        <div className="pi-setting" data-song-transition-setting="true">
+          <span>
+            <span
+              className="pi-setting__title"
+              title="「交叉」：歌尾前 12 秒先解析下一首，最后 5 秒两首歌叠在一起交接。「智能」：按拍网格与段落边界对齐，微调速度、进场曲一上来就满电平还会让低频先让位。「关」：硬切。"
+            >
+              自动过渡
+            </span>
+            <span className="pi-setting__hint">交叉 / 智能 / 关</span>
+          </span>
+          <Segmented
+            ariaLabel="自动过渡"
+            value={value.songTransition}
+            disabled={patch.isPending}
+            options={[
+              { value: 'crossfade', label: '交叉' },
+              { value: 'automix', label: '智能' },
+              { value: 'off', label: '关' },
+            ]}
+            onChange={(next) =>
+              patch.mutate({ songTransition: next as 'off' | 'crossfade' | 'automix' })
+            }
+          />
+        </div>
+
+        {/*
           用户第五轮第 19 条：「这个开关直接去掉，默认硬件」。
           所以这里**没有开关**了，只留一行**状态**：平时是一句很轻的「当前用硬件加速」，
           真被自动降级成软件渲染时才变红——那种情况下用户得知道「卡」是因为什么。

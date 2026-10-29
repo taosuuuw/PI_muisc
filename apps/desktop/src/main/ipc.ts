@@ -34,6 +34,7 @@ import {
 } from '@pi/ipc';
 import {
   type AccountCapability,
+  type AutomixResources,
   type CacheClearResult,
   type CommentLikeResult,
   type CommentPage,
@@ -175,6 +176,9 @@ export function registerIpc(
   register<void, AccountCapability>(CH.accountCapability, () => services.getCapability());
 
   register<void, Settings>(CH.settingsGet, () => services.getSettings());
+
+  // P3：Beat This! 的模型 / WASM 地址（走本地代理）；缺文件时 available=false，渲染层退回 DSP。
+  register<void, AutomixResources>(CH.automixResources, () => services.automixResources());
 
   register<Partial<Settings>, Settings>(CH.settingsPatch, async (patch) => {
     const next = await services.patchSettings(patch ?? {});

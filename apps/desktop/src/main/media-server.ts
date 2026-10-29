@@ -17,6 +17,12 @@ import type { ResolvedAudio } from '@pi/shared';
  *
  * 安全：只监听 127.0.0.1，且每个地址都带随机 token；渲染进程只拿到不透明的 mediaKey，
  * 既看不到上游 URL，也看不到任何请求头。
+ *
+ * 跨源：渲染进程（打包态是 `file://`，Origin 为 `null`）要能把这份媒体接进 Web Audio，
+ * `<audio>` 必须带 `crossOrigin="anonymous"`，而 Chromium 对跨源媒体做 CORS 校验——
+ * 响应里没有 `Access-Control-Allow-Origin` 时，`MediaElementAudioSourceNode` 会输出**零样本**
+ * （播放看起来正常，波形全是 0）。所以这里对每个响应都补上 ACAO。token 仍然是唯一门槛：
+ * 拿到 token 的本机进程本来就能直接取字节，加这个头不扩大攻击面（详见 docs/PLAN-AUTOMIX.md §P0）。
  */
 
 export interface MediaServerOptions {
@@ -99,6 +105,9 @@ export class MediaServer {
 
   private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     try {
+      // 每个响应都带 CORS 头（含 403/404/416/502）：跨源媒体进 Web Audio 的前提，
+      // 也让将来分析侧的 `fetch` 能读到真实的错误状态码，而不是笼统的 «网络错误»。
+      applyCors(res);
       if (!isLoopback(req.socket.remoteAddress)) {
         this.fail(res, 403, '仅允许本机访问');
         return;
@@ -106,6 +115,13 @@ export class MediaServer {
       const url = new URL(req.url ?? '/', 'http://127.0.0.1');
       if (url.searchParams.get('t') !== this.token) {
         this.fail(res, 403, 'token 无效');
+        return;
+      }
+      // 预检：现在只有 GET/HEAD（Range 属于 CORS 安全头，通常不触发预检），
+      // 先把路留出来，免得将来分析侧加了自定义头变成静默失败。
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204, { 'access-control-max-age': '600' });
+        res.end();
         return;
       }
       const key = MEDIA_KEY_PATTERN.exec(url.pathname)?.[1];
@@ -244,6 +260,21 @@ export class MediaServer {
   }
 }
 
+/**
+ * 给响应补上跨源所需的头。
+ *
+ * `*` 而不是回写 `Origin`：请求不带凭据（token 在 URL 里，走的是「匿名」这一档），
+ * `*` 对 `file://` 页面的 `null` origin 同样成立，省掉一层拼接与缓存歧义。
+ *
+ * `expose-headers` 是为了将来分析侧读 `content-range`（它不在 CORS 安全头白名单里）。
+ */
+function applyCors(res: ServerResponse): void {
+  res.setHeader('access-control-allow-origin', '*');
+  res.setHeader('access-control-allow-methods', 'GET, HEAD, OPTIONS');
+  res.setHeader('access-control-allow-headers', 'range');
+  res.setHeader('access-control-expose-headers', 'content-range, content-length, accept-ranges');
+}
+
 function isLoopback(address: string | undefined): boolean {
   if (!address) return false;
   return address === '::1' || address === '::ffff:127.0.0.1' || address.startsWith('127.');
@@ -302,6 +333,11 @@ function contentTypeFor(filePath: string): string {
       return 'audio/x-ape';
     case 'wma':
       return 'audio/x-ms-wma';
+    case 'mjs':
+    case 'js':
+      return 'text/javascript; charset=utf-8';
+    case 'wasm':
+      return 'application/wasm';
     default:
       return 'application/octet-stream';
   }

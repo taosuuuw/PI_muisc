@@ -45,6 +45,11 @@ vi.mock('../lib/audio-engine', () => ({
   getAudio: () => audio,
   applyVolume: () => {},
   currentTimeMs: () => 0,
+  // P2 双 deck：单测不跨到交叉那条路，两个 deck 都指向同一个假元素即可。
+  ensureDecks: () => ({ a: audio, b: audio }),
+  getActiveDeck: () => 'a',
+  getDeckElement: () => audio,
+  switchActiveDeck: () => {},
 }));
 
 vi.mock('../bridge', () => ({

@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import type { QueueState } from '@pi/player-core';
 import { usePlayer } from '../state/player';
 import { coverAt } from '../lib/cover';
+import { upNextWindowMs } from '../lib/transition/up-next-window';
 import '../styles/up-next-card.css';
 
 /**
@@ -15,20 +16,14 @@ import '../styles/up-next-card.css';
  * - 「在结束前 **5s** 出现」⇒ 窗口从 10s 收到 5s。
  *
  * 所以这张卡片的生命周期是**一首歌的最后一小段**：
- * - 剩余时间 ≤ `UP_NEXT_WINDOW_MS`（5s）才出现——这是「即将播放」的定义，
- *   不是「队列里还有下一首」就出（那会有一整首歌的时间都挂着它，等于噪声）；
+ * - 剩余时间 ≤ `upNextWindowMs(...)`（非交叉档 5s、交叉档 5s + 交叉时长）才出现——
+ *   这是「即将播放」的定义，不是「队列里还有下一首」就出（那会有一整首歌的时间都挂着它，等于噪声）；
  * - 下一首真的开始播时，剩余时间回到整首，本卡片自己消失；同时左下角那张歌曲名片
  *   按 `HomePage` 的换歌逻辑冒出来（停留 5s，见 `SONG_CARD_SHOW_MS`）——正好就是用户要的交接。
  *
  * 为什么自己算「下一首」而不用现成的函数：`player-core` 只有 `advance`（会真的换歌），
  * 预览下一首得另算，见 `peekNextId`。
  */
-
-/**
- * 剩余多少毫秒之内算「马上要播下一首」（第十八轮第 11 条：结束前 5s）。
- */
-export const UP_NEXT_WINDOW_MS = 5_000;
-
 /**
  * 预览队列里的下一首 id（不改状态）。
  *
@@ -63,6 +58,7 @@ export function UpNextCard(): ReactNode {
   const positionMs = usePlayer((s) => s.positionMs);
   const durationMs = usePlayer((s) => s.durationMs);
   const status = usePlayer((s) => s.status);
+  const songTransition = usePlayer((s) => s.songTransition);
 
   const nextId = peekNextId(queue);
   const next = nextId === null ? null : songs[nextId];
@@ -70,7 +66,7 @@ export function UpNextCard(): ReactNode {
   if (!next || (status !== 'playing' && status !== 'paused')) return null;
   if (durationMs <= 0) return null;
   const remainMs = durationMs - positionMs;
-  if (remainMs > UP_NEXT_WINDOW_MS) return null;
+  if (remainMs > upNextWindowMs(songTransition)) return null;
 
   const cover = coverAt(next.album?.coverUrl, 120);
   const artists = next.artists?.map((artist) => artist.name).join(' / ') ?? '';

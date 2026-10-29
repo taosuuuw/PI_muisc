@@ -569,6 +569,57 @@ export function PiQuickSettingsCard({
             </div>
 
             {/*
+              自动过渡（`docs/PLAN-AUTOMIX.md`）：交叉 / 智能 / 关。用户 2026-10-29 要求它
+              挪到「歌词来源」上面——它比歌词来源更常调，放上面更顺手。
+              它和「默认音质」「歌词来源」同属「这首歌怎么听」，所以併进音质这一页，
+              不新开分页（冒烟按「恰好四颗分页键」断言，加第五页会假红）。
+              字段是 `songTransition`（`packages/shared` 的 `Settings`），设置页里那个开关改的是同一个值。
+            */}
+            <div className="pi-quick-head" data-quick-switch="song-transition">
+              <span className="pi-quick-head__label">自动过渡</span>
+              <span className="pi-quick-head__value">
+                {value.songTransition === 'off'
+                  ? '关'
+                  : value.songTransition === 'crossfade'
+                    ? '交叉'
+                    : '智能'}
+              </span>
+            </div>
+            <div className="pi-quick-choices" data-quick-choices="song-transition">
+              {[
+                { key: 'crossfade', label: '交叉', icon: 'shuffle' },
+                { key: 'automix', label: '智能', icon: 'bars' },
+                { key: 'off', label: '关', icon: 'mute' },
+              ].map((item) => (
+                <button
+                  key={item.key}
+                  type="button"
+                  className="pi-quick-choice"
+                  data-quick-choice={`song-transition-${item.key}`}
+                  data-active={value.songTransition === item.key}
+                  title={
+                    item.key === 'automix'
+                      ? '按拍网格与段落边界对齐，微调速度；进场曲一上来就满电平还会让低频先让位'
+                      : item.key === 'crossfade'
+                        ? '歌尾前 12 秒解析下一首，最后 5 秒两首叠在一起交接'
+                        : '关掉后是硬切，与加这个开关之前一样'
+                  }
+                  disabled={patch.isPending}
+                  onClick={() =>
+                    patch.mutate({
+                      songTransition: item.key as 'off' | 'crossfade' | 'automix',
+                    })
+                  }
+                >
+                  <span className="pi-quick-choice__icon" aria-hidden="true">
+                    <Icon name={item.icon as IconName} size={18} />
+                  </span>
+                  <span className="pi-quick-choice__text">{item.label}</span>
+                </button>
+              ))}
+            </div>
+
+            {/*
               歌词来源（用户第五轮第 4 条：「歌词来源这一栏移到音质选择下面去」）。
               它原来占的是自己一整页，现在併进「音质」页、紧跟在六颗音质按键下面：
               这两件事在界面上本来就是同一类 ——「这首歌用什么听、歌词从哪来」。

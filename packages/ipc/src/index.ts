@@ -12,6 +12,7 @@ import { z } from 'zod';
 import type {
   AccountCapability,
   AudioProbe,
+  AutomixResources,
   CacheClearResult,
   Comment,
   CommentLikeResult,
@@ -884,6 +885,8 @@ export const SettingsSchema = z.object({
       offsetY: z.number().min(-1).max(1),
     })
     .nullable(),
+  /** 歌曲过渡方式（`docs/PLAN-AUTOMIX.md`）：`crossfade` 交叉重叠、`automix` 智能（拍/段落对齐）、`off` 硬切。 */
+  songTransition: z.enum(['off', 'crossfade', 'automix']),
 });
 
 export const SettingsPatchSchema = SettingsSchema.partial();
@@ -1085,6 +1088,8 @@ export const CH = {
   libraryPlaylistCreate: 'library:playlist-create',
   libraryPlaylistEditTracks: 'library:playlist-edit-tracks',
   playerResolve: 'player:resolve',
+  /** P3：Beat This! 的模型 / WASM 地址（走本地代理，带 token）。 */
+  automixResources: 'automix:resources',
   /** M5 下载：列表 / 加入 / 暂停 / 继续 / 重试 / 移除。出参统一是整份列表。 */
   downloadsList: 'downloads:list',
   downloadsAdd: 'downloads:add',
@@ -1248,6 +1253,8 @@ export interface RouteMap {
     input: z.input<typeof PlayResolveRequestSchema>;
     output: z.infer<typeof PlayResolveResponseSchema>;
   };
+  /** P3：Beat This! 推理资源地址；不可用时 `available=false`，渲染层退回 DSP。 */
+  [CH.automixResources]: { input: void; output: AutomixResources };
   /**
    * M5 下载队列。六个通道的出参都是**整份** `DownloadTask[]`：
    * 队列是主进程的单一真相，界面拿快照渲染，省掉一堆增量同步的边界 bug。
