@@ -589,6 +589,25 @@ export const DEFAULT_LYRIC_TUNING: LyricTuning = {
 /** 音源层级（docs/ADR/0001-音源解析链.md 的链序）。 */
 export type SourceTier = 'official' | 'unm' | 'aggregator' | 'lx' | 'local';
 
+/**
+ * Beat This! 推理资源的地址（P3）。
+ *
+ * 模型与 WASM 走主进程的本地代理（渲染进程是 `file://`，不能 fetch 本地文件），
+ * 所以这里给的是带 token 的 http 地址；`available=false` 时渲染进程回退到 DSP 拍点。
+ */
+export interface AutomixResources {
+  /** 三个文件都在才算可用。 */
+  available: boolean;
+  modelUrl: string;
+  /**
+   * wasm 目录前缀（不带 token）：ONNX Runtime 会自己拼 `ort-wasm-simd-threaded.{mjs,wasm}`，
+   * 带查询串的目录前缀会被它拼坏，所以静态路由在 token 校验之前放行（仅 loopback）。
+   */
+  wasmBase: string;
+  /** 不可用的原因（缺哪个文件），给日志用。 */
+  reason?: string;
+}
+
 export interface Settings {
   theme: ThemeMode;
   /** 默认请求音质；实际会被账号能力与实测结果夹逼。 */

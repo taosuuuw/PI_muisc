@@ -55,6 +55,7 @@ import {
   type TransitionPhase,
 } from '../lib/transition/schedule';
 import { LYRIC_GATE_MS, isLyricPending, prefetchLyric } from '../lib/lyric-prefetch';
+import { ensureTrackProfile } from '../lib/transition/profile-service';
 import { useNowPlaying } from './nowPlaying';
 
 /**
@@ -311,6 +312,11 @@ async function armNextTrack(): Promise<void> {
       baseQueue: state.queue,
     };
     phase = 'ready';
+    /*
+     * P3：顺手把下一首的离线档案算出来（缓存里没有才真算）。
+     * fire-and-forget：它只影响「将来的过渡怎么接」，失败不影响这一次播放。
+     */
+    void ensureTrackProfile(song, result.src).catch(() => {});
   } catch {
     if (token === armToken) phase = 'idle';
   }

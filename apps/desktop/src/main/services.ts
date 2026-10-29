@@ -1,5 +1,6 @@
 import { app, safeStorage } from 'electron';
 import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { open } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -35,6 +36,7 @@ import {
   qualityRank,
   type AccountCapability,
   type AudioProbe,
+  type AutomixResources,
   type CommentPage,
   type CommentLikeResult,
   type CommentPostResult,
@@ -125,6 +127,8 @@ export class Services {
   readonly ncm: NcmClient;
   /** 本地音频代理：渲染进程的 `<audio>` 只认它给出的地址。 */
   readonly media: MediaServer;
+  /** Beat This! 资源目录（模型 + WASM）；可能不存在，`automixResources()` 会如实报告。 */
+  private readonly ortDir: string;
   /** M5 下载管理器：下载队列 + 本地文件清单。 */
   readonly downloads: DownloadsManager;
 
@@ -239,6 +243,15 @@ export class Services {
       userDataDir,
     );
 
+    /*
+     * Beat This! 的资源目录：开发态在 `apps/desktop/resources/ort`，打包态在 `resources/ort`。
+     * 目录可能不存在（没跑过资源准备脚本）——那种情况下 `automixResources()` 返回不可用，
+     * 渲染层自动退回 DSP 拍点，不影响播放。
+     */
+    this.ortDir = app.isPackaged
+      ? path.join(process.resourcesPath, 'ort')
+      : path.join(app.getAppPath(), 'resources', 'ort');
+
     this.media = new MediaServer({
       lookup: (key) => this.lookupMedia(key),
       upstreamHeaders: NEUTRAL_UPSTREAM_HEADERS,
@@ -292,6 +305,33 @@ export class Services {
       .catch((err: unknown) => {
         console.error('[pi/media] 启动本地音频代理失败：', err);
       });
+  }
+
+  /**
+   * Beat This! 的推理资源地址（P3）。
+   *
+   * 模型 83MB、WASM 14.8MB，渲染进程只能通过 http 取（打包态是 `file://`，不能 fetch 本地文件），
+   * 所以这里给的是本地代理的带 token 地址；缺文件时 `available=false`，渲染层退回 DSP。
+   */
+  automixResources(): AutomixResources {
+    // 加载器已经 vendor 进渲染层的 bundle，这里只需要模型与 wasm 二进制。
+    const files = ['beat_this.onnx', 'ort-wasm-simd-threaded.wasm'];
+    const missing = files.filter((name) => !existsSync(path.join(this.ortDir, name)));
+    if (missing.length > 0) {
+      return {
+        available: false,
+        modelUrl: '',
+        wasmBase: '',
+        reason: `缺少 ${missing.join('、')}（应放在 ${this.ortDir}）`,
+      };
+    }
+    return {
+      available: true,
+      // 走自定义 scheme（不是 http）：ONNX Runtime 要动态 import wasm 加载器，
+      // 而 file:// 页面不允许 import 跨源模块。`pi-ort://ort/` 由主进程的 protocol.handle 提供。
+      modelUrl: 'pi-ort://ort/beat_this.onnx',
+      wasmBase: 'pi-ort://ort/',
+    };
   }
 
   async getSettings(): Promise<Settings> {

@@ -7,10 +7,12 @@ import {
   globalShortcut,
   nativeImage,
   nativeTheme,
+  protocol,
   shell,
 } from 'electron';
 import type { NativeImage } from 'electron';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Services, thirdPartyEnabled } from './services.js';
@@ -19395,21 +19397,31 @@ rightOpacity: last === undefined ? '' : getComputedStyle(last).opacity,
     );
     {
       /*
-       * ⑪「接下来播放」小名片：进尾声 7s 时**不该**有它（窗口从 10s 收成 5s 了），
-       * 进尾声 3s 时才该有，而且贴在左下（`left` 约 22px，不是原来的右边 26px）。
+       * ⑪「接下来播放」小名片：窗口随过渡档位变——fade 是最后 5s，crossfade 是 5s + 交叉时长
+       * （P2 补丁：交叉提前 5 秒切歌，卡片必须提前出现）。所以「窗口外」与「窗口内」这两个
+       * 取样点不能写死 7s / 3s，要按当前设置算。
        */
+      const upNextWindowMs =
+        (await services.getSettings()).songTransition === 'crossfade' ? 10_000 : 5_000;
       const upNext = (await win.webContents.executeJavaScript(
         `(async () => {
            const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
            // 音频元素是 new Audio() 建的、不在 DOM 里（见上面 readLyricWheel 的注释）：
            // 只能读 window.__piAudio，querySelector('audio') 恒为 null。
            const audio = window.__piAudio;
-           if (!audio || !Number.isFinite(audio.duration) || audio.duration <= 12) return null;
+           const windowMs = ${upNextWindowMs};
+           if (!audio || !Number.isFinite(audio.duration)) return null;
            const total = audio.duration;
-           audio.currentTime = total - 7;
+           if (total * 1000 <= windowMs + 4000) return null;
+           audio.currentTime = Math.max(0, total - (windowMs / 1000 + 2));
            await sleep(760);
            const far = document.querySelector('[data-up-next]') !== null;
-           audio.currentTime = total - 3;
+           /*
+            * 窗口内取样点取「窗口 - 2 秒」而不是固定的 3 秒：交叉档的窗口是 10 秒，
+            * 而交叉在剩余 5 秒就真的开始切歌了——3 秒处卡片已经按设计消失、换成歌曲名片。
+            * 取 8 秒（crossfade）/ 3 秒（fade）都能落在「卡片该显示且还没开始交叉」的区间里。
+            */
+           audio.currentTime = Math.max(0, total - (windowMs / 1000 - 2));
            await sleep(760);
            const node = document.querySelector('[data-up-next]');
            const rect = node === null ? null : node.getBoundingClientRect();
@@ -19420,7 +19432,7 @@ rightOpacity: last === undefined ? '' : getComputedStyle(last).opacity,
              left: rect === null ? -1 : Math.round(rect.left),
              cssLeft: style === null ? '' : style.left,
            };
-           audio.currentTime = Math.max(0, total - 12);
+           audio.currentTime = Math.max(0, total - (windowMs / 1000 + 5));
            return look;
          })()`,
         true,
@@ -19431,8 +19443,9 @@ rightOpacity: last === undefined ? '' : getComputedStyle(last).opacity,
           : upNext.far === false && upNext.near && Math.abs(upNext.left - 22) <= 5;
       r18UpNextInfo =
         upNext === null
-          ? '没拿到正在播放的音频（或时长太短量不出 10s 窗口）'
-          : `尾声 7s 时=${upNext.far}（要求 false） 尾声 3s 时=${upNext.near}` +
+          ? '没拿到正在播放的音频（或时长太短量不出窗口）'
+          : `窗口外 ${upNextWindowMs / 1000 + 2}s 时=${upNext.far}（要求 false）` +
+            ` 窗口内 ${upNextWindowMs / 1000 - 2}s 时=${upNext.near}` +
             ` left=${upNext.left}px（CSS ${upNext.cssLeft}，要求 ≈22 而不是右边）`;
       await delay(240);
     }
@@ -21390,7 +21403,58 @@ async function runSettingsSmoke(win: BrowserWindow): Promise<void> {
   }
 }
 
+/**
+ * Beat This! 的推理资源用自定义 scheme 提供（P3）。
+ *
+ * 为什么不用 media-server 的 http：ONNX Runtime 在运行时**动态 import** wasm 加载器
+ * （`import(url)`），而打包态页面是 `file://`——Chromium 不允许 file:// 页面 import 跨源模块，
+ * 实测报 `Failed to fetch dynamically imported module`。换成自定义标准 scheme 后，
+ * 它和 http 一样受 CORS 管理，动态 import 才能成立。
+ *
+ * 必须在 app ready 之前注册。
+ */
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: 'pi-ort',
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      corsEnabled: true,
+      stream: true,
+    },
+  },
+]);
+
 void app.whenReady().then(async () => {
+  // Beat This! 资源：从 resources/ort 只读提供，文件名白名单（无路径分隔符）。
+  {
+    const ortDir = app.isPackaged
+      ? path.join(process.resourcesPath, 'ort')
+      : path.join(app.getAppPath(), 'resources', 'ort');
+    protocol.handle('pi-ort', async (request) => {
+      const url = new URL(request.url);
+      const name = url.pathname.replace(/^\//, '');
+      if (!/^[A-Za-z0-9_.-]{1,80}$/.test(name)) {
+        return new Response('bad request', { status: 400 });
+      }
+      try {
+        const data = await readFile(path.join(ortDir, name));
+        const ext = path.extname(name).slice(1).toLowerCase();
+        const contentType =
+          ext === 'wasm'
+            ? 'application/wasm'
+            : ext === 'mjs'
+              ? 'text/javascript'
+              : 'application/octet-stream';
+        return new Response(data, {
+          headers: { 'content-type': contentType, 'access-control-allow-origin': '*' },
+        });
+      } catch {
+        return new Response('not found', { status: 404 });
+      }
+    });
+  }
   try {
     await services.init();
   } catch (err) {

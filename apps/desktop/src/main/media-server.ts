@@ -333,6 +333,11 @@ function contentTypeFor(filePath: string): string {
       return 'audio/x-ape';
     case 'wma':
       return 'audio/x-ms-wma';
+    case 'mjs':
+    case 'js':
+      return 'text/javascript; charset=utf-8';
+    case 'wasm':
+      return 'application/wasm';
     default:
       return 'application/octet-stream';
   }
