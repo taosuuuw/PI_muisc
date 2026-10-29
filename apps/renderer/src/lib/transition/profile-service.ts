@@ -4,6 +4,7 @@ import { analyzeSamples, downmixAndDownsample, type TrackProfileCore } from './a
 import { detectBeatWithModelInWorker, warmUpBeatThis, type BeatGridResult } from './beat-this';
 import { readProfile, writeProfile } from './profile-cache';
 import { PROFILE_VERSION, type TrackProfile } from './profile';
+import { detectSections } from './structure';
 
 /**
  * 分析服务（P3）：把一首歌变成一份 `TrackProfile`。
@@ -125,6 +126,14 @@ async function analyze(song: Song, src: string): Promise<TrackProfile | undefine
         console.warn('[pi/automix] Beat This! 推理失败，拍点用 DSP 兜底：', error);
       }
     }
+    /*
+     * 结构段落要在 samples 被 transfer 给 Worker 之前算（detectSections 只读）。
+     * 全曲 mel 谱 + 自相似矩阵，3 分钟约几百毫秒；一次分析只做一回。
+     */
+    const structureStarted = performance.now();
+    const structure = detectSections(samples, durationMs / 1000);
+    const structureMs = Math.round(performance.now() - structureStarted);
+
     const dspCore = await withTimeout(runWorker(samples, durationMs), ANALYZE_TIMEOUT_MS);
     const core: TrackProfileCore = beatGrid
       ? {
@@ -141,13 +150,17 @@ async function analyze(song: Song, src: string): Promise<TrackProfile | undefine
       version: PROFILE_VERSION,
       analyzedAt: Date.now(),
       analysisMs: Math.round(performance.now() - started),
+      sections: structure.sections,
+      chorusClassId: structure.chorusClassId,
     };
     writeProfile(profile);
     console.info(
       `[pi/automix] 分析完成：${song.name}（id=${song.id}）` +
         ` bpm=${profile.bpm ?? '—'}（${beatGrid ? 'Beat This!' : 'DSP'}）` +
         ` 尾部静音=${profile.tail.silenceSec}s` +
-        ` 头部静音=${profile.head.silenceSec}s 耗时=${profile.analysisMs}ms`,
+        ` 头部静音=${profile.head.silenceSec}s` +
+        ` 段落=${structure.sections.length}段(副歌类=${structure.chorusClassId ?? '—'}, ${structureMs}ms)` +
+        ` 耗时=${profile.analysisMs}ms`,
     );
     return profile;
   } catch (error) {

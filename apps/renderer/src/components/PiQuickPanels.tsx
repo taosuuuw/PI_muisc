@@ -603,14 +603,11 @@ export function PiQuickSettingsCard({
                   ? '关'
                   : value.songTransition === 'crossfade'
                     ? '交叉'
-                    : value.songTransition === 'automix'
-                      ? '智能'
-                      : '淡变'}
+                    : '智能'}
               </span>
             </div>
             <div className="pi-quick-choices" data-quick-choices="song-transition">
               {[
-                { key: 'fade', label: '淡变', icon: 'waveform' },
                 { key: 'crossfade', label: '交叉', icon: 'shuffle' },
                 { key: 'automix', label: '智能', icon: 'bars' },
                 { key: 'off', label: '关', icon: 'mute' },
@@ -623,17 +620,15 @@ export function PiQuickSettingsCard({
                   data-active={value.songTransition === item.key}
                   title={
                     item.key === 'automix'
-                      ? '有拍网格时按整小节交接并微调速度；进场曲一上来就满电平还会让低频先让位'
+                      ? '按拍网格与段落边界对齐，微调速度；进场曲一上来就满电平还会让低频先让位'
                       : item.key === 'crossfade'
                         ? '歌尾前 12 秒解析下一首，最后 5 秒两首叠在一起交接'
-                        : item.key === 'fade'
-                          ? '切歌、暂停、恢复时淡入淡出，歌尾提前淡出'
-                          : '关掉后是硬切，与加这个开关之前一样'
+                        : '关掉后是硬切，与加这个开关之前一样'
                   }
                   disabled={patch.isPending}
                   onClick={() =>
                     patch.mutate({
-                      songTransition: item.key as 'off' | 'fade' | 'crossfade' | 'automix',
+                      songTransition: item.key as 'off' | 'crossfade' | 'automix',
                     })
                   }
                 >

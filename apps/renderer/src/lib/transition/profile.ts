@@ -1,10 +1,11 @@
 import type { TrackProfileCore } from './analyze';
+import type { Section } from './structure';
 
 /**
  * 一首歌的离线档案（P3）。
  *
- * 在生产端落 localStorage：profile 只有几百字节，几百首歌也就几十 KB，比走 IPC 让主进程
- * 维护一个文件简单得多，而且天然跟着渲染进程的存储配额走。
+ * 在生产端落 localStorage：profile 只有几百字节（加了段落表也就一两 KB），几百首歌也就
+ * 几十 KB，比走 IPC 让主进程维护一个文件简单得多，而且天然跟着渲染进程的存储配额走。
  */
 export interface TrackProfile extends TrackProfileCore {
   /** 歌曲 id（网易云的 `Song.id`）。 */
@@ -15,11 +16,15 @@ export interface TrackProfile extends TrackProfileCore {
   analyzedAt: number;
   /** 那次分析花了多久（毫秒），排障与「分析管线是否过重」的观测点。 */
   analysisMs: number;
+  /** 结构段落表（P4 段落对齐）。旧档案没有这个字段，读的时候要兜底。 */
+  sections?: Section[];
+  /** 重复最多的段类（通常是副歌）；没有则为 `null`。 */
+  chorusClassId?: number | null;
 }
 
 export const PROFILE_CACHE_KEY = 'pi.automix.profiles.v1';
 /** 算法改了就要抬这个数：旧档案的 `version` 对不上就当没有。 */
-export const PROFILE_VERSION = 1;
+export const PROFILE_VERSION = 2;
 /** 最多留多少条：超了按「最久没分析过」淘汰，防止 localStorage 被慢慢撑满。 */
 export const MAX_PROFILES = 400;
 

@@ -346,6 +346,14 @@ export class Services {
     // 不用 zod 的 `.default()` 做这件事：`SettingsSchema.partial()` 在 zod 4 里
     // 不会吃掉子对象默认值，改音量也会顺手把动效参数打回默认（见 LyricTuningSchema 的注释）。
     const merged: Settings = { ...DEFAULT_SETTINGS, ...(stored ?? {}) };
+    /*
+     * `songTransition` 的 `fade` 档已下线（它和 `crossfade` 听感太接近，设置项没必要四选一）。
+     * 老用户盘上可能还存着 `'fade'`：不归一的话，zod 校验会把它判成非法值、设置页也会卡在
+     * 一个不存在的选项上。统一升成 `crossfade`（它们本来就是一个「有过渡」的默认）。
+     */
+    if ((merged as { songTransition?: string }).songTransition === 'fade') {
+      (merged as { songTransition: string }).songTransition = 'crossfade';
+    }
     this.settingsCache = {
       ...merged,
       lyricTuning: { ...DEFAULT_LYRIC_TUNING, ...(stored?.lyricTuning ?? {}) },

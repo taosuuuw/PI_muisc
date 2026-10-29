@@ -85,6 +85,58 @@ describe('两端都有拍网格', () => {
     expect(plan.style).toBe('bassSwap');
     expect(plan.reason).toContain('bassSwap');
   });
+
+  it('提前 4 小节在 outro 段起手（不是等歌放完）', () => {
+    const plan = planTransition({
+      outgoing: profileOf(), // 120 BPM → 0.5s/拍
+      incoming: profileOf({ songId: 2 }),
+      remainingSec: 30,
+    });
+    // 16 拍 × 0.5s = 8 秒提前量
+    expect(plan.leadInSec).toBeCloseTo(8, 5);
+    // 没有段落表：起手点 = 过渡时长 + 提前量
+    expect(plan.startAtRemainingSec).toBeCloseTo(plan.durationSec + plan.leadInSec, 5);
+  });
+
+  it('有段落表：从最后一个副歌结束处混入', () => {
+    const plan = planTransition({
+      outgoing: profileOf({
+        durationMs: 200_000,
+        sections: [
+          { startSec: 0, endSec: 40, classId: 0 },
+          { startSec: 40, endSec: 80, classId: 1 },
+          { startSec: 80, endSec: 120, classId: 0 },
+          { startSec: 120, endSec: 160, classId: 1 },
+          { startSec: 160, endSec: 200, classId: 2 },
+        ],
+        chorusClassId: 1,
+      }),
+      incoming: profileOf({ songId: 2 }),
+      remainingSec: 60,
+      outgoingDurationSec: 200,
+    });
+    // 最后一个副歌在 160s 结束 → 还剩 40s 时起手（正好是 outro 入口）
+    expect(plan.startAtRemainingSec).toBeCloseTo(40, 5);
+    expect(plan.reason).toContain('副歌结束处');
+  });
+
+  it('进场曲前奏是静音：跳过它，从有内容的地方进', () => {
+    const plan = planTransition({
+      outgoing: profileOf(),
+      incoming: profileOf({ songId: 2, head: { silenceSec: 3.2, startsHot: false } }),
+      remainingSec: 30,
+    });
+    expect(plan.incomingStartSec).toBeCloseTo(3.2, 5);
+  });
+
+  it('前奏静音超过 8 秒：最多只跳 8 秒', () => {
+    const plan = planTransition({
+      outgoing: profileOf(),
+      incoming: profileOf({ songId: 2, head: { silenceSec: 12, startsHot: false } }),
+      remainingSec: 30,
+    });
+    expect(plan.incomingStartSec).toBeCloseTo(8, 5);
+  });
 });
 
 describe('只有一端有网格', () => {

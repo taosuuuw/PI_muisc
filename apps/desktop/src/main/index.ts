@@ -19397,12 +19397,13 @@ rightOpacity: last === undefined ? '' : getComputedStyle(last).opacity,
     );
     {
       /*
-       * ⑪「接下来播放」小名片：窗口随过渡档位变——fade 是最后 5s，crossfade 是 5s + 交叉时长
-       * （P2 补丁：交叉提前 5 秒切歌，卡片必须提前出现）。所以「窗口外」与「窗口内」这两个
-       * 取样点不能写死 7s / 3s，要按当前设置算。
+       * ⑪「接下来播放」小名片：窗口随过渡档位变——fade 是最后 5s，crossfade 是 5s + 交叉时长，
+       * automix 是 预告 5s + 提前 20s + 过渡 8s（它会在 outro 段就起手）。所以两个取样点
+       * 不能写死，要按当前设置算。
        */
+      const upNextSetting = (await services.getSettings()).songTransition;
       const upNextWindowMs =
-        (await services.getSettings()).songTransition === 'crossfade' ? 10_000 : 5_000;
+        upNextSetting === 'crossfade' ? 10_000 : upNextSetting === 'automix' ? 33_000 : 5_000;
       const upNext = (await win.webContents.executeJavaScript(
         `(async () => {
            const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));

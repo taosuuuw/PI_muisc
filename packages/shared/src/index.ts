@@ -722,15 +722,16 @@ export interface Settings {
    */
   playerBackground: PlayerBackground | null;
   /**
-   * 歌曲之间的过渡方式（`docs/PLAN-AUTOMIX.md` 的 P1 / P2 档）。
+   * 歌曲之间的过渡方式（`docs/PLAN-AUTOMIX.md` 的档位）。
    *
-   * - `fade`（默认）：切歌 / 暂停 / 恢复时对播放增益做淡入淡出，歌尾提前淡出；
-   * - `crossfade`：歌尾前 12 秒解析下一首、装到备用 deck，最后 5 秒两条等功率曲线交叉重叠；
+   * - `crossfade`（默认）：歌尾前 12 秒解析下一首、装到备用 deck，最后 5 秒两条等功率曲线交叉重叠；
+   * - `automix`：在交叉的基础上按拍网格/段落对齐（智能档）；
    * - `off`：关掉，行为与加这个开关之前完全一致（硬切）。
    *
-   * AutoMix（乐句对齐那档）是后续阶段，到时候会在这里再加一个值。
+   * 原来的 `fade`（只做淡入淡出、不重叠）已下线：它和 `crossfade` 的实际听感太接近，
+   * 留着只是让设置项变成四选一。老设置里的 `fade` 会在读取时归一到 `crossfade`。
    */
-  songTransition: 'off' | 'fade' | 'crossfade' | 'automix';
+  songTransition: 'off' | 'crossfade' | 'automix';
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -766,8 +767,8 @@ export const DEFAULT_SETTINGS: Settings = {
   closeAction: 'quit',
   // 默认不用自定义背景：背景仍跟着当前这首歌的封面走。
   playerBackground: null,
-  // 歌曲过渡默认开「淡变」：这是 P1 的交付物，装上就该听得出来；不喜欢可以在设置里关。
-  songTransition: 'fade',
+  // 歌曲过渡默认「交叉」：装上就该听得出来；不喜欢可以在设置里关或换成智能。
+  songTransition: 'crossfade',
 };
 
 /**
