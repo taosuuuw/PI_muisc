@@ -21,12 +21,22 @@
  */
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const TMP = path.join(ROOT, '.tmp', 'cs');
+/*
+ * 中间产物（csc 编出来的安装器/打包器）放**用户主目录**，不放仓库的 `.tmp`、也不放系统 Temp。
+ *
+ * 原因：Windows 里进程的完整性由它执行的 exe 标签决定，而不是由谁启动。
+ * 本仓库所在目录树带着 `Low` 强制完整性标签（同步盘/沙箱解压常见），`.tmp` 下的 exe 会继承它；
+ * 而这台机器的 `%LOCALAPPDATA%\Temp` 也被标成了 Low。两者都会让打包器变成低权限进程，
+ * 写 `release`（Medium）时直接 UnauthorizedAccessException。
+ * 用户主目录是正常 Medium，编出来的打包器也就能正常写 release。
+ */
+const TMP = path.join(os.homedir(), '.pi-setup-cs');
 const RELEASE = path.join(ROOT, 'release');
 const PAYLOAD = path.join(RELEASE, 'pi');
 const ICON = path.join(ROOT, 'build', 'pi-embed.ico');
@@ -78,19 +88,22 @@ function countTree(dir) {
   let files = 0;
   let dirs = 0;
   let bytes = 0;
-  const walk = (d) => {
+  const walk = (d, isRoot) => {
     for (const e of readdirSync(d, { withFileTypes: true })) {
+      // 与打包器（pi-app.cs 的 IsPrivateEntry）保持一致：载荷里 `_` 开头的顶层条目
+      // 是历史探针/临时产物，不进安装包，也不计入自检期望值。
+      if (isRoot && e.name.startsWith('_')) continue;
       const p = path.join(d, e.name);
       if (e.isDirectory()) {
         dirs++;
-        walk(p);
+        walk(p, false);
       } else {
         files++;
         bytes += statSync(p).size;
       }
     }
   };
-  walk(dir);
+  walk(dir, true);
   return { files, dirs, bytes };
 }
 
@@ -254,3 +267,12 @@ log(`\n[setup] 完成：${OUT_EXE}`);
 log(`[setup] 大小 ${mb(outSize)}，打包用时 ${seconds}s`);
 log('[setup] 双击它会弹图形界面安装；脚本自检用：');
 log(`[setup]   "${OUT_EXE}" --silent --target <目录> --no-shortcuts`);
+
+/* 收尾：csc 编出来的安装器/打包器/gui base 都只在打包时用一次，
+   用完就删，别把几十 MB 的中间产物留在用户主目录里。 */
+try {
+  rmSync(TMP, { recursive: true, force: true });
+  log(`[setup] 已清理中间编译产物：${TMP}`);
+} catch (error) {
+  log(`[setup] 中间编译产物未能清理（${error?.message ?? error}），可手动删除：${TMP}`);
+}

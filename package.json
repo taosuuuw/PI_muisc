@@ -1,6 +1,6 @@
 {
   "name": "pi",
-  "version": "0.9.5",
+  "version": "0.9.8",
   "license": "GPL-3.0-or-later",
   "private": true,
   "description": "PI —— 桌面音乐应用（网易云音乐数据 + 多源音源解析链）",

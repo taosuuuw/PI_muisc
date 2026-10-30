@@ -1,6 +1,6 @@
 {
   "name": "@pi/renderer",
-  "version": "0.9.5",
+  "version": "0.9.8",
   "license": "GPL-3.0-or-later",
   "private": true,
   "type": "module",

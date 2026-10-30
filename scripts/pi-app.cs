@@ -614,11 +614,19 @@ namespace PiSetup
             if (!Directory.Exists(payloadDir)) throw new DirectoryNotFoundException("载荷目录不存在：" + payloadDir);
 
             List<string> dirs = new List<string>();
-            foreach (string d in Directory.GetDirectories(payloadDir, "*", SearchOption.AllDirectories)) dirs.Add(d);
+            foreach (string d in Directory.GetDirectories(payloadDir, "*", SearchOption.AllDirectories))
+            {
+                if (IsPrivateEntry(payloadDir, d)) continue;
+                dirs.Add(d);
+            }
             dirs.Sort(StringComparer.OrdinalIgnoreCase);
 
             List<string> files = new List<string>();
-            foreach (string f in Directory.GetFiles(payloadDir, "*", SearchOption.AllDirectories)) files.Add(f);
+            foreach (string f in Directory.GetFiles(payloadDir, "*", SearchOption.AllDirectories))
+            {
+                if (IsPrivateEntry(payloadDir, f)) continue;
+                files.Add(f);
+            }
             files.Sort(StringComparer.OrdinalIgnoreCase);
 
             long payloadBytes = 0;
@@ -693,6 +701,21 @@ namespace PiSetup
             }
 
             return r;
+        }
+
+        /*
+         * 载荷里以 `_` 开头的**顶层**条目一律不进安装包。
+         *
+         * 这解决的是一个删不掉的东西：release 目录带 `Everyone:DENY(DC)`，任何人都删不了
+         * 其中的子项，于是历史探针残留（`_r2probe/IProbe.exe` 之类）会一直躺在载荷目录里。
+         * 与其和 ACL 搏斗，不如打包时按命名约定跳过 —— `_` 前缀就是「临时/内部产物」。
+         */
+        private static bool IsPrivateEntry(string root, string full)
+        {
+            string rel = Rel(root, full);
+            int cut = rel.IndexOf('\\');
+            string first = cut < 0 ? rel : rel.Substring(0, cut);
+            return first.StartsWith("_", StringComparison.Ordinal);
         }
 
         private static string Rel(string root, string full)
