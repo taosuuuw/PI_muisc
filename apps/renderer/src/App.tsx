@@ -497,7 +497,7 @@ export function App(): ReactNode {
           —— 所以现在是播放页左下角那张名片自己在切歌时浮出来（见 HomePage 的 `revealCard`）。 */}
       <AudioEngine />
       {/* 启动品牌开场：只播一次，设置 → 界面里可关；它自己会在播完后卸载。 */}
-      <StartupIntro />
+      <StartupIntro scheme={scheme} />
     </div>
   );
 }

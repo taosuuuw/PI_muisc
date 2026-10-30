@@ -1,185 +1,447 @@
 /*
- * 应用启动时的品牌开场（`components/StartupIntro.tsx`）。
+ * 应用启动品牌开场 V5（`components/StartupIntro.tsx`）。
  *
- * 页面已经挂好、设置也读到了才开始播，所以这一层只需要负责「把已经画出来的应用
- * 盖住，再从品牌标记过渡到正常界面」。所有动画只碰 opacity / transform，
- * 播完由组件卸载，不会给后面的页面留合成层。
+ * 一个母版画面 + 一张共享 mask：颜色与唯一大π都在母版里；
+ * 单块/五块/多块只是 mask 中的白色窗口。窗口可以移动、出生、扩张，
+ * 但母版内容不会逐窗缩放，camera 只统一变换整组。
  */
 
 .pi-intro {
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --intro-paper: #f2f3f1;
+  --intro-ink: #0b2854;
+  --intro-footer-ink: #0b2854;
+  --intro-link: #294ca5;
+  --intro-link-opacity: 0.72;
+
   position: fixed;
   inset: 0;
   z-index: 1000;
-  display: grid;
-  place-items: center;
   overflow: hidden;
-  color: var(--pi-text);
-  background:
-    radial-gradient(
-      120% 90% at 50% 28%,
-      color-mix(in srgb, var(--pi-primary) 12%, transparent) 0%,
-      transparent 58%
-    ),
-    var(--pi-bg);
+  color: var(--intro-ink);
+  background: var(--intro-paper);
   cursor: pointer;
   user-select: none;
 }
 
 .pi-intro[data-phase='leaving'] {
-  animation: pi-intro-veil-out 0.36s ease forwards;
+  animation: pi-intro-veil-out 0.3s var(--ease-out) forwards;
 }
 
-.pi-intro[data-phase='leaving'] .pi-intro__content {
-  animation: pi-intro-content-out 0.34s ease forwards;
-}
-
-/* 品牌标记后面那团很淡的主色光，给整块画面一个中心，但不至于抢字。 */
-.pi-intro__glow {
+/* 灰白纸：极淡网点，右下更浅、左上略蓝。 */
+.pi-intro__paper {
   position: absolute;
-  width: min(64vmin, 620px);
-  aspect-ratio: 1;
-  border-radius: 50%;
-  background: radial-gradient(
-    circle,
-    color-mix(in srgb, var(--pi-primary) 22%, transparent) 0%,
-    transparent 68%
-  );
-  filter: blur(24px);
+  inset: 0;
+  z-index: 0;
+  background:
+    radial-gradient(circle at 1px 1px, rgba(18, 48, 96, 0.028) 1px, transparent 1.3px) 0 0 / 7px 7px,
+    radial-gradient(95% 80% at 74% 16%, #fbfbf9 0%, transparent 62%),
+    radial-gradient(72% 66% at 14% 16%, #e7eef6 0%, transparent 58%),
+    radial-gradient(70% 66% at 18% 88%, #e7ecef 0%, transparent 60%),
+    linear-gradient(125deg, #f2f4f5 0%, #f6f4ef 100%);
   pointer-events: none;
-  animation: pi-intro-glow 1.3s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
-.pi-intro__content {
-  position: relative;
+/* 纸面整体网点；母版内部还有一层随明度变化的网点。 */
+.pi-intro__halftone {
+  position: absolute;
+  inset: -8%;
   z-index: 1;
-  display: grid;
-  justify-items: center;
-  gap: 0;
-  width: min(760px, 94vw);
-  text-align: center;
-}
-
-/*
- * 一个占据中心的大 π 字形，不再套蓝底方块。用户要「图样占据中心大部分、笔画更粗」，
- * 所以这里用 900 重的几何无衬线、字号拉到 46vmin；渐变从浅蓝压到深蓝，粗笔画上才看得见。
- * 投影是静态的，动画仍然只碰 opacity / transform。
- */
-.pi-intro__glyph {
-  position: relative;
-  display: grid;
-  place-items: center;
-  margin-bottom: 0;
-  animation: pi-intro-glyph-in 0.7s cubic-bezier(0.34, 1.4, 0.64, 1) both;
-}
-
-.pi-intro__logo {
-  font-family: 'Palatino Linotype', 'Book Antiqua', Georgia, 'Times New Roman', serif;
-  font-size: clamp(360px, 54vmin, 540px);
-  font-weight: 700;
-  font-style: italic;
-  line-height: 0.78;
-  letter-spacing: -0.05em;
-  background: linear-gradient(
-    140deg,
-    color-mix(in srgb, var(--pi-primary) 38%, #ffffff) 0%,
-    var(--pi-primary) 46%,
-    color-mix(in srgb, var(--pi-primary) 52%, #000000) 100%
+  background-image: radial-gradient(circle, rgba(11, 87, 232, 0.3) 1px, transparent 1.35px);
+  background-size: 6px 6px;
+  -webkit-mask-image: radial-gradient(
+    72% 72% at 32% 30%,
+    #000 0%,
+    rgba(0, 0, 0, 0.55) 58%,
+    transparent 82%
   );
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-  color: transparent;
-  filter: drop-shadow(0 22px 52px color-mix(in srgb, var(--pi-primary) 30%, transparent));
+  mask-image: radial-gradient(
+    72% 72% at 32% 30%,
+    #000 0%,
+    rgba(0, 0, 0, 0.55) 58%,
+    transparent 82%
+  );
+  opacity: 0;
+  pointer-events: none;
+  animation: pi-intro-halftone 5s ease both;
 }
 
-/*
- * 黑白主题色：π 用真正的黑→白渐变，而不是拿近黑主色和黑白混出来的灰黑。
- * 亮档黑在上、白在下（顶部横杠压在白底上仍清楚，底部白端自然化进浅背景）；
- * 暗档反过来，白在上、黑在下。两端都加一圈极细的反色描边，别让化进背景的那端
- * 真的消失。
- */
-[data-accent='mono'] .pi-intro__logo {
-  background-image: linear-gradient(140deg, #0a0a0a 0%, #4a4a4a 42%, #bfbfbf 72%, #ffffff 100%);
-  filter: drop-shadow(0 0 1px rgba(0, 0, 0, 0.18)) drop-shadow(0 22px 52px rgba(0, 0, 0, 0.18));
+/* ---------------- 世界母版 + 窗口 ---------------- */
+
+.pi-intro__world {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
 }
 
-[data-theme='dark'][data-accent='mono'] .pi-intro__logo {
-  background-image: linear-gradient(140deg, #ffffff 0%, #bfbfbf 30%, #4a4a4a 60%, #0a0a0a 100%);
-  filter: drop-shadow(0 0 1px rgba(255, 255, 255, 0.18)) drop-shadow(0 22px 52px rgba(0, 0, 0, 0.3));
+.pi-intro__world-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
 }
 
-/*
- * 一行偏书法的中文，替代原来的标签说明。楷体/宋体在 Windows 与 macOS 上都属于
- * 系统自带的书写体，不需要打包字体；字距拉开一点，读起来更像一句题字。
- * `margin-top` 就是用户说的「位置往下一点」。
- */
-.pi-intro__tagline {
-  margin-top: 32px;
-  color: var(--pi-primary-deep);
+.pi-intro__camera {
+  transform-box: view-box;
+  transform-origin: 58% 44%;
+  will-change: transform;
+  animation: pi-intro-camera 5s linear both;
+}
+
+.pi-intro__master {
+  /* mask 由组件内联；窗口全部在 mask 的同一 userSpace 里。 */
+  transform-box: fill-box;
+}
+
+.pi-intro__world-image {
+  display: block;
+  pointer-events: none;
+}
+
+.pi-intro__master-glyph {
+  opacity: 0;
+  animation: pi-intro-glyph-in 0.22s ease 2.38s forwards;
+}
+
+.pi-intro__links {
+  pointer-events: none;
+}
+
+.pi-intro__link {
+  opacity: 0;
+  stroke: var(--intro-link);
+  stroke-width: 1.2px;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+  animation: pi-intro-line-in 0.38s ease var(--line-delay) forwards;
+}
+
+/* 4.1s 后共享 mask 由窗口扩展为全幅；同一母版完整盖住连线。 */
+.pi-intro__full-mask {
+  opacity: 0;
+  animation: pi-intro-full-mask-in 0.15s linear 4.1s forwards;
+}
+
+/* 窗口是 mask 里的白色矩形；只改变窗口位置/大小，不改变母版。 */
+.pi-intro__window {
+  transform-box: fill-box;
+  transform-origin: 50% 50%;
+}
+
+.pi-intro__window-group--onefive {
+  animation: pi-intro-window-onefive-out 0.15s linear 2.25s forwards;
+}
+
+.pi-intro__window-group--many {
+  opacity: 0;
+  animation: pi-intro-window-many-in 0.15s linear 2.25s forwards;
+}
+
+.pi-intro__window--one {
+  animation: pi-intro-one-window 0.9s var(--ease-out) both;
+}
+
+.pi-intro__five-move {
+  transform-box: fill-box;
+  transform-origin: 50% 50%;
+  animation: pi-intro-five-step 0.3s ease-in-out 1.95s forwards;
+}
+
+.pi-intro__window--five {
+  animation: pi-intro-five-window-in 0.34s var(--ease-out) var(--delay) both;
+}
+
+.pi-intro__block-enter {
+  transform-box: fill-box;
+  transform-origin: 50% 50%;
+  opacity: 0;
+  animation: pi-intro-block-window-in 0.4s var(--ease-out) calc(2.25s + var(--delay)) both;
+}
+
+.pi-intro__window--many {
+  animation: pi-intro-block-push 0.48s cubic-bezier(0.4, 0.05, 0.8, 0.45) 3.6s forwards;
+}
+
+/* QA 专用：默认完全透明，同源 proof 时临时显示，只作为窗口线框。 */
+.pi-intro__window-guide {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.pi-intro__window--guide {
+  fill: none;
+  stroke: #ff4f60;
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+/* 阶段标记：没有像素内容，只让 QA/生命周期读到真实 scene 状态。 */
+.pi-intro__scene-marker {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+}
+
+.pi-intro__scene-onefive {
+  animation: pi-intro-onefive-out 0.15s linear 2.25s forwards;
+}
+
+.pi-intro__scene-many {
+  opacity: 0;
+  visibility: hidden;
+  animation: pi-intro-many-scene-in 0.15s linear 2.25s forwards;
+}
+
+/* 温和纸色曝光，不闪白叠加。 */
+.pi-intro__pale {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  background: var(--intro-paper);
+  opacity: 0;
+  pointer-events: none;
+  animation: pi-intro-pale 0.3s ease-in-out 1.95s both;
+}
+
+/* ---------------- 完整母版上的底部小字 ---------------- */
+
+.pi-intro__footer {
+  position: absolute;
+  left: 50%;
+  bottom: clamp(20px, 4vh, 40px);
+  z-index: 6;
+  color: var(--intro-footer-ink);
   font-family:
     'KaiTi', 'STKaiti', 'Kaiti SC', 'Noto Serif CJK SC', 'Source Han Serif SC', 'SimSun', serif;
-  font-size: clamp(22px, 3.2vmin, 34px);
+  font-size: clamp(14px, 2vmin, 20px);
   font-weight: 400;
   letter-spacing: 0.16em;
-  /* 字距会在最后多出一格，往右缩半格才是真正居中。 */
   text-indent: 0.16em;
   line-height: 1.2;
-  animation: pi-intro-rise 0.55s cubic-bezier(0.22, 1, 0.36, 1) 0.24s both;
+  white-space: nowrap;
+  pointer-events: none;
+  transform: translateX(-50%);
+  animation: pi-intro-footer-in 0.28s var(--ease-out) 4.2s both;
 }
+
+/* ---------------- dark 主题：同一布局/动画，只换中性黑白灰 ---------------- */
+
+.pi-intro[data-scheme='dark'] {
+  --intro-paper: #101010;
+  --intro-ink: #ececec;
+  --intro-footer-ink: #121212;
+  --intro-link: #d6d6d6;
+  --intro-link-opacity: 0.58;
+  background: #090909;
+  color: var(--intro-ink);
+}
+
+.pi-intro[data-scheme='dark'] .pi-intro__paper {
+  background:
+    radial-gradient(circle at 1px 1px, rgba(255, 255, 255, 0.035) 1px, transparent 1.3px) 0 0 / 7px
+      7px,
+    radial-gradient(95% 80% at 74% 16%, #1b1b1b 0%, transparent 62%),
+    radial-gradient(72% 66% at 14% 16%, #0a0a0a 0%, transparent 58%),
+    radial-gradient(70% 66% at 18% 88%, #090909 0%, transparent 60%),
+    linear-gradient(125deg, #101010 0%, #080808 100%);
+}
+
+.pi-intro[data-scheme='dark'] .pi-intro__halftone {
+  background-image: radial-gradient(circle, rgba(255, 255, 255, 0.09) 1px, transparent 1.35px);
+}
+
+/* ---------------- keyframes ---------------- */
 
 @keyframes pi-intro-veil-out {
-  from {
-    opacity: 1;
-  }
   to {
     opacity: 0;
   }
 }
 
-@keyframes pi-intro-content-out {
-  to {
+@keyframes pi-intro-halftone {
+  0%,
+  44% {
     opacity: 0;
-    transform: translateY(-6px) scale(0.97);
   }
-}
-
-@keyframes pi-intro-glow {
-  from {
-    opacity: 0;
-    transform: scale(0.82);
-  }
-  38% {
-    opacity: 0.9;
-  }
-  to {
-    opacity: 0.55;
-    transform: scale(1.08);
-  }
-}
-
-@keyframes pi-intro-glyph-in {
-  0% {
-    opacity: 0;
-    transform: translateY(14px) scale(0.8);
+  52% {
+    opacity: 0.16;
   }
   62% {
-    opacity: 1;
-    transform: translateY(0) scale(1.025);
+    opacity: 0.12;
+  }
+  82% {
+    opacity: 0.12;
   }
   100% {
+    opacity: 0.08;
+  }
+}
+
+@keyframes pi-intro-one-window {
+  0% {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  18% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  60% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  72% {
+    opacity: 0;
+    transform: scale(0.98);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(0.98);
+  }
+}
+
+@keyframes pi-intro-five-window-in {
+  from {
+    opacity: 0;
+    transform: translate(var(--enter-x), var(--enter-y)) scale(0.94);
+  }
+  to {
+    opacity: 1;
+    transform: translate(0, 0) scale(1);
+  }
+}
+
+@keyframes pi-intro-five-step {
+  from {
+    transform: translate(0, 0);
+  }
+  to {
+    transform: translate(var(--step-x), var(--step-y));
+  }
+}
+
+@keyframes pi-intro-pale {
+  0% {
+    opacity: 0;
+  }
+  42% {
+    opacity: 0.22;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes pi-intro-window-onefive-out {
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes pi-intro-window-many-in {
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes pi-intro-full-mask-in {
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes pi-intro-onefive-out {
+  to {
+    opacity: 0;
+    visibility: hidden;
+  }
+}
+
+@keyframes pi-intro-many-scene-in {
+  to {
+    opacity: 1;
+    visibility: visible;
+  }
+}
+
+@keyframes pi-intro-camera {
+  0%,
+  44% {
+    transform: scale(0.97);
+    animation-timing-function: var(--ease-out);
+  }
+  55% {
+    transform: scale(1);
+    animation-timing-function: linear;
+  }
+  72% {
+    transform: scale(1.003) translate(-0.2%, -0.1%);
+    animation-timing-function: cubic-bezier(0.4, 0.05, 0.8, 0.45);
+  }
+  78% {
+    transform: scale(1.07) translate(-0.6%, 0.4%);
+    animation-timing-function: cubic-bezier(0.3, 0.1, 0.7, 0.5);
+  }
+  81.6%,
+  82% {
+    transform: scale(1.11) translate(-1.2%, 0.8%);
+    animation-timing-function: var(--ease-out);
+  }
+  86%,
+  100% {
+    transform: scale(1) translate(0, 0);
+  }
+}
+
+@keyframes pi-intro-block-window-in {
+  from {
+    opacity: 0;
+    transform: translateY(var(--enter-y)) scale(0.94);
+  }
+  to {
     opacity: 1;
     transform: translateY(0) scale(1);
   }
 }
 
-@keyframes pi-intro-rise {
+@keyframes pi-intro-block-push {
+  from {
+    transform: scale(1) translateY(0);
+  }
+  to {
+    transform: scale(var(--push-scale)) translateY(var(--push-y));
+  }
+}
+
+@keyframes pi-intro-glyph-in {
   from {
     opacity: 0;
-    transform: translateY(7px);
   }
   to {
     opacity: 1;
-    transform: translateY(0);
+  }
+}
+
+@keyframes pi-intro-line-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: var(--intro-link-opacity, 0.72);
+  }
+}
+
+@keyframes pi-intro-footer-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 4px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
   }
 }
 
@@ -187,6 +449,7 @@
   .pi-intro {
     display: none;
   }
+
   .pi-intro *,
   .pi-intro[data-phase='leaving'] {
     animation: none;
